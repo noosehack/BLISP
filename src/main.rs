@@ -40,8 +40,21 @@ fn main() {
         let code = &args[2];
         match eval_code(&mut rt, code) {
             Ok(val) => {
-                // Handle broken pipe gracefully (e.g., when piping to head)
-                let result = writeln!(std::io::stdout(), "{}", val.display(&rt.interner));
+                // Stream output directly to stdout with BufWriter for efficiency
+                let stdout = std::io::stdout();
+                let mut writer = std::io::BufWriter::new(stdout.lock());
+
+                let result = match &val {
+                    value::Value::Table(table) => {
+                        // Stream table output directly (no row limit when not interactive)
+                        value::write_table_to(&mut writer, table, &rt.interner, None)
+                    }
+                    _ => {
+                        // For non-tables, use display()
+                        writeln!(writer, "{}", val.display(&rt.interner))
+                    }
+                };
+
                 if let Err(e) = result {
                     if e.kind() == std::io::ErrorKind::BrokenPipe {
                         std::process::exit(0);
@@ -62,8 +75,21 @@ fn main() {
             Ok(code) => {
                 match eval_code(&mut rt, &code) {
                     Ok(val) => {
-                        // Handle broken pipe gracefully (e.g., when piping to head)
-                        let result = writeln!(std::io::stdout(), "{}", val.display(&rt.interner));
+                        // Stream output directly to stdout with BufWriter for efficiency
+                        let stdout = std::io::stdout();
+                        let mut writer = std::io::BufWriter::new(stdout.lock());
+
+                        let result = match &val {
+                            value::Value::Table(table) => {
+                                // Stream table output directly (no row limit when not interactive)
+                                value::write_table_to(&mut writer, table, &rt.interner, None)
+                            }
+                            _ => {
+                                // For non-tables, use display()
+                                writeln!(writer, "{}", val.display(&rt.interner))
+                            }
+                        };
+
                         if let Err(e) = result {
                             if e.kind() == std::io::ErrorKind::BrokenPipe {
                                 std::process::exit(0);

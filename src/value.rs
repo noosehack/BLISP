@@ -142,57 +142,68 @@ fn display_column(col: &blawktrust::Column) -> String {
     }
 }
 
-/// Display a table as CSV (semicolon-separated, same format as input)
-fn display_table(table: &Table, interner: &crate::ast::Interner) -> String {
+/// Write table as CSV (semicolon-separated) with streaming output
+///
+/// Writes incrementally to avoid building giant strings in memory.
+/// Returns Err on broken pipe or other I/O errors.
+pub fn write_table_to<W: std::io::Write>(
+    writer: &mut W,
+    table: &Table,
+    interner: &crate::ast::Interner,
+    max_rows: Option<usize>,
+) -> std::io::Result<()> {
     if table.columns.is_empty() {
-        return "".to_string();
+        return Ok(());
     }
 
     let n_rows = table.row_count;
-    let mut output = String::new();
+    let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
 
     // Column headers
     let col_names: Vec<String> = table.columns.iter()
         .map(|(sym, _)| interner.resolve(*sym).to_string())
         .collect();
 
-    output.push_str(&col_names.join(";"));
-    output.push('\n');
+    writeln!(writer, "{}", col_names.join(";"))?;
 
-    // Data rows
-    for row_idx in 0..n_rows {
+    // Data rows (streaming)
+    for row_idx in 0..display_rows {
         for (col_idx, (_, col)) in table.columns.iter().enumerate() {
             if col_idx > 0 {
-                output.push(';');
+                write!(writer, ";")?;
             }
 
-            let val_str = match col {
+            match col {
                 blawktrust::Column::F64(data) => {
                     if row_idx < data.len() {
                         let v = data[row_idx];
                         if v.is_nan() {
-                            "NA".to_string()
+                            write!(writer, "NA")?;
                         } else {
-                            format!("{}", v)
+                            write!(writer, "{}", v)?;
                         }
                     } else {
-                        "?".to_string()
+                        write!(writer, "?")?;
                     }
                 }
                 blawktrust::Column::Ts(data) => {
                     if row_idx < data.len() {
-                        days_to_date(data[row_idx])
+                        write!(writer, "{}", days_to_date(data[row_idx]))?;
                     } else {
-                        "?".to_string()
+                        write!(writer, "?")?;
                     }
                 }
-            };
-            output.push_str(&val_str);
+            }
         }
-        output.push('\n');
+        writeln!(writer)?;
     }
 
-    output
+    // Show summary if truncated
+    if display_rows < n_rows {
+        writeln!(writer, "... ({} more rows, {} total)", n_rows - display_rows, n_rows)?;
+    }
+
+    Ok(())
 }
 
 /// Table: columnar data structure
@@ -296,7 +307,16 @@ impl Value {
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
             Value::Col(c) => display_column(c),
-            Value::Table(t) => display_table(t, interner),
+            Value::Table(t) => {
+                // For display(), we need to return a String, but use write_table_to internally
+                // This is used for print builtin which doesn't go to stdout directly
+                let mut buf = Vec::new();
+                if write_table_to(&mut buf, t, interner, Some(30)).is_ok() {
+                    String::from_utf8_lossy(&buf).to_string()
+                } else {
+                    format!("Table[{} rows × {} cols]", t.row_count, t.columns.len())
+                }
+            }
         }
     }
 }
