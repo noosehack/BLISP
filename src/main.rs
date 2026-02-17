@@ -9,6 +9,7 @@ mod io;
 
 use runtime::Runtime;
 use reader::Reader;
+use std::io::Write;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -39,7 +40,15 @@ fn main() {
         let code = &args[2];
         match eval_code(&mut rt, code) {
             Ok(val) => {
-                println!("{}", val.display(&rt.interner));
+                // Handle broken pipe gracefully (e.g., when piping to head)
+                let result = writeln!(std::io::stdout(), "{}", val.display(&rt.interner));
+                if let Err(e) = result {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        std::process::exit(0);
+                    }
+                    eprintln!("Error writing output: {}", e);
+                    std::process::exit(1);
+                }
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -53,7 +62,15 @@ fn main() {
             Ok(code) => {
                 match eval_code(&mut rt, &code) {
                     Ok(val) => {
-                        println!("{}", val.display(&rt.interner));
+                        // Handle broken pipe gracefully (e.g., when piping to head)
+                        let result = writeln!(std::io::stdout(), "{}", val.display(&rt.interner));
+                        if let Err(e) = result {
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                std::process::exit(0);
+                            }
+                            eprintln!("Error writing output: {}", e);
+                            std::process::exit(1);
+                        }
                     }
                     Err(e) => {
                         eprintln!("Error: {}", e);
