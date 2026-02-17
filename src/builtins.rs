@@ -39,6 +39,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
+    rt.register_builtin("file-head", builtin_file_head);
     rt.register_builtin("stdin", builtin_stdin);
     rt.register_builtin("save", builtin_save);
     rt.register_builtin("col", builtin_col);
@@ -363,6 +364,32 @@ fn builtin_file(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     };
 
     crate::io::load_csv(filename, &mut rt.interner)
+}
+
+/// (file-head "filename.csv" n) - Load first n rows from CSV (preview mode)
+///
+/// Fast path for display/pipelines: only parses header + first n data rows.
+/// Much faster than (file) for large CSVs when you only need a preview.
+///
+/// Example:
+///   (file-head "At.csv" 10)    ; Load only first 10 rows
+///   (file-head "data.csv" 1)   ; Peek at first row
+fn builtin_file_head(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("file-head expects 2 arguments (filename n), got {}", args.len()));
+    }
+
+    let filename = match &args[0] {
+        Value::Str(s) => s.as_ref(),
+        _ => return Err(format!("file-head expects string filename, got {}", args[0].type_name())),
+    };
+
+    let n = args[1].as_int()?;
+    if n < 0 {
+        return Err("file-head expects non-negative row limit".to_string());
+    }
+
+    crate::io::load_csv_limit(filename, &mut rt.interner, n as usize)
 }
 
 /// (stdin) - Read CSV from stdin into Table

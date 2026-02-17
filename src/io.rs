@@ -28,7 +28,17 @@ pub fn load_csv(filename: &str, interner: &mut Interner) -> Result<Value, String
     let content = std::fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
 
-    parse_csv(&content, interner)
+    parse_csv(&content, interner, None)
+}
+
+/// Load CSV file with row limit (preview mode)
+///
+/// Only parses header + first `row_limit` rows for fast display/pipelines.
+pub fn load_csv_limit(filename: &str, interner: &mut Interner, row_limit: usize) -> Result<Value, String> {
+    let content = std::fs::read_to_string(filename)
+        .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
+
+    parse_csv(&content, interner, Some(row_limit))
 }
 
 /// Read CSV from stdin into a Table
@@ -38,11 +48,14 @@ pub fn load_stdin(interner: &mut Interner) -> Result<Value, String> {
         .read_to_string(&mut buffer)
         .map_err(|e| format!("Error reading stdin: {}", e))?;
 
-    parse_csv(&buffer, interner)
+    parse_csv(&buffer, interner, None)
 }
 
-/// Parse CSV content into a Table
-fn parse_csv(content: &str, interner: &mut Interner) -> Result<Value, String> {
+/// Parse CSV content into a Table with optional row limit
+///
+/// If row_limit is Some(n), only parse header + first n data rows.
+/// This is the "preview parser" fast path for display/pipelines.
+fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b';')  // Use semicolon like clispi
@@ -59,9 +72,10 @@ fn parse_csv(content: &str, interner: &mut Interner) -> Result<Value, String> {
     let num_cols = column_names.len();
 
     // Detect column types by sampling first K rows (robust type inference)
-    // Collect first TYPE_DETECTION_ROWS rows for sampling
+    // Collect first TYPE_DETECTION_ROWS rows for sampling (capped by row_limit if specified)
+    let sample_size = row_limit.map(|lim| lim.min(TYPE_DETECTION_ROWS)).unwrap_or(TYPE_DETECTION_ROWS);
     let mut sample_rows: Vec<csv::StringRecord> = Vec::new();
-    for result in reader.records().take(TYPE_DETECTION_ROWS) {
+    for result in reader.records().take(sample_size) {
         sample_rows.push(result.map_err(|e| format!("Error reading CSV record: {}", e))?);
     }
 
@@ -88,11 +102,17 @@ fn parse_csv(content: &str, interner: &mut Interner) -> Result<Value, String> {
         })
         .collect();
 
-    // Initialize column data vectors
-    let mut f64_columns: Vec<Vec<f64>> = vec![Vec::new(); num_cols];
-    let mut ts_columns: Vec<Vec<i64>> = vec![Vec::new(); num_cols];
+    // Initialize column data vectors with capacity based on row_limit (preview mode optimization)
+    let initial_capacity = row_limit.unwrap_or(256); // If no limit, use reasonable default
+    let mut f64_columns: Vec<Vec<f64>> = (0..num_cols)
+        .map(|_| Vec::with_capacity(initial_capacity))
+        .collect();
+    let mut ts_columns: Vec<Vec<i64>> = (0..num_cols)
+        .map(|_| Vec::with_capacity(initial_capacity))
+        .collect();
 
     // Process sample rows
+    let mut rows_parsed = 0;
     for record in sample_rows {
         for (i, field) in record.iter().enumerate() {
             match col_types[i] {
@@ -104,10 +124,17 @@ fn parse_csv(content: &str, interner: &mut Interner) -> Result<Value, String> {
                 }
             }
         }
+        rows_parsed += 1;
     }
 
-    // Read remaining data rows after the sample
+    // Read remaining data rows after the sample (respecting row_limit)
     for result in reader.records() {
+        // Stop if we've hit the row limit
+        if let Some(limit) = row_limit {
+            if rows_parsed >= limit {
+                break;
+            }
+        }
         let record = result.map_err(|e| format!("Error reading CSV record: {}", e))?;
 
         if record.len() != num_cols {
@@ -130,6 +157,7 @@ fn parse_csv(content: &str, interner: &mut Interner) -> Result<Value, String> {
                 }
             }
         }
+        rows_parsed += 1;
     }
 
     // Build Table
@@ -362,7 +390,7 @@ mod tests {
         // Use only numeric data for now
         let csv = "px;vol\n100.0;1000\n102.0;1200";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             assert_eq!(table.row_count, 2);
@@ -384,7 +412,7 @@ mod tests {
         let mut interner = Interner::new();
         let csv = "px;vol\n100.0;1000\nNA;1200\n102.0;NA\nNaN;N/A";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             assert_eq!(table.row_count, 4);
@@ -422,7 +450,7 @@ mod tests {
         let mut interner = Interner::new();
         let csv = "date;px;vol\n2000-01-03;100.0;1000\n2000-01-10;102.0;1200\nNA;105.0;1300";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             assert_eq!(table.row_count, 3);
@@ -464,7 +492,7 @@ mod tests {
         // Headers with trailing spaces (Bloomberg style)
         let csv = "ES2 Index ;SPY US Equity \n100.0;145.0\n102.0;146.0";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             // Check that headers were trimmed
@@ -490,7 +518,7 @@ mod tests {
         // Full Bloomberg-style CSV with NA in various positions
         let csv = "date;ES1 Index;SPY US Equity\n2000-01-03;1534.36;145.438\n2000-01-10;1542.98;NA\nNA;1550.00;147.500";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             assert_eq!(table.row_count, 3);
@@ -529,7 +557,7 @@ mod tests {
         // Date column starts with NA - should still detect as Ts
         let csv = "date;value\nNA;100\nNA;200\n2000-01-03;300\n2000-01-10;400";
 
-        let result = parse_csv(csv, &mut interner).unwrap();
+        let result = parse_csv(csv, &mut interner, None).unwrap();
 
         if let Value::Table(table) = result {
             assert_eq!(table.row_count, 4);
