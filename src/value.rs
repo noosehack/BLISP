@@ -142,6 +142,59 @@ fn display_column(col: &blawktrust::Column) -> String {
     }
 }
 
+/// Display a table as CSV (semicolon-separated, same format as input)
+fn display_table(table: &Table, interner: &crate::ast::Interner) -> String {
+    if table.columns.is_empty() {
+        return "".to_string();
+    }
+
+    let n_rows = table.row_count;
+    let mut output = String::new();
+
+    // Column headers
+    let col_names: Vec<String> = table.columns.iter()
+        .map(|(sym, _)| interner.resolve(*sym).to_string())
+        .collect();
+
+    output.push_str(&col_names.join(";"));
+    output.push('\n');
+
+    // Data rows
+    for row_idx in 0..n_rows {
+        for (col_idx, (_, col)) in table.columns.iter().enumerate() {
+            if col_idx > 0 {
+                output.push(';');
+            }
+
+            let val_str = match col {
+                blawktrust::Column::F64(data) => {
+                    if row_idx < data.len() {
+                        let v = data[row_idx];
+                        if v.is_nan() {
+                            "NA".to_string()
+                        } else {
+                            format!("{}", v)
+                        }
+                    } else {
+                        "?".to_string()
+                    }
+                }
+                blawktrust::Column::Ts(data) => {
+                    if row_idx < data.len() {
+                        days_to_date(data[row_idx])
+                    } else {
+                        "?".to_string()
+                    }
+                }
+            };
+            output.push_str(&val_str);
+        }
+        output.push('\n');
+    }
+
+    output
+}
+
 /// Table: columnar data structure
 #[derive(Debug, Clone)]
 pub struct Table {
@@ -243,7 +296,7 @@ impl Value {
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
             Value::Col(c) => display_column(c),
-            Value::Table(t) => format!("Table[{} rows × {} cols]", t.row_count, t.columns.len()),
+            Value::Table(t) => display_table(t, interner),
         }
     }
 }
@@ -373,6 +426,6 @@ mod tests {
 
         let table = Table::new();
         let val = Value::Table(Arc::new(table));
-        assert_eq!(val.display(&interner), "Table[0 rows × 0 cols]");
+        assert_eq!(val.display(&interner), "");
     }
 }
