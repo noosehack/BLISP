@@ -46,6 +46,12 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("w", builtin_w);
     rt.register_builtin("make-col", builtin_make_col);
 
+    // Table Operations
+    rt.register_builtin("cols", builtin_cols);
+    rt.register_builtin("select-num", builtin_select_num);
+    rt.register_builtin("map-cols", builtin_map_cols);
+    rt.register_builtin("apply-cols", builtin_apply_cols);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
@@ -690,6 +696,138 @@ fn subtract_columns(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<bl
         }
         _ => Err("Column subtraction only supported for F64 columns".to_string()),
     }
+}
+
+// ============================================================================
+// Table Operations
+// ============================================================================
+
+/// (cols table) → list of column names (as strings)
+fn builtin_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("cols expects 1 argument, got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+
+    // Return column names as a list (we'll use a simple representation for now)
+    // For now, just print them - we need to add a List type to Value enum later
+    let names: Vec<String> = table.columns.iter()
+        .map(|(sym_id, _)| rt.interner.resolve(*sym_id).to_string())
+        .collect();
+
+    // For now, return as a string (temporary until we have proper list support)
+    Ok(Value::Str(names.join(", ").into()))
+}
+
+/// (select-num table) → Table with only F64 columns
+fn builtin_select_num(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("select-num expects 1 argument, got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+    let mut new_table = crate::value::Table::new();
+
+    // Keep only F64 columns
+    for (name, col) in &table.columns {
+        if let blawktrust::Column::F64(_) = col {
+            new_table.add_column(*name, col.clone());
+        }
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
+}
+
+/// (map-cols table fn) → Table
+/// Apply unary Col→Col function to each F64 column, preserve Ts columns unchanged
+fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("map-cols expects 2 arguments (table fn), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+
+    // For now, fn must be a symbol referring to a builtin
+    // Clone the function name string to avoid borrow conflicts
+    let fn_name = match &args[1] {
+        Value::Sym(sym_id) => rt.interner.resolve(*sym_id).to_string(),
+        _ => return Err("map-cols: function must be a symbol (builtin name)".to_string()),
+    };
+
+    let mut new_table = crate::value::Table::new();
+
+    // Apply function to each column
+    for (name, col) in &table.columns {
+        match col {
+            blawktrust::Column::F64(_) => {
+                // Apply function to F64 columns
+                let col_val = Value::Col(Arc::new(col.clone()));
+                let fn_args = vec![col_val];
+
+                // Dispatch to builtin (only unary math functions for now)
+                let result = match fn_name.as_str() {
+                    "log" => builtin_log(rt, &fn_args)?,
+                    "exp" => builtin_exp(rt, &fn_args)?,
+                    "abs" => builtin_abs(rt, &fn_args)?,
+                    _ => return Err(format!("map-cols: unsupported function '{}' (try: log, exp, abs)", fn_name)),
+                };
+
+                let result_col = result.as_col()?;
+                new_table.add_column(*name, (*result_col).clone());
+            }
+            blawktrust::Column::Ts(_) => {
+                // Keep Ts columns unchanged
+                new_table.add_column(*name, col.clone());
+            }
+        }
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
+}
+
+/// (apply-cols table fn) → 1-row Table
+/// Apply Col→scalar aggregation to each F64 column, skip Ts columns
+fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("apply-cols expects 2 arguments (table fn), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+
+    // For now, fn must be a symbol referring to a builtin
+    // Clone the function name string to avoid borrow conflicts
+    let fn_name = match &args[1] {
+        Value::Sym(sym_id) => rt.interner.resolve(*sym_id).to_string(),
+        _ => return Err("apply-cols: function must be a symbol (builtin name)".to_string()),
+    };
+
+    let mut new_table = crate::value::Table::new();
+
+    // Apply aggregation function to each numeric column
+    for (name, col) in &table.columns {
+        if let blawktrust::Column::F64(_) = col {
+            let col_val = Value::Col(Arc::new(col.clone()));
+            let fn_args = vec![col_val];
+
+            // Dispatch to aggregation builtin
+            let scalar_result = match fn_name.as_str() {
+                "sum" => builtin_sum(rt, &fn_args)?,
+                "sum0" => builtin_sum0(rt, &fn_args)?,
+                "mean" => builtin_mean(rt, &fn_args)?,
+                "mean0" => builtin_mean0(rt, &fn_args)?,
+                _ => return Err(format!("apply-cols: unknown aggregation function '{}'", fn_name)),
+            };
+
+            // Convert scalar to 1-element column
+            let scalar_val = scalar_result.as_float()?;
+            let result_col = blawktrust::Column::new_f64(vec![scalar_val]);
+            new_table.add_column(*name, result_col);
+        }
+        // Skip Ts columns
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
 }
 
 #[cfg(test)]
