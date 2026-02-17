@@ -25,20 +25,14 @@ const TYPE_DETECTION_ROWS: usize = 8;
 /// 2020-01-02,102.0,1200
 /// ```
 pub fn load_csv(filename: &str, interner: &mut Interner) -> Result<Value, String> {
-    let content = std::fs::read_to_string(filename)
-        .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
-
-    parse_csv(&content, interner, None)
+    parse_csv_from_file(filename, interner, None)
 }
 
 /// Load CSV file with row limit (preview mode)
 ///
 /// Only parses header + first `row_limit` rows for fast display/pipelines.
 pub fn load_csv_limit(filename: &str, interner: &mut Interner, row_limit: usize) -> Result<Value, String> {
-    let content = std::fs::read_to_string(filename)
-        .map_err(|e| format!("Error reading file '{}': {}", filename, e))?;
-
-    parse_csv(&content, interner, Some(row_limit))
+    parse_csv_from_file(filename, interner, Some(row_limit))
 }
 
 /// Read CSV from stdin into a Table
@@ -51,16 +45,45 @@ pub fn load_stdin(interner: &mut Interner) -> Result<Value, String> {
     parse_csv(&buffer, interner, None)
 }
 
-/// Parse CSV content into a Table with optional row limit
+/// Parse CSV from file path with optional row limit (streaming, no full read)
+///
+/// Streams directly from file without reading entire contents into memory.
+/// If row_limit is Some(n), only parse header + first n data rows.
+fn parse_csv_from_file(filename: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
+    let file = std::fs::File::open(filename)
+        .map_err(|e| format!("Error opening file '{}': {}", filename, e))?;
+
+    parse_csv_from_reader(file, interner, row_limit)
+}
+
+/// Parse CSV from a reader with optional row limit
+///
+/// Generic function that works with any Read source (file, string, stdin, etc.)
+fn parse_csv_from_reader<R: std::io::Read>(reader: R, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b';')
+        .from_reader(reader);
+
+    parse_csv_from_csv_reader(&mut csv_reader, interner, row_limit)
+}
+
+/// Parse CSV content from string into a Table with optional row limit
 ///
 /// If row_limit is Some(n), only parse header + first n data rows.
 /// This is the "preview parser" fast path for display/pipelines.
 fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .delimiter(b';')  // Use semicolon like clispi
-        .from_reader(content.as_bytes());
+    parse_csv_from_reader(content.as_bytes(), interner, row_limit)
+}
 
+/// Core CSV parsing logic that works with any csv::Reader
+///
+/// This is where the actual parsing happens, shared by all input sources.
+fn parse_csv_from_csv_reader<R: std::io::Read>(
+    reader: &mut csv::Reader<R>,
+    interner: &mut Interner,
+    row_limit: Option<usize>
+) -> Result<Value, String> {
     // Read headers (TASK C: trim whitespace)
     let headers = reader.headers()
         .map_err(|e| format!("Error reading CSV headers: {}", e))?;
