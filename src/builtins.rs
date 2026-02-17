@@ -48,9 +48,13 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // Table Operations
     rt.register_builtin("cols", builtin_cols);
+    rt.register_builtin("select", builtin_select);
     rt.register_builtin("select-num", builtin_select_num);
     rt.register_builtin("map-cols", builtin_map_cols);
     rt.register_builtin("apply-cols", builtin_apply_cols);
+    rt.register_builtin("dlog-cols", builtin_dlog_cols);
+    rt.register_builtin("shift-cols", builtin_shift_cols);
+    rt.register_builtin("diff-cols", builtin_diff_cols);
 
     // Utility
     rt.register_builtin("print", builtin_print);
@@ -710,14 +714,42 @@ fn builtin_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     let table = args[0].as_table()?;
 
-    // Return column names as a list (we'll use a simple representation for now)
-    // For now, just print them - we need to add a List type to Value enum later
-    let names: Vec<String> = table.columns.iter()
-        .map(|(sym_id, _)| rt.interner.resolve(*sym_id).to_string())
+    // Return column names as a list of strings
+    let names: Vec<Value> = table.columns.iter()
+        .map(|(sym_id, _)| {
+            let name_str = rt.interner.resolve(*sym_id).to_string();
+            Value::Str(name_str.into())
+        })
         .collect();
 
-    // For now, return as a string (temporary until we have proper list support)
-    Ok(Value::Str(names.join(", ").into()))
+    Ok(Value::List(names))
+}
+
+/// (select table "col1" "col2" ...) → Table with selected columns
+fn builtin_select(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() < 2 {
+        return Err(format!("select expects at least 2 arguments (table + column names), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+    let mut new_table = crate::value::Table::new();
+
+    // Select columns by name
+    for arg in &args[1..] {
+        let col_name = match arg {
+            Value::Str(s) => s.as_ref(),
+            _ => return Err("select: column names must be strings".to_string()),
+        };
+
+        // Find column by name
+        let col_sym = rt.interner.intern(col_name);
+        let col = table.get_column(col_sym)
+            .ok_or_else(|| format!("select: column '{}' not found", col_name))?;
+
+        new_table.add_column(col_sym, col.clone());
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
 }
 
 /// (select-num table) → Table with only F64 columns
@@ -825,6 +857,100 @@ fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
             new_table.add_column(*name, result_col);
         }
         // Skip Ts columns
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
+}
+
+/// (dlog-cols table lag) → Table
+/// Apply dlog with lag to each F64 column
+fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("dlog-cols expects 2 arguments (table lag), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+    let lag = args[1].as_int()? as usize;
+
+    let mut new_table = crate::value::Table::new();
+
+    // Apply dlog to each F64 column
+    for (name, col) in &table.columns {
+        match col {
+            blawktrust::Column::F64(_) => {
+                let col_arc = Arc::new(col.clone());
+                let result_col = dlog_column(&col_arc, lag);
+                new_table.add_column(*name, result_col);
+            }
+            blawktrust::Column::Ts(_) => {
+                // Keep Ts columns unchanged
+                new_table.add_column(*name, col.clone());
+            }
+        }
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
+}
+
+/// (shift-cols table n) → Table
+/// Apply shift with n to each F64 column
+fn builtin_shift_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("shift-cols expects 2 arguments (table n), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+    let n = args[1].as_int()?;
+
+    if n < 0 {
+        return Err("shift-cols with negative lag not yet implemented".to_string());
+    }
+
+    let mut new_table = crate::value::Table::new();
+
+    // Apply shift to each F64 column
+    for (name, col) in &table.columns {
+        match col {
+            blawktrust::Column::F64(_) => {
+                let result_col = shift_column(col, n as usize)?;
+                new_table.add_column(*name, result_col);
+            }
+            blawktrust::Column::Ts(_) => {
+                // Keep Ts columns unchanged
+                new_table.add_column(*name, col.clone());
+            }
+        }
+    }
+
+    Ok(Value::Table(Arc::new(new_table)))
+}
+
+/// (diff-cols table n) → Table
+/// Apply diff with n to each F64 column
+fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("diff-cols expects 2 arguments (table n), got {}", args.len()));
+    }
+
+    let table = args[0].as_table()?;
+    let n = args[1].as_int()? as usize;
+
+    let mut new_table = crate::value::Table::new();
+
+    // Apply diff to each F64 column
+    for (name, col) in &table.columns {
+        match col {
+            blawktrust::Column::F64(_) => {
+                // Compute: col - shift(col, n)
+                let shifted = shift_column(col, n)?;
+                let result_col = subtract_columns(col, &shifted)?;
+                new_table.add_column(*name, result_col);
+            }
+            blawktrust::Column::Ts(_) => {
+                // Keep Ts columns unchanged
+                new_table.add_column(*name, col.clone());
+            }
+        }
     }
 
     Ok(Value::Table(Arc::new(new_table)))

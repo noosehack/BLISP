@@ -222,6 +222,7 @@ pub enum Value {
     Float(f64),
     Str(Arc<str>),
     Sym(SymbolId),
+    List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
     Table(Arc<Table>),
 }
@@ -236,6 +237,7 @@ impl PartialEq for Value {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Sym(a), Value::Sym(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
             // Columns compare by pointer for now
             (Value::Col(a), Value::Col(b)) => Arc::ptr_eq(a, b),
             (Value::Table(a), Value::Table(b)) => Arc::ptr_eq(a, b),
@@ -254,6 +256,7 @@ impl Value {
             Value::Float(_) => "float",
             Value::Str(_) => "str",
             Value::Sym(_) => "sym",
+            Value::List(_) => "list",
             Value::Col(_) => "col",
             Value::Table(_) => "table",
         }
@@ -306,6 +309,12 @@ impl Value {
             Value::Float(f) => f.to_string(),
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
+            Value::List(items) => {
+                let item_strs: Vec<String> = items.iter()
+                    .map(|v| v.display(interner))
+                    .collect();
+                format!("({})", item_strs.join(" "))
+            }
             Value::Col(c) => display_column(c),
             Value::Table(t) => {
                 // For display(), we need to return a String, but use write_table_to internally
