@@ -31,6 +31,12 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("shift", builtin_shift);
     rt.register_builtin("diff", builtin_diff);
 
+    // Aggregations (kdb-style)
+    rt.register_builtin("sum", builtin_sum);
+    rt.register_builtin("sum0", builtin_sum0);
+    rt.register_builtin("mean", builtin_mean);
+    rt.register_builtin("mean0", builtin_mean0);
+
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
     rt.register_builtin("stdin", builtin_stdin);
@@ -504,6 +510,54 @@ fn builtin_len(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 }
 
 // ============================================================================
+// Aggregation Builtins (kdb-style)
+// ============================================================================
+
+/// (sum col) - Sum column values (propagates NaN)
+fn builtin_sum(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("sum expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let result = blawktrust::sum(&col);
+    Ok(Value::Float(result))
+}
+
+/// (sum0 col) - Sum column values (ignores NaN)
+fn builtin_sum0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("sum0 expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let result = blawktrust::sum0(&col);
+    Ok(Value::Float(result))
+}
+
+/// (mean col) - Mean of column values (propagates NaN)
+fn builtin_mean(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("mean expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let result = blawktrust::mean(&col);
+    Ok(Value::Float(result))
+}
+
+/// (mean0 col) - Mean of column values (ignores NaN)
+fn builtin_mean0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("mean0 expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let result = blawktrust::mean0(&col);
+    Ok(Value::Float(result))
+}
+
+// ============================================================================
 // Column Operation Helpers
 // ============================================================================
 
@@ -896,3 +950,59 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn test_sum_aggregation() {
+        let mut rt = Runtime::new();
+        
+        // Test sum without NaN
+        let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
+        let args = vec![Value::Col(Arc::new(col))];
+        let result = builtin_sum(&mut rt, &args).unwrap();
+        assert_eq!(result.as_float().unwrap(), 10.0);
+        
+        // Test sum with NaN (propagates)
+        let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
+        let args_na = vec![Value::Col(Arc::new(col_na))];
+        let result_na = builtin_sum(&mut rt, &args_na).unwrap();
+        assert!(result_na.as_float().unwrap().is_nan());
+    }
+
+    #[test]
+    fn test_sum0_aggregation() {
+        let mut rt = Runtime::new();
+        
+        // Test sum0 with NaN (ignores)
+        let col = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0, 4.0]);
+        let args = vec![Value::Col(Arc::new(col))];
+        let result = builtin_sum0(&mut rt, &args).unwrap();
+        assert_eq!(result.as_float().unwrap(), 8.0);
+    }
+
+    #[test]
+    fn test_mean_aggregation() {
+        let mut rt = Runtime::new();
+        
+        // Test mean without NaN
+        let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
+        let args = vec![Value::Col(Arc::new(col))];
+        let result = builtin_mean(&mut rt, &args).unwrap();
+        assert_eq!(result.as_float().unwrap(), 2.5);
+        
+        // Test mean with NaN (propagates)
+        let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
+        let args_na = vec![Value::Col(Arc::new(col_na))];
+        let result_na = builtin_mean(&mut rt, &args_na).unwrap();
+        assert!(result_na.as_float().unwrap().is_nan());
+    }
+
+    #[test]
+    fn test_mean0_aggregation() {
+        let mut rt = Runtime::new();
+        
+        // Test mean0 with NaN (ignores)
+        let col = blawktrust::Column::new_f64(vec![2.0, f64::NAN, 4.0, 6.0]);
+        let args = vec![Value::Col(Arc::new(col))];
+        let result = builtin_mean0(&mut rt, &args).unwrap();
+        assert_eq!(result.as_float().unwrap(), 4.0);
+    }
