@@ -1,0 +1,266 @@
+// NaN Behavior Tests - Policy v0.2
+//
+// These tests specify expected NaN handling for all operations.
+// Some operations not yet implemented - tests serve as specification.
+
+#[cfg(test)]
+mod nan_tests {
+    use std::sync::Arc;
+
+    // =========================================================================
+    // 1. Boundary NaN Tests (IMPLEMENTED)
+    // =========================================================================
+
+    #[test]
+    fn test_shift_boundary_nan() {
+        // shift(col, lag) produces NaN for first lag elements
+        let col = blawktrust::Column::new_f64(vec![10.0, 20.0, 30.0, 40.0]);
+
+        // lag=1: first element is NaN
+        let result = shift_column(&col, 1);
+        assert!(result.f64_data()[0].is_nan(), "shift(col,1)[0] must be NaN");
+        assert_eq!(result.f64_data()[1], 10.0);
+        assert_eq!(result.f64_data()[2], 20.0);
+
+        // lag=2: first two elements are NaN
+        let result = shift_column(&col, 2);
+        assert!(result.f64_data()[0].is_nan(), "shift(col,2)[0] must be NaN");
+        assert!(result.f64_data()[1].is_nan(), "shift(col,2)[1] must be NaN");
+        assert_eq!(result.f64_data()[2], 10.0);
+    }
+
+    #[test]
+    fn test_diff_boundary_nan() {
+        // diff(col, 1) produces NaN for first element
+        let col = blawktrust::Column::new_f64(vec![10.0, 12.0, 15.0, 13.0]);
+
+        let result = diff_column(&col, 1);
+        assert!(result.f64_data()[0].is_nan(), "diff(col,1)[0] must be NaN (boundary)");
+        assert_eq!(result.f64_data()[1], 2.0);   // 12-10
+        assert_eq!(result.f64_data()[2], 3.0);   // 15-12
+        assert_eq!(result.f64_data()[3], -2.0);  // 13-15
+    }
+
+    #[test]
+    fn test_dlog_boundary_nan() {
+        // dlog(col, 1) produces NaN for first element
+        let col = blawktrust::Column::new_f64(vec![100.0, 101.0, 102.0]);
+
+        let result = blawktrust::builtins::ops::dlog_column(&col, 1);
+        assert!(result.f64_data()[0].is_nan(), "dlog(col,1)[0] must be NaN (boundary)");
+
+        // Remaining elements are log returns
+        let expected_1 = (101.0_f64).ln() - (100.0_f64).ln();
+        assert!((result.f64_data()[1] - expected_1).abs() < 1e-10);
+    }
+
+    // =========================================================================
+    // 2. Arithmetic NaN Propagation Tests (IMPLEMENTED)
+    // =========================================================================
+
+    #[test]
+    fn test_arithmetic_propagates_nan() {
+        // Any arithmetic with NaN yields NaN
+        let col = blawktrust::Column::new_f64(vec![10.0, f64::NAN, 30.0]);
+
+        // Addition with scalar
+        let result = add_column_scalar(&col, 5.0);
+        assert_eq!(result.f64_data()[0], 15.0);
+        assert!(result.f64_data()[1].is_nan(), "NaN + 5 must be NaN");
+        assert_eq!(result.f64_data()[2], 35.0);
+
+        // Multiplication with scalar
+        let result = mul_column_scalar(&col, 2.0);
+        assert_eq!(result.f64_data()[0], 20.0);
+        assert!(result.f64_data()[1].is_nan(), "NaN * 2 must be NaN");
+        assert_eq!(result.f64_data()[2], 60.0);
+    }
+
+    // =========================================================================
+    // 3. Comparison Tests (NOT YET IMPLEMENTED - SPECIFICATION)
+    // =========================================================================
+
+    #[test]
+    #[ignore] // Not implemented yet
+    fn test_comparison_nan_is_false() {
+        // Policy: Comparisons with NaN return false
+        let col = blawktrust::Column::new_f64(vec![10.0, f64::NAN, 30.0, 40.0]);
+
+        // > comparison
+        let result = gt_column_scalar(&col, 20.0);
+        // Expected: [false, false, true, true]
+        //            ^^^^^  ^^^^^
+        //            10≤20  NaN>20 is false
+
+        assert_eq!(result.bool_data()[0], false); // 10 > 20 is false
+        assert_eq!(result.bool_data()[1], false); // NaN > 20 is false (!)
+        assert_eq!(result.bool_data()[2], true);  // 30 > 20 is true
+        assert_eq!(result.bool_data()[3], true);  // 40 > 20 is true
+    }
+
+    #[test]
+    #[ignore] // Not implemented yet
+    fn test_comparison_nan_equality() {
+        // NaN is not equal to itself!
+        assert!(!(f64::NAN == f64::NAN));
+        assert!(f64::NAN != f64::NAN);
+    }
+
+    // =========================================================================
+    // 4. Window Operations - SKIP NaN by Default (NOT YET IMPLEMENTED)
+    // =========================================================================
+
+    #[test]
+    #[ignore] // wstd not implemented yet
+    fn test_wstd_skips_nan() {
+        // Policy v0.2: Skip NaN by default, compute over valid observations
+        let col = blawktrust::Column::new_f64(vec![10.0, 20.0, f64::NAN, 40.0, 50.0]);
+
+        let result = wstd(&col, window=3, lag=0, ddof=1);
+
+        // Index 0,1: warm-up (need window=3)
+        assert!(result.f64_data()[0].is_nan(), "warm-up period");
+        assert!(result.f64_data()[1].is_nan(), "warm-up period");
+
+        // Index 2: window [10, 20, NaN] → valid=[10,20] → std(10,20)
+        assert!(!result.f64_data()[2].is_nan(),
+                "wstd must skip NaN and compute over [10,20]");
+
+        // Index 3: window [20, NaN, 40] → valid=[20,40] → std(20,40)
+        assert!(!result.f64_data()[3].is_nan(),
+                "wstd must skip NaN and compute over [20,40]");
+
+        // Index 4: window [NaN, 40, 50] → valid=[40,50] → std(40,50)
+        assert!(!result.f64_data()[4].is_nan(),
+                "wstd must skip NaN and compute over [40,50]");
+    }
+
+    #[test]
+    #[ignore] // wstd not implemented yet
+    fn test_wstd_insufficient_valid() {
+        // If window has <2 valid points (with ddof=1), output NaN
+        let col = blawktrust::Column::new_f64(vec![10.0, f64::NAN, f64::NAN, 40.0]);
+
+        let result = wstd(&col, window=3, lag=0, ddof=1);
+
+        // Index 2: window [10, NaN, NaN] → only 1 valid → insufficient
+        assert!(result.f64_data()[2].is_nan(),
+                "wstd needs >=2 valid for ddof=1, should output NaN");
+
+        // Index 3: window [NaN, NaN, 40] → only 1 valid → insufficient
+        assert!(result.f64_data()[3].is_nan(),
+                "wstd needs >=2 valid for ddof=1, should output NaN");
+    }
+
+    #[test]
+    #[ignore] // wzs not implemented yet
+    fn test_wzs_skips_nan() {
+        // wzs (windowed z-score) should also skip NaN
+        let col = blawktrust::Column::new_f64(vec![10.0, 20.0, f64::NAN, 40.0, 50.0, 60.0]);
+
+        let result = wzs(&col, window=3, lag=1);
+
+        // After warm-up, should compute z-scores over valid observations
+        // Example: index 3 uses window [10,20,NaN] → zscore based on [10,20]
+        // (Implementation will determine exact indices affected by lag)
+
+        // Key requirement: must not output NaN just because window contains NaN
+        // Only output NaN if insufficient valid observations
+    }
+
+    #[test]
+    #[ignore] // Simple aggregations not implemented yet
+    fn test_sum_skips_nan() {
+        // sum([10, NaN, 30, 40]) => 80 (sum of valid values)
+        let col = blawktrust::Column::new_f64(vec![10.0, f64::NAN, 30.0, 40.0]);
+
+        let result = sum(&col);
+        assert_eq!(result, 80.0, "sum must skip NaN");
+    }
+
+    #[test]
+    #[ignore] // Simple aggregations not implemented yet
+    fn test_sum_all_nan() {
+        // sum([NaN, NaN]) => NaN (no valid data)
+        let col = blawktrust::Column::new_f64(vec![f64::NAN, f64::NAN]);
+
+        let result = sum(&col);
+        assert!(result.is_nan(), "sum of all NaN must be NaN");
+    }
+
+    // =========================================================================
+    // 5. Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn test_lag_exceeds_length() {
+        // shift with lag >= n produces all NaN
+        let col = blawktrust::Column::new_f64(vec![10.0, 20.0, 30.0]);
+
+        let result = shift_column(&col, 5); // lag > length
+        assert!(result.f64_data()[0].is_nan());
+        assert!(result.f64_data()[1].is_nan());
+        assert!(result.f64_data()[2].is_nan());
+    }
+
+    #[test]
+    fn test_empty_column() {
+        let col = blawktrust::Column::new_f64(vec![]);
+
+        let result = shift_column(&col, 1);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_single_element_with_lag() {
+        let col = blawktrust::Column::new_f64(vec![10.0]);
+
+        let result = shift_column(&col, 1);
+        assert_eq!(result.len(), 1);
+        assert!(result.f64_data()[0].is_nan());
+    }
+}
+
+// Helper functions (would be in actual builtins.rs)
+fn shift_column(col: &blawktrust::Column, lag: usize) -> blawktrust::Column {
+    let data = col.f64_data();
+    let n = data.len();
+    let mut result = vec![f64::NAN; n];
+
+    for i in lag..n {
+        result[i] = data[i - lag];
+    }
+
+    blawktrust::Column::new_f64(result)
+}
+
+fn diff_column(col: &blawktrust::Column, lag: usize) -> blawktrust::Column {
+    let shifted = shift_column(col, lag);
+    let data = col.f64_data();
+    let shifted_data = shifted.f64_data();
+
+    let result: Vec<f64> = data.iter()
+        .zip(shifted_data.iter())
+        .map(|(a, b)| a - b)
+        .collect();
+
+    blawktrust::Column::new_f64(result)
+}
+
+fn add_column_scalar(col: &blawktrust::Column, scalar: f64) -> blawktrust::Column {
+    let data = col.f64_data();
+    let result: Vec<f64> = data.iter().map(|x| x + scalar).collect();
+    blawktrust::Column::new_f64(result)
+}
+
+fn mul_column_scalar(col: &blawktrust::Column, scalar: f64) -> blawktrust::Column {
+    let data = col.f64_data();
+    let result: Vec<f64> = data.iter().map(|x| x * scalar).collect();
+    blawktrust::Column::new_f64(result)
+}
+
+// Placeholder signatures for future operations
+// fn wstd(col: &blawktrust::Column, window: usize, lag: usize, ddof: usize) -> blawktrust::Column { unimplemented!() }
+// fn wzs(col: &blawktrust::Column, window: usize, lag: usize) -> blawktrust::Column { unimplemented!() }
+// fn sum(col: &blawktrust::Column) -> f64 { unimplemented!() }
+// fn gt_column_scalar(col: &blawktrust::Column, threshold: f64) -> blawktrust::Column { unimplemented!() }

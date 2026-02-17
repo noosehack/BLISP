@@ -1,0 +1,11 @@
+(progn
+  (defparameter test-col (make-col 10.0 12.0 15.0))
+  (defparameter diff-result (diff test-col 1))
+  (defparameter shift-result (shift test-col 1))
+  (defparameter dlog-result (dlog test-col 1))
+  (print "diff result:")
+  (print diff-result)
+  (print "shift result:")
+  (print shift-result)
+  (print "dlog result:")
+  (print dlog-result))
