@@ -1,0 +1,7 @@
+(defparameter data (file "test_with_dates.csv"))
+(print "Loaded table:")
+(print data)
+(print "Date column:")
+(print (col data 'date))
+(print "Price column:")
+(print (col data 'price))

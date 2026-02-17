@@ -5,6 +5,143 @@
 use crate::ast::SymbolId;
 use std::sync::Arc;
 
+/// Convert days since Unix epoch to YYYY-MM-DD string
+fn days_to_date(days: i64) -> String {
+    if days == blawktrust::NULL_TS {
+        return "NA".to_string();
+    }
+
+    // Unix epoch: 1970-01-01
+    // Simple algorithm: approximate year, then calculate exact date
+    let mut remaining = days;
+    let mut year = 1970;
+
+    // Handle negative days (before 1970)
+    if remaining < 0 {
+        // Each year before 1970 has roughly 365.25 days
+        let years_back = (-remaining / 366) + 1;
+        year -= years_back;
+        // Account for leap years approximately
+        remaining += years_back * 365 + (years_back / 4);
+    }
+
+    // Find the year
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+
+    // Find month and day
+    let days_in_months = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1;
+    let mut day = remaining + 1; // Days are 1-indexed
+
+    for &days_in_month in &days_in_months {
+        if day <= days_in_month {
+            break;
+        }
+        day -= days_in_month;
+        month += 1;
+    }
+
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// Display a column with proper formatting
+fn display_column(col: &blawktrust::Column) -> String {
+    const MAX_SHOW: usize = 12; // Show first 10, last 2 if large
+
+    match col {
+        blawktrust::Column::F64(data) => {
+            let len = data.len();
+            if len == 0 {
+                return "F64[]".to_string();
+            }
+
+            let mut parts = vec!["F64[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    if val.is_nan() {
+                        parts.push("NA".to_string());
+                    } else {
+                        parts.push(format!("{}", val));
+                    }
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    let val = data[i];
+                    if val.is_nan() {
+                        parts.push("NA".to_string());
+                    } else {
+                        parts.push(format!("{}", val));
+                    }
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    let val = data[i];
+                    if val.is_nan() {
+                        parts.push("NA".to_string());
+                    } else {
+                        parts.push(format!("{}", val));
+                    }
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
+        blawktrust::Column::Ts(data) => {
+            let len = data.len();
+            if len == 0 {
+                return "Ts[]".to_string();
+            }
+
+            let mut parts = vec!["Ts[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    parts.push(days_to_date(val));
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    parts.push(days_to_date(data[i]));
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    parts.push(days_to_date(data[i]));
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
+    }
+}
+
 /// Table: columnar data structure
 #[derive(Debug, Clone)]
 pub struct Table {
@@ -105,7 +242,7 @@ impl Value {
             Value::Float(f) => f.to_string(),
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
-            Value::Col(c) => format!("Col[{} elements]", c.len()),
+            Value::Col(c) => display_column(c),
             Value::Table(t) => format!("Table[{} rows × {} cols]", t.row_count, t.columns.len()),
         }
     }
@@ -232,7 +369,7 @@ mod tests {
 
         let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0]);
         let val = Value::Col(Arc::new(col));
-        assert_eq!(val.display(&interner), "Col[3 elements]");
+        assert_eq!(val.display(&interner), "F64[1, 2, 3] (n=3)");
 
         let table = Table::new();
         let val = Value::Table(Arc::new(table));
