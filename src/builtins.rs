@@ -84,6 +84,10 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("==", builtin_eq);
     rt.register_builtin("!=", builtin_neq);
 
+    // GLD_NUM Tier 2: Shape/Null Operations
+    rt.register_builtin("locf", builtin_locf);
+    rt.register_builtin("keep-shape", builtin_keep_shape);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
@@ -498,6 +502,84 @@ fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         }
 
         _ => Err(format!("!= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+// ============================================================================
+// GLD_NUM Tier 2: Shape and Null Handling
+// ============================================================================
+
+/// (locf col) - Last observation carried forward (forward fill)
+///
+/// Propagates non-NA values forward to fill NA gaps.
+/// First value if NA remains NA.
+///
+/// Example:
+///   [1.0, NA, NA, 2.0, NA] → [1.0, 1.0, 1.0, 2.0, 2.0]
+///   [NA, 1.0, NA, 2.0]     → [NA, 1.0, 1.0, 2.0]
+fn builtin_locf(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("locf expects 1 argument (column), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid = f64::NAN;
+
+            for &val in data {
+                if !val.is_nan() {
+                    last_valid = val;
+                    result.push(val);
+                } else {
+                    result.push(last_valid);
+                }
+            }
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("locf only supported for F64 columns".to_string()),
+    }
+}
+
+/// (keep-shape col k) - Keep every kth value, others become NA
+///
+/// Shape-preserving downsample: keeps values at indices 0, k, 2k, ...
+/// All other positions become NA (ready for locf to propagate).
+///
+/// Example:
+///   (keep-shape [10 11 12 13 14 15] 3) → [10 NA NA 13 NA NA]
+///
+/// Used in wzs macro: (wzs data window step) = (locf (keep-shape (wz0 data window) step))
+fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("keep-shape expects 2 arguments (col k), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let k = args[1].as_int()? as usize;
+
+    if k == 0 {
+        return Err("keep-shape: k must be > 0".to_string());
+    }
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let result: Vec<f64> = data.iter().enumerate()
+                .map(|(i, &val)| {
+                    if i % k == 0 {
+                        val
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("keep-shape only supported for F64 columns".to_string()),
     }
 }
 
