@@ -1242,11 +1242,23 @@ fn builtin_save(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         _ => return Err(format!("save expects string filename, got {}", args[0].type_name())),
     };
 
-    let table = args[1].as_table()?;
-
-    crate::io::save_csv(filename, &table, &rt.interner)?;
-
-    Ok(Value::Nil)
+    match &args[1] {
+        Value::TableView(tv) => {
+            // Convert TableView to blisp Table for save_csv
+            let mut table = crate::value::Table::new();
+            for (i, name) in tv.table.names.iter().enumerate() {
+                let sym = rt.interner.intern(name);
+                table.add_column(sym, tv.table.columns[i].clone());
+            }
+            crate::io::save_csv(filename, &table, &rt.interner)?;
+            Ok(Value::Nil)
+        }
+        Value::Table(t) => {
+            crate::io::save_csv(filename, t, &rt.interner)?;
+            Ok(Value::Nil)
+        }
+        _ => Err(format!("save expects table or tableview, got {}", args[1].type_name())),
+    }
 }
 
 /// (col table 'colname) - Extract column from table by name
