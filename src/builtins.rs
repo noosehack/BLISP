@@ -76,6 +76,14 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("shift-cols", builtin_shift_cols);
     rt.register_builtin("diff-cols", builtin_diff_cols);
 
+    // Comparison Operations (GLD_NUM Tier 1)
+    rt.register_builtin(">", builtin_gt);
+    rt.register_builtin("<", builtin_lt);
+    rt.register_builtin(">=", builtin_gte);
+    rt.register_builtin("<=", builtin_lte);
+    rt.register_builtin("==", builtin_eq);
+    rt.register_builtin("!=", builtin_neq);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
@@ -299,6 +307,197 @@ fn builtin_abs(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
         _ => Err(format!("abs cannot operate on {}", args[0].type_name())),
+    }
+}
+
+// ============================================================================
+// Comparison Operations (GLD_NUM Tier 1)
+// ============================================================================
+
+/// (> a b) - Greater than comparison
+///
+/// Returns:
+/// - Column: 1.0 where a > b, 0.0 otherwise, NA where either is NA
+/// - Scalar: boolean as 1.0/0.0
+fn builtin_gt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("> expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        // Scalar > Scalar
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a > b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a > b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) > *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a > &(*b as f64) { 1.0 } else { 0.0 })),
+
+        // Col > Scalar
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a > b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a > b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        // Col > Col
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x > y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!("> cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (< a b) - Less than comparison
+fn builtin_lt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("< expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a < b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a < b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) < *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a < &(*b as f64) { 1.0 } else { 0.0 })),
+
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a < b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a < b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x < y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!("< cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (>= a b) - Greater than or equal
+fn builtin_gte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(">= expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a >= b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a >= b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) >= *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a >= &(*b as f64) { 1.0 } else { 0.0 })),
+
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a >= b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a >= b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x >= y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!(">= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (<= a b) - Less than or equal
+fn builtin_lte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("<= expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a <= b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a <= b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) <= *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a <= &(*b as f64) { 1.0 } else { 0.0 })),
+
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a <= b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a <= b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x <= y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!("<= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (== a b) - Equal comparison
+fn builtin_eq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("== expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a == b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a == b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) == *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a == &(*b as f64) { 1.0 } else { 0.0 })),
+
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a == b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a == b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x == y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!("== cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (!= a b) - Not equal comparison
+fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("!= expects 2 arguments, got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a != b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a != b { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) != *b { 1.0 } else { 0.0 })),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a != &(*b as f64) { 1.0 } else { 0.0 })),
+
+        (Value::Col(col), Value::Int(n)) => {
+            let result = compare_column_scalar(col, *n as f64, |a, b| a != b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        (Value::Col(col), Value::Float(f)) => {
+            let result = compare_column_scalar(col, *f, |a, b| a != b)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        (Value::Col(a), Value::Col(b)) => {
+            let result = compare_columns(a, b, |x, y| x != y)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        _ => Err(format!("!= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
     }
 }
 
@@ -806,6 +1005,62 @@ fn abs_column(col: &blawktrust::Column) -> Result<blawktrust::Column, String> {
             Ok(blawktrust::Column::new_f64(result))
         }
         _ => Err("Column abs only supported for F64 columns".to_string()),
+    }
+}
+
+/// Compare column elements with scalar using given comparison function
+///
+/// Returns 1.0 where comparison is true, 0.0 where false, NA where col is NA
+fn compare_column_scalar<F>(col: &blawktrust::Column, scalar: f64, cmp: F) -> Result<blawktrust::Column, String>
+where
+    F: Fn(f64, f64) -> bool,
+{
+    match col {
+        blawktrust::Column::F64(data) => {
+            let result: Vec<f64> = data.iter()
+                .map(|&x| {
+                    if x.is_nan() {
+                        f64::NAN
+                    } else if cmp(x, scalar) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Comparison only supported for F64 columns".to_string()),
+    }
+}
+
+/// Compare two columns element-wise using given comparison function
+///
+/// Returns 1.0 where comparison is true, 0.0 where false, NA if either element is NA
+fn compare_columns<F>(a: &blawktrust::Column, b: &blawktrust::Column, cmp: F) -> Result<blawktrust::Column, String>
+where
+    F: Fn(f64, f64) -> bool,
+{
+    if a.len() != b.len() {
+        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+    }
+
+    match (a, b) {
+        (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
+            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+                .map(|(&x, &y)| {
+                    if x.is_nan() || y.is_nan() {
+                        f64::NAN
+                    } else if cmp(x, y) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Comparison only supported for F64 columns".to_string()),
     }
 }
 
