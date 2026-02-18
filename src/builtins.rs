@@ -1086,7 +1086,8 @@ fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     }
                 }
 
-                if count > 1 {
+                // Require we're at least 'window' rows into the data before producing z-score
+                if i >= window && count > 1 {
                     let mean = sum / count as f64;
                     let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
 
@@ -1141,7 +1142,8 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
                                 }
                             }
 
-                            if count > 1 {
+                            // Require we're at least 'window' rows into the data before producing z-score
+                            if i >= window && count > 1 {
                                 let mean = sum / count as f64;
                                 let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
 
