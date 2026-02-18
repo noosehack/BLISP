@@ -855,7 +855,8 @@ fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             for &val in data {
                 if val.is_nan() {
-                    result.push(f64::NAN);
+                    // Carry forward last cumsum (like locf), don't output NaN
+                    result.push(sum);
                 } else {
                     sum += val;
                     result.push(sum);
@@ -886,7 +887,8 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
                         for &val in data {
                             if val.is_nan() {
-                                result.push(f64::NAN);
+                                // Carry forward last cumsum (like locf), don't output NaN
+                                result.push(sum);
                             } else {
                                 sum += val;
                                 result.push(sum);
