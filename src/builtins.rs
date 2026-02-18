@@ -1011,8 +1011,8 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let scale = 100.0 * (252.0_f64).sqrt();
 
             for i in 0..n {
-                let start = if i + 1 >= window { i + 1 - window } else { 0 };
-                let end = i + 1;
+                let start = if i >= window { i - window } else { 0 };
+                let end = i;  // EXCLUDE current value (Ft-measurable: use only past)
 
                 // Calculate rolling stddev using incremental formula
                 let mut sum = 0.0;
@@ -1071,31 +1071,36 @@ fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let mut result = vec![f64::NAN; n];
 
             for i in 0..n {
-                let start = if i + 1 >= window { i + 1 - window } else { 0 };
-                let end = i + 1;
+                // Match clispi: use window [i-window, i) excluding current value
+                // Then store z-score at position i+1 (one position later)
+                // Use sample variance (ddof=1, Bessel's correction)
+                if i >= window && i + 1 < n {
+                    let start = i - window;
+                    let end = i;
 
-                // Calculate rolling mean and stddev
-                let mut sum = 0.0;
-                let mut sum_sq = 0.0;
-                let mut count = 0;
+                    // Calculate rolling mean and stddev
+                    let mut sum = 0.0;
+                    let mut sum_sq = 0.0;
+                    let mut count = 0;
 
-                for j in start..end {
-                    let val = data[j];
-                    if !val.is_nan() {
-                        sum += val;
-                        sum_sq += val * val;
-                        count += 1;
+                    for j in start..end {
+                        let val = data[j];
+                        if !val.is_nan() {
+                            sum += val;
+                            sum_sq += val * val;
+                            count += 1;
+                        }
                     }
-                }
 
-                // Require we're at least 'window' rows into the data before producing z-score
-                if i >= window && count > 1 {
-                    let mean = sum / count as f64;
-                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                    if count > 1 {
+                        let mean = sum / count as f64;
+                        // Use sample variance (ddof=1) to match clispi
+                        let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
 
-                    if variance > 0.0 && !data[i].is_nan() {
-                        let stddev = variance.sqrt();
-                        result[i] = (data[i] - mean) / stddev;
+                        if variance > 0.0 && !data[i].is_nan() {
+                            let stddev = variance.sqrt();
+                            result[i + 1] = (data[i] - mean) / stddev;
+                        }
                     }
                 }
             }
@@ -1128,30 +1133,34 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
                         let mut result = vec![f64::NAN; n];
 
                         for i in 0..n {
-                            let start = if i + 1 >= window { i + 1 - window } else { 0 };
-                            let end = i + 1;
+                            // Match clispi: use window [i-window, i) excluding current value
+                            // Then store z-score at position i+1 (one position later)
+                            // Use sample variance (ddof=1, Bessel's correction)
+                            if i >= window && i + 1 < n {
+                                let start = i - window;
+                                let end = i;
 
-                            let mut sum = 0.0;
-                            let mut sum_sq = 0.0;
-                            let mut count = 0;
+                                let mut sum = 0.0;
+                                let mut sum_sq = 0.0;
+                                let mut count = 0;
 
-                            for j in start..end {
-                                let val = data[j];
-                                if !val.is_nan() {
-                                    sum += val;
-                                    sum_sq += val * val;
-                                    count += 1;
+                                for j in start..end {
+                                    let val = data[j];
+                                    if !val.is_nan() {
+                                        sum += val;
+                                        sum_sq += val * val;
+                                        count += 1;
+                                    }
                                 }
-                            }
 
-                            // Require we're at least 'window' rows into the data before producing z-score
-                            if i >= window && count > 1 {
-                                let mean = sum / count as f64;
-                                let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                                if count > 1 {
+                                    let mean = sum / count as f64;
+                                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
 
-                                if variance > 0.0 && !data[i].is_nan() {
-                                    let stddev = variance.sqrt();
-                                    result[i] = (data[i] - mean) / stddev;
+                                    if variance > 0.0 && !data[i].is_nan() {
+                                        let stddev = variance.sqrt();
+                                        result[i] = (data[i] - mean) / stddev;
+                                    }
                                 }
                             }
                         }
