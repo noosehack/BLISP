@@ -10,6 +10,24 @@ use std::sync::Arc;
 // Import blawktrust's optimized dlog kernel for Step 6
 use blawktrust::builtins::ops::dlog_column;
 
+/// Convert Table to TableView automatically
+fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView>, String> {
+    match v {
+        Value::TableView(tv) => Ok(Arc::clone(tv)),
+        Value::Table(t) => {
+            let mut names = Vec::new();
+            let mut columns = Vec::new();
+            for (sym, col) in &t.columns {
+                names.push(rt.interner.resolve(*sym).to_string());
+                columns.push(col.clone());
+            }
+            let bt = blawktrust::Table::new(names, columns);
+            Ok(Arc::new(blawktrust::TableView::new(bt)))
+        }
+        _ => Err(format!("Expected table, got {}", v.type_name())),
+    }
+}
+
 /// Builtin function signature
 pub type BuiltinFn = fn(&mut Runtime, &[Value]) -> Result<Value, String>;
 

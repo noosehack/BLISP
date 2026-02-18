@@ -5,59 +5,52 @@
 use crate::ast::SymbolId;
 use std::sync::Arc;
 
-/// Convert days since Unix epoch to YYYY-MM-DD string
-fn days_to_date(days: i64) -> String {
-    if days == blawktrust::NULL_TS {
+/// Convert days since epoch to YYYY-MM-DD (Howard Hinnant algorithm)
+fn format_date(days: i32) -> String {
+    if days == blawktrust::NULL_DATE {
         return "NA".to_string();
     }
 
-    // Unix epoch: 1970-01-01
-    // Simple algorithm: approximate year, then calculate exact date
-    let mut remaining = days;
-    let mut year = 1970;
+    // Howard Hinnant's inverse algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i32 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
 
-    // Handle negative days (before 1970)
-    if remaining < 0 {
-        // Each year before 1970 has roughly 365.25 days
-        let years_back = (-remaining / 366) + 1;
-        year -= years_back;
-        // Account for leap years approximately
-        remaining += years_back * 365 + (years_back / 4);
-    }
-
-    // Find the year
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        year += 1;
-    }
-
-    // Find month and day
-    let days_in_months = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    let mut day = remaining + 1; // Days are 1-indexed
-
-    for &days_in_month in &days_in_months {
-        if day <= days_in_month {
-            break;
-        }
-        day -= days_in_month;
-        month += 1;
-    }
-
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    format!("{:04}-{:02}-{:02}", year, m, d)
 }
 
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+/// Format nanoseconds as YYYY-MM-DD HH:MM:SS[.fffffffff]
+fn format_timestamp(nanos: i64) -> String {
+    if nanos == blawktrust::NULL_TIMESTAMP {
+        return "NA".to_string();
+    }
+
+    let total_seconds = nanos / 1_000_000_000;
+    let frac_nanos = nanos % 1_000_000_000;
+
+    let days = total_seconds / 86400;
+    let remaining_secs = total_seconds % 86400;
+
+    let hour = remaining_secs / 3600;
+    let minute = (remaining_secs % 3600) / 60;
+    let second = remaining_secs % 60;
+
+    let date_str = format_date(days as i32);
+
+    if frac_nanos == 0 {
+        format!("{} {:02}:{:02}:{:02}", date_str, hour, minute, second)
+    } else {
+        let frac_str = format!("{:09}", frac_nanos);
+        let trimmed = frac_str.trim_end_matches('0');
+        format!("{} {:02}:{:02}:{:02}.{}", date_str, hour, minute, second, trimmed)
+    }
 }
 
 /// Display a column with proper formatting
@@ -109,30 +102,60 @@ fn display_column(col: &blawktrust::Column) -> String {
             parts.push(format!("] (n={})", len));
             parts.concat()
         }
-        blawktrust::Column::Ts(data) => {
+        blawktrust::Column::Date(data) => {
             let len = data.len();
             if len == 0 {
-                return "Ts[]".to_string();
+                return "Date[]".to_string();
             }
 
-            let mut parts = vec!["Ts[".to_string()];
+            let mut parts = vec!["Date[".to_string()];
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
                     if i > 0 { parts.push(", ".to_string()); }
-                    parts.push(days_to_date(val));
+                    parts.push(format_date(val));
                 }
             } else {
                 // Show first 10
                 for i in 0..10 {
                     if i > 0 { parts.push(", ".to_string()); }
-                    parts.push(days_to_date(data[i]));
+                    parts.push(format_date(data[i]));
                 }
                 parts.push(", ...".to_string());
                 // Show last 2
                 for i in (len - 2)..len {
                     parts.push(", ".to_string());
-                    parts.push(days_to_date(data[i]));
+                    parts.push(format_date(data[i]));
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
+        blawktrust::Column::Timestamp(data) => {
+            let len = data.len();
+            if len == 0 {
+                return "Timestamp[]".to_string();
+            }
+
+            let mut parts = vec!["Timestamp[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    parts.push(format_timestamp(val));
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 { parts.push(", ".to_string()); }
+                    parts.push(format_timestamp(data[i]));
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    parts.push(format_timestamp(data[i]));
                 }
             }
 
@@ -186,9 +209,16 @@ pub fn write_table_to<W: std::io::Write>(
                         write!(writer, "?")?;
                     }
                 }
-                blawktrust::Column::Ts(data) => {
+                blawktrust::Column::Date(data) => {
                     if row_idx < data.len() {
-                        write!(writer, "{}", days_to_date(data[row_idx]))?;
+                        write!(writer, "{}", format_date(data[row_idx]))?;
+                    } else {
+                        write!(writer, "?")?;
+                    }
+                }
+                blawktrust::Column::Timestamp(data) => {
+                    if row_idx < data.len() {
+                        write!(writer, "{}", format_timestamp(data[row_idx]))?;
                     } else {
                         write!(writer, "?")?;
                     }
@@ -225,6 +255,7 @@ pub enum Value {
     List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
     Table(Arc<Table>),
+    TableView(Arc<blawktrust::TableView>),
 }
 
 // Manual PartialEq because Column doesn't implement it
@@ -241,6 +272,7 @@ impl PartialEq for Value {
             // Columns compare by pointer for now
             (Value::Col(a), Value::Col(b)) => Arc::ptr_eq(a, b),
             (Value::Table(a), Value::Table(b)) => Arc::ptr_eq(a, b),
+            (Value::TableView(a), Value::TableView(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -259,6 +291,7 @@ impl Value {
             Value::List(_) => "list",
             Value::Col(_) => "col",
             Value::Table(_) => "table",
+            Value::TableView(_) => "tableview",
         }
     }
 
@@ -300,6 +333,14 @@ impl Value {
         }
     }
 
+    /// Extract as tableview
+    pub fn as_tableview(&self) -> Result<Arc<blawktrust::TableView>, String> {
+        match self {
+            Value::TableView(tv) => Ok(Arc::clone(tv)),
+            _ => Err(format!("Expected tableview, got {}", self.type_name())),
+        }
+    }
+
     /// Pretty-print value
     pub fn display(&self, interner: &crate::ast::Interner) -> String {
         match self {
@@ -325,6 +366,18 @@ impl Value {
                 } else {
                     format!("Table[{} rows × {} cols]", t.row_count, t.columns.len())
                 }
+            }
+            Value::TableView(tv) => {
+                // Show orientation and shape
+                let (nr, nc) = tv.logical_shape();
+                let ori_name = match tv.ori {
+                    blawktrust::ORI_H => "H",
+                    blawktrust::ORI_Z => "Z",
+                    blawktrust::ORI_X => "X",
+                    blawktrust::ORI_R => "R",
+                    _ => "?",
+                };
+                format!("TableView[ori={}, shape={}×{}]", ori_name, nr, nc)
             }
         }
     }
