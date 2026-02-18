@@ -83,7 +83,8 @@ pub fn load_csv_cols(filename: &str, col_names: &[String], interner: &mut Intern
 
     if sample_rows.is_empty() {
         // Empty CSV - return empty table with selected columns
-        return Ok(Value::Table(Arc::new(Table::new())));
+        let empty_bt = blawktrust::Table::new(vec![], vec![]);
+        return Ok(Value::TableView(Arc::new(blawktrust::TableView::new(empty_bt))));
     }
 
     // Detect types for selected columns only
@@ -185,7 +186,12 @@ pub fn load_csv_cols(filename: &str, col_names: &[String], interner: &mut Intern
         table.add_column(sym_id, column);
     }
 
-    Ok(Value::Table(Arc::new(table)))
+    // Wrap in TableView for TableView-only runtime
+    let bt = blawktrust::Table::new(
+        table.columns.iter().map(|(sym_id, _)| interner.resolve(*sym_id).to_string()).collect(),
+        table.columns.iter().map(|(_, col)| col.clone()).collect()
+    );
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(bt))))
 }
 
 /// Read CSV from stdin into a Table
@@ -257,7 +263,8 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
 
     if sample_rows.is_empty() {
         // Empty CSV
-        return Ok(Value::Table(Arc::new(Table::new())));
+        let empty_bt = blawktrust::Table::new(vec![], vec![]);
+        return Ok(Value::TableView(Arc::new(blawktrust::TableView::new(empty_bt))));
     }
 
     // Detect types by checking first K rows, skipping NA/empty values
@@ -359,7 +366,12 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
         table.add_column(sym, col);
     }
 
-    Ok(Value::Table(Arc::new(table)))
+    // Wrap in TableView for TableView-only runtime
+    let bt = blawktrust::Table::new(
+        table.columns.iter().map(|(sym_id, _)| interner.resolve(*sym_id).to_string()).collect(),
+        table.columns.iter().map(|(_, col)| col.clone()).collect()
+    );
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(bt))))
 }
 
 /// Column type detected from CSV
