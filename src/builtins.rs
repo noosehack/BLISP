@@ -88,6 +88,11 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("locf", builtin_locf);
     rt.register_builtin("keep-shape", builtin_keep_shape);
 
+    // GLD_NUM Tier 3: Table Transforms
+    rt.register_builtin("w5", builtin_w5);
+    rt.register_builtin("xminus", builtin_xminus);
+    rt.register_builtin("cs1", builtin_cs1);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
@@ -580,6 +585,140 @@ fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
         }
         _ => Err("keep-shape only supported for F64 columns".to_string()),
+    }
+}
+
+// ============================================================================
+// GLD_NUM Tier 3: Table Transforms
+// ============================================================================
+
+/// (w5 table) - Filter table to weekdays only (keep rows where date column is Mon-Fri)
+///
+/// Uses kdb idiom: (date + 5) % 7 > 1
+/// - Epoch (1970-01-01) is Thursday
+/// - Adding 5 shifts Thursday→0, so weekdays (Mon-Fri) map to 2-6
+/// - Modulo 7 then > 1 selects weekdays
+///
+/// Assumes first column is Date type with days since epoch.
+fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("w5 expects 1 argument (table), got {}", args.len()));
+    }
+
+    let tv = ensure_tableview(&args[0], rt)?;
+
+    if tv.table.columns.is_empty() {
+        return Err("w5: table has no columns".to_string());
+    }
+
+    // Get first column (should be Date)
+    let date_col = &tv.table.columns[0];
+
+    let date_data = match date_col {
+        blawktrust::Column::Date(data) => data,
+        _ => return Err("w5: first column must be Date type".to_string()),
+    };
+
+    // Build mask: (date + 5) % 7 > 1 (weekdays)
+    let mask: Vec<bool> = date_data.iter()
+        .map(|&days| {
+            if days == blawktrust::NULL_DATE {
+                false // Exclude NULL dates
+            } else {
+                let dow = (days + 5).rem_euclid(7);
+                dow > 1
+            }
+        })
+        .collect();
+
+    // Filter all columns
+    let new_names: Vec<String> = tv.table.names.clone();
+    let new_columns: Vec<blawktrust::Column> = tv.table.columns.iter()
+        .map(|col| filter_column(col, &mask))
+        .collect();
+
+    let new_table = blawktrust::Table::new(new_names, new_columns);
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_table))))
+}
+
+/// (xminus table half) - Pairwise spreads (A - B for all pairs of columns)
+///
+/// If half=1, computes all pairs in first half minus second half:
+///   Columns [A, B, C, D] with half=1 → [A-C, A-D, B-C, B-D]
+///
+/// Column naming: "A\B" means A minus B
+fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("xminus expects 2 arguments (table half), got {}", args.len()));
+    }
+
+    let tv = ensure_tableview(&args[0], rt)?;
+    let half = args[1].as_int()? as usize;
+
+    if half != 1 {
+        return Err("xminus: only half=1 currently supported".to_string());
+    }
+
+    let ncols = tv.table.columns.len();
+    if ncols % 2 != 0 {
+        return Err(format!("xminus: expected even number of columns, got {}", ncols));
+    }
+
+    let mid = ncols / 2;
+    let mut new_names = Vec::new();
+    let mut new_columns = Vec::new();
+
+    // Compute all pairs: first_half - second_half
+    for i in 0..mid {
+        for j in mid..ncols {
+            let col_a = &tv.table.columns[i];
+            let col_b = &tv.table.columns[j];
+
+            // Compute A - B
+            let result_col = subtract_columns_pair(col_a, col_b)?;
+
+            // Name: A\B
+            let name = format!("{}\\{}", tv.table.names[i], tv.table.names[j]);
+            new_names.push(name);
+            new_columns.push(result_col);
+        }
+    }
+
+    let new_table = blawktrust::Table::new(new_names, new_columns);
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_table))))
+}
+
+/// (cs1 col) - Cumulative sum starting from 1.0
+///
+/// Converts differences/returns to levels starting at 1.0:
+///   diffs = [0.01, -0.02, 0.03]
+///   cs1   = [1.01, 0.99, 1.02]
+///
+/// Formula: result[i] = 1.0 + sum(diffs[0..=i])
+fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("cs1 expects 1 argument (column), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut sum = 1.0;
+
+            for &val in data {
+                if val.is_nan() {
+                    result.push(f64::NAN);
+                } else {
+                    sum += val;
+                    result.push(sum);
+                }
+            }
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("cs1 only supported for F64 columns".to_string()),
     }
 }
 
@@ -1143,6 +1282,47 @@ where
             Ok(blawktrust::Column::new_f64(result))
         }
         _ => Err("Comparison only supported for F64 columns".to_string()),
+    }
+}
+
+/// Filter column by boolean mask (keep only true indices)
+fn filter_column(col: &blawktrust::Column, mask: &[bool]) -> blawktrust::Column {
+    match col {
+        blawktrust::Column::F64(data) => {
+            let filtered: Vec<f64> = data.iter().zip(mask.iter())
+                .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
+                .collect();
+            blawktrust::Column::new_f64(filtered)
+        }
+        blawktrust::Column::Date(data) => {
+            let filtered: Vec<i32> = data.iter().zip(mask.iter())
+                .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
+                .collect();
+            blawktrust::Column::new_date(filtered)
+        }
+        blawktrust::Column::Timestamp(data) => {
+            let filtered: Vec<i64> = data.iter().zip(mask.iter())
+                .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
+                .collect();
+            blawktrust::Column::new_timestamp(filtered)
+        }
+    }
+}
+
+/// Subtract two columns element-wise (A - B)
+fn subtract_columns_pair(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+    if a.len() != b.len() {
+        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+    }
+
+    match (a, b) {
+        (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
+            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+                .map(|(x, y)| x - y)
+                .collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Column subtraction only supported for F64 columns".to_string()),
     }
 }
 
