@@ -909,20 +909,23 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
 // ============================================================================
 
-/// (mapr target source) - LEFT JOIN: map source values to target row names
+/// (mapr target source) - Map target data to source row structure
 ///
-/// Joins tables by first column (row names/keys).
-/// - Target order preserved
+/// Reshapes target to have the same rows as source (INNER JOIN semantics).
+/// - Result has source's row structure (dates/keys)
+/// - Target data columns mapped to source rows
 /// - O(1) lookup using HashMap
-/// - Returns target's first column + source's data columns
+///
+/// Semantics: "Give me target's data, but only for rows that exist in source"
 ///
 /// Example:
-///   target: [date: 2024-01-01, 2024-01-02, 2024-01-03]
+///   target: [date: 2024-01-01, price: 100]
+///           [date: 2024-01-02, price: 101]
+///           [date: 2024-01-03, price: 102]
 ///   source: [date: 2024-01-01, signal: 1.5]
 ///           [date: 2024-01-03, signal: 2.1]
-///   result: [date: 2024-01-01, signal: 1.5]
-///           [date: 2024-01-02, signal: NA]
-///           [date: 2024-01-03, signal: 2.1]
+///   result: [date: 2024-01-01, price: 100]
+///           [date: 2024-01-03, price: 102]
 fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
         return Err(format!("mapr expects 2 arguments (target source), got {}", args.len()));
@@ -935,12 +938,12 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         return Err("mapr: both tables must have at least one column".to_string());
     }
 
-    // Build HashMap from source first column (keys) to row indices
-    let source_keys = &source.table.columns[0];
+    // Build HashMap from target first column (keys) to row indices
+    let target_keys = &target.table.columns[0];
     use std::collections::HashMap;
     let mut key_map: HashMap<String, usize> = HashMap::new();
 
-    match source_keys {
+    match target_keys {
         blawktrust::Column::Date(data) => {
             for (i, &key) in data.iter().enumerate() {
                 key_map.insert(key.to_string(), i);
@@ -954,18 +957,18 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         _ => return Err("mapr: first column must be Date or F64".to_string()),
     }
 
-    // Prepare result columns
-    let mut result_names = vec![target.table.names[0].clone()];
-    let mut result_columns = vec![target.table.columns[0].clone()];
+    // Prepare result columns (use source's first column as row keys)
+    let mut result_names = vec![source.table.names[0].clone()];
+    let mut result_columns = vec![source.table.columns[0].clone()];
 
-    // For each source data column (skip first, it's the key)
-    for j in 1..source.table.columns.len() {
-        let source_col = &source.table.columns[j];
+    // For each target data column (skip first, it's the key)
+    for j in 1..target.table.columns.len() {
+        let target_col = &target.table.columns[j];
 
-        // Map source column to target keys
-        let mapped_col = map_column_by_keys(&target.table.columns[0], source_col, &key_map)?;
+        // Map target column to source keys
+        let mapped_col = map_column_by_keys(&source.table.columns[0], target_col, &key_map)?;
 
-        result_names.push(source.table.names[j].clone());
+        result_names.push(target.table.names[j].clone());
         result_columns.push(mapped_col);
     }
 
