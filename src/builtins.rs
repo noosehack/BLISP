@@ -1085,21 +1085,19 @@ fn builtin_col(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         return Err(format!("col expects 2 arguments (table colname), got {}", args.len()));
     }
 
-    let table = args[0].as_table()?;
+    let tv = ensure_tableview(&args[0], rt)?;
 
-    let col_name_sym = match &args[1] {
-        Value::Sym(id) => *id,
-        Value::Str(s) => rt.interner.intern(s.as_ref()),
+    let col_name = match &args[1] {
+        Value::Sym(id) => rt.interner.resolve(*id).to_string(),
+        Value::Str(s) => s.to_string(),
         _ => return Err(format!("col expects symbol or string column name, got {}", args[1].type_name())),
     };
 
-    match table.get_column(col_name_sym) {
-        Some(col) => Ok(Value::Col(Arc::new(col.clone()))),
-        None => {
-            let name = rt.interner.resolve(col_name_sym);
-            Err(format!("Column '{}' not found in table", name))
-        }
-    }
+    // Find column by name
+    let col_idx = tv.table.names.iter().position(|n| n == &col_name)
+        .ok_or_else(|| format!("Column '{}' not found in table", col_name))?;
+
+    Ok(Value::Col(Arc::new(tv.table.columns[col_idx].clone())))
 }
 
 /// (w table index) - Extract column from table by index (0-based)
