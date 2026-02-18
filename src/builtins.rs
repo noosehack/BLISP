@@ -61,6 +61,8 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("stdin", builtin_stdin);
     rt.register_builtin("save", builtin_save);
     rt.register_builtin("col", builtin_col);
+    rt.register_builtin("setcol", builtin_setcol);
+    rt.register_builtin("withcol", builtin_withcol);
     rt.register_builtin("w", builtin_w);
     rt.register_builtin("make-col", builtin_make_col);
 
@@ -506,6 +508,129 @@ fn builtin_w(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     Ok(Value::Col(Arc::new(col.clone())))
 }
 
+/// (setcol table "colname" column) → TableView
+///
+/// Replace or add a column to a table, returning a new TableView.
+/// This is the primary way to update table columns in the TableView-only runtime.
+///
+/// Example:
+///   (setcol prices "log_price" (dlog (col prices "price")))
+fn builtin_setcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("setcol expects 3 arguments (table colname column), got {}", args.len()));
+    }
+
+    // Get table as TableView
+    let tv = ensure_tableview(&args[0], rt)?;
+
+    // Get column name
+    let col_name = match &args[1] {
+        Value::Sym(id) => rt.interner.resolve(*id).to_string(),
+        Value::Str(s) => s.to_string(),
+        _ => return Err(format!("setcol expects symbol or string column name, got {}", args[1].type_name())),
+    };
+
+    // Get new column
+    let new_col = args[2].as_col()?;
+
+    // Validate lengths match existing table
+    if tv.table.row_count() > 0 && new_col.len() != tv.table.row_count() {
+        return Err(format!(
+            "Column length mismatch: table has {} rows, column has {}",
+            tv.table.row_count(),
+            new_col.len()
+        ));
+    }
+
+    // Build new table with updated column
+    let mut names = Vec::new();
+    let mut columns = Vec::new();
+    let mut replaced = false;
+
+    for (i, name) in tv.table.names.iter().enumerate() {
+        if name == &col_name {
+            // Replace existing column
+            names.push(col_name.clone());
+            columns.push(new_col.as_ref().clone());
+            replaced = true;
+        } else {
+            // Keep existing column
+            names.push(name.clone());
+            columns.push(tv.table.columns[i].clone());
+        }
+    }
+
+    // If column not found, append it
+    if !replaced {
+        names.push(col_name.clone());
+        columns.push(new_col.as_ref().clone());
+    }
+
+    let new_bt = blawktrust::Table::new(names, columns);
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_bt))))
+}
+
+/// (withcol table "colname" fn [args...]) → TableView
+///
+/// Apply a builtin function to a column and replace it in the table.
+/// Equivalent to (setcol table colname (fn (col table colname) args...))
+///
+/// This enforces explicit column boundaries: the function operates on a Column
+/// and returns a Column. The threading macro does NOT extract columns implicitly.
+///
+/// Currently supports only builtin functions (not lambdas).
+///
+/// Example:
+///   (withcol prices "close" dlog)                ; Replace close with dlog(close)
+///   (withcol prices "close" shift 2)             ; Replace close with shift(close, 2)
+///   (-> prices (withcol "close" dlog))           ; Same with threading
+fn builtin_withcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() < 3 {
+        return Err(format!("withcol expects at least 3 arguments (table colname fn [args...]), got {}", args.len()));
+    }
+
+    // Get table as TableView
+    let tv = ensure_tableview(&args[0], rt)?;
+
+    // Get column name
+    let col_name_sym = match &args[1] {
+        Value::Sym(id) => *id,
+        Value::Str(s) => rt.interner.intern(s.as_ref()),
+        _ => return Err(format!("withcol expects symbol or string column name, got {}", args[1].type_name())),
+    };
+
+    // Get function (must be a builtin symbol)
+    let func_sym = match &args[2] {
+        Value::Sym(id) => *id,
+        _ => return Err(format!("withcol currently only supports builtin function symbols, got {}", args[2].type_name())),
+    };
+
+    if !rt.is_builtin(func_sym) {
+        let func_name = rt.interner.resolve(func_sym);
+        return Err(format!("withcol: '{}' is not a builtin function", func_name));
+    }
+
+    // Extract column
+    let col_name = rt.interner.resolve(col_name_sym).to_string();
+    let col_idx = tv.table.names.iter().position(|n| n == &col_name)
+        .ok_or_else(|| format!("Column '{}' not found in table", col_name))?;
+    let existing_col = &tv.table.columns[col_idx];
+
+    // Build args for function call: [column, extra_args...]
+    let mut func_args = vec![Value::Col(Arc::new(existing_col.clone()))];
+    func_args.extend_from_slice(&args[3..]);
+
+    // Call builtin function
+    let result = rt.call_builtin(func_sym, &func_args)?;
+
+    // Extract resulting column
+    let new_col = result.as_col()?;
+
+    // Use setcol to update the table
+    let col_name_val = Value::Str(col_name.into());
+    builtin_setcol(rt, &[Value::TableView(tv), col_name_val, Value::Col(new_col)])
+}
+
 /// (make-col v1 v2 v3 ...) - Create column from values
 ///
 /// Example:
@@ -826,8 +951,8 @@ fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 let result_col = result.as_col()?;
                 new_table.add_column(*name, (*result_col).clone());
             }
-            blawktrust::Column::Ts(_) => {
-                // Keep Ts columns unchanged
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+                // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
         }
@@ -900,8 +1025,8 @@ fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 let result_col = dlog_column(&col_arc, lag);
                 new_table.add_column(*name, result_col);
             }
-            blawktrust::Column::Ts(_) => {
-                // Keep Ts columns unchanged
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+                // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
         }
@@ -933,8 +1058,8 @@ fn builtin_shift_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
                 let result_col = shift_column(col, n as usize)?;
                 new_table.add_column(*name, result_col);
             }
-            blawktrust::Column::Ts(_) => {
-                // Keep Ts columns unchanged
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+                // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
         }
@@ -964,8 +1089,8 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 let result_col = subtract_columns(col, &shifted)?;
                 new_table.add_column(*name, result_col);
             }
-            blawktrust::Column::Ts(_) => {
-                // Keep Ts columns unchanged
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+                // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
         }
