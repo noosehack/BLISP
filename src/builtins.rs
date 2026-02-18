@@ -86,17 +86,21 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // GLD_NUM Tier 2: Shape/Null Operations
     rt.register_builtin("locf", builtin_locf);
+    rt.register_builtin("locf-cols", builtin_locf_cols);
     rt.register_builtin("keep-shape", builtin_keep_shape);
+    rt.register_builtin("keep-shape-cols", builtin_keep_shape_cols);
 
     // GLD_NUM Tier 3: Table Transforms
     rt.register_builtin("w5", builtin_w5);
     rt.register_builtin("xminus", builtin_xminus);
     rt.register_builtin("cs1", builtin_cs1);
+    rt.register_builtin("cs1-cols", builtin_cs1_cols);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
     rt.register_builtin("mapr", builtin_mapr);
     rt.register_builtin("ur", builtin_ur);
     rt.register_builtin("wz0", builtin_wz0);
+    rt.register_builtin("wz0-cols", builtin_wz0_cols);
 
     // Utility
     rt.register_builtin("print", builtin_print);
@@ -554,6 +558,45 @@ fn builtin_locf(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 }
 
+/// (locf-cols table) - Apply locf to all numeric columns
+///
+/// Table-level wrapper: TableView -> TableView
+/// Applies forward fill to each F64 column, preserves non-numeric columns.
+fn builtin_locf_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("locf-cols expects 1 argument (table), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                // Apply locf logic
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let mut result = Vec::with_capacity(data.len());
+                        let mut last_valid = f64::NAN;
+
+                        for &val in data {
+                            if !val.is_nan() {
+                                last_valid = val;
+                                result.push(val);
+                            } else {
+                                result.push(last_valid);
+                            }
+                        }
+
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("locf-cols expects TableView, got {}. Use (file ...) which returns TableView.", args[0].type_name())),
+    }
+}
+
 /// (keep-shape col k) - Keep every kth value, others become NA
 ///
 /// Shape-preserving downsample: keeps values at indices 0, k, 2k, ...
@@ -590,6 +633,39 @@ fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
         }
         _ => Err("keep-shape only supported for F64 columns".to_string()),
+    }
+}
+
+/// (keep-shape-cols table k) - Apply keep-shape to all numeric columns
+///
+/// Table-level wrapper: TableView -> TableView
+fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("keep-shape-cols expects 2 arguments (table k), got {}", args.len()));
+    }
+
+    let k = args[1].as_int()? as usize;
+    if k == 0 {
+        return Err("keep-shape-cols: k must be > 0".to_string());
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let result: Vec<f64> = data.iter().enumerate()
+                            .map(|(i, &val)| if i % k == 0 { val } else { f64::NAN })
+                            .collect();
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("keep-shape-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
@@ -724,6 +800,43 @@ fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
         }
         _ => Err("cs1 only supported for F64 columns".to_string()),
+    }
+}
+
+/// (cs1-cols table) - Apply cs1 to all numeric columns
+///
+/// Table-level wrapper: TableView -> TableView
+fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("cs1-cols expects 1 argument (table), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let mut result = Vec::with_capacity(data.len());
+                        let mut sum = 1.0;
+
+                        for &val in data {
+                            if val.is_nan() {
+                                result.push(f64::NAN);
+                            } else {
+                                sum += val;
+                                result.push(sum);
+                            }
+                        }
+
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("cs1-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
@@ -919,6 +1032,67 @@ fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
         }
         _ => Err("wz0 only supported for F64 columns".to_string()),
+    }
+}
+
+/// (wz0-cols table window) - Apply wz0 to all numeric columns
+///
+/// Table-level wrapper: TableView -> TableView
+fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wz0-cols expects 2 arguments (table window), got {}", args.len()));
+    }
+
+    let window = args[1].as_int()? as usize;
+    if window == 0 {
+        return Err("wz0-cols: window must be > 0".to_string());
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let n = data.len();
+                        let mut result = vec![f64::NAN; n];
+
+                        for i in 0..n {
+                            let start = if i + 1 >= window { i + 1 - window } else { 0 };
+                            let end = i + 1;
+
+                            let mut sum = 0.0;
+                            let mut sum_sq = 0.0;
+                            let mut count = 0;
+
+                            for j in start..end {
+                                let val = data[j];
+                                if !val.is_nan() {
+                                    sum += val;
+                                    sum_sq += val * val;
+                                    count += 1;
+                                }
+                            }
+
+                            if count > 1 {
+                                let mean = sum / count as f64;
+                                let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+
+                                if variance > 0.0 && !data[i].is_nan() {
+                                    let stddev = variance.sqrt();
+                                    result[i] = (data[i] - mean) / stddev;
+                                }
+                            }
+                        }
+
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("wz0-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
@@ -1555,6 +1729,43 @@ fn map_column_by_keys(
     }
 }
 
+/// Generic helper: Apply function to all F64 columns in a TableView
+///
+/// Contract: TableView -> (Column -> Column) -> TableView
+/// - Preserves column order (from TableView.table.names)
+/// - Preserves non-numeric columns unchanged (Date, Timestamp)
+/// - Applies function only to F64 columns
+/// - Returns new TableView with same schema
+fn map_numeric_cols<F>(tv: &blawktrust::TableView, f: F) -> Result<blawktrust::TableView, String>
+where
+    F: Fn(&blawktrust::Column) -> Result<blawktrust::Column, String>,
+{
+    let mut new_names = Vec::new();
+    let mut new_columns = Vec::new();
+
+    // Iterate in original column order (stable order for CSV output)
+    for (i, name) in tv.table.names.iter().enumerate() {
+        let col = &tv.table.columns[i];
+
+        match col {
+            blawktrust::Column::F64(_) => {
+                // Apply transformation to numeric column
+                let transformed = f(col)?;
+                new_names.push(name.clone());
+                new_columns.push(transformed);
+            }
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+                // Preserve non-numeric columns unchanged
+                new_names.push(name.clone());
+                new_columns.push(col.clone());
+            }
+        }
+    }
+
+    let new_table = blawktrust::Table::new(new_names, new_columns);
+    Ok(blawktrust::TableView::new(new_table))
+}
+
 /// Shift column by lag positions (first lag elements become NA)
 fn shift_column(col: &blawktrust::Column, lag: usize) -> Result<blawktrust::Column, String> {
     match col {
@@ -1751,34 +1962,26 @@ fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     Ok(Value::Table(Arc::new(new_table)))
 }
 
-/// (dlog-cols table lag) → Table
+/// (dlog-cols table lag) → TableView
 /// Apply dlog with lag to each F64 column
 fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
         return Err(format!("dlog-cols expects 2 arguments (table lag), got {}", args.len()));
     }
 
-    let table = args[0].as_table()?;
     let lag = args[1].as_int()? as usize;
 
-    let mut new_table = crate::value::Table::new();
-
-    // Apply dlog to each F64 column
-    for (name, col) in &table.columns {
-        match col {
-            blawktrust::Column::F64(_) => {
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
                 let col_arc = Arc::new(col.clone());
-                let result_col = dlog_column(&col_arc, lag);
-                new_table.add_column(*name, result_col);
-            }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
-                // Keep Date/Timestamp columns unchanged
-                new_table.add_column(*name, col.clone());
-            }
-        }
-    }
+                Ok(dlog_column(&col_arc, lag))
+            })?;
 
-    Ok(Value::Table(Arc::new(new_table)))
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("dlog-cols expects TableView, got {}", args[0].type_name())),
+    }
 }
 
 /// (shift-cols table n) → Table
@@ -1788,30 +1991,21 @@ fn builtin_shift_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
         return Err(format!("shift-cols expects 2 arguments (table n), got {}", args.len()));
     }
 
-    let table = args[0].as_table()?;
     let n = args[1].as_int()?;
-
     if n < 0 {
         return Err("shift-cols with negative lag not yet implemented".to_string());
     }
 
-    let mut new_table = crate::value::Table::new();
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                shift_column(col, n as usize)
+            })?;
 
-    // Apply shift to each F64 column
-    for (name, col) in &table.columns {
-        match col {
-            blawktrust::Column::F64(_) => {
-                let result_col = shift_column(col, n as usize)?;
-                new_table.add_column(*name, result_col);
-            }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
-                // Keep Date/Timestamp columns unchanged
-                new_table.add_column(*name, col.clone());
-            }
+            Ok(Value::TableView(Arc::new(result)))
         }
+        _ => Err(format!("shift-cols expects TableView, got {}", args[0].type_name())),
     }
-
-    Ok(Value::Table(Arc::new(new_table)))
 }
 
 /// (diff-cols table n) → Table
