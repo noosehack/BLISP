@@ -7,8 +7,11 @@ use crate::runtime::Runtime;
 use crate::value::Value;
 use std::sync::Arc;
 
-// Import blawktrust's optimized dlog kernel for Step 6
-use blawktrust::builtins::ops::dlog_column;
+// Import blawktrust's optimized operations
+use blawktrust::builtins::ops::{dlog_column, wstd, wstd0, wzscore};
+
+// Import orientation support
+use blawktrust::lookup_ori;
 
 /// Convert Table to TableView automatically
 fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView>, String> {
@@ -54,6 +57,8 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("sum0", builtin_sum0);
     rt.register_builtin("mean", builtin_mean);
     rt.register_builtin("mean0", builtin_mean0);
+    rt.register_builtin("std", builtin_std);
+    rt.register_builtin("std0", builtin_std0);
 
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
@@ -96,6 +101,8 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("xminus", builtin_xminus);
     rt.register_builtin("cs1", builtin_cs1);
     rt.register_builtin("cs1-cols", builtin_cs1_cols);
+    rt.register_builtin("ecs1", builtin_ecs1);
+    rt.register_builtin("ecs1-cols", builtin_ecs1_cols);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
     rt.register_builtin("mapr", builtin_mapr);
@@ -103,10 +110,25 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("wz0", builtin_wz0);
     rt.register_builtin("wz0-cols", builtin_wz0_cols);
 
+    // Rolling Statistics
+    rt.register_builtin("wstd", builtin_wstd);
+    rt.register_builtin("wstd0", builtin_wstd0);
+    rt.register_builtin("wstd-cols", builtin_wstd_cols);
+    rt.register_builtin("wstd0-cols", builtin_wstd0_cols);
+    rt.register_builtin("wv", builtin_wv);
+    rt.register_builtin("wv-cols", builtin_wv_cols);
+
+    // Data Transformations
+    rt.register_builtin("zscore", builtin_zscore);
+    rt.register_builtin("chop", builtin_chop);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
     rt.register_builtin("len", builtin_len);
+
+    // Orientation
+    rt.register_builtin("o", builtin_o);
 }
 
 // ============================================================================
@@ -907,6 +929,73 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
     }
 }
 
+/// (ecs1 col) - Exponential cumulative sum: exp(cumsum(log_returns))
+///
+/// Converts log returns back to price index / cumulative product.
+/// Formula: exp(sum of log returns) = cumulative product of exp(returns)
+fn builtin_ecs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("ecs1 expects 1 argument (column), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut cumsum: f64 = 0.0;
+
+            for &val in data {
+                if val.is_nan() {
+                    // Carry forward last value (preserves index level)
+                    result.push(cumsum.exp());
+                } else {
+                    cumsum += val;
+                    result.push(cumsum.exp());
+                }
+            }
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("ecs1 only supported for F64 columns".to_string()),
+    }
+}
+
+/// (ecs1-cols table) - Apply ecs1 to all numeric columns
+fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("ecs1-cols expects 1 argument (table), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let mut result = Vec::with_capacity(data.len());
+                        let mut cumsum: f64 = 0.0;
+
+                        for &val in data {
+                            if val.is_nan() {
+                                result.push(cumsum.exp());
+                            } else {
+                                cumsum += val;
+                                result.push(cumsum.exp());
+                            }
+                        }
+
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("ecs1-cols expects TableView, got {}", args[0].type_name())),
+    }
+}
+
 // ============================================================================
 // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
 // ============================================================================
@@ -1584,9 +1673,77 @@ fn builtin_sum(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         return Err(format!("sum expects 1 argument, got {}", args.len()));
     }
 
-    let col = args[0].as_col()?;
-    let result = blawktrust::sum(&col);
-    Ok(Value::Float(result))
+    match &args[0] {
+        Value::Col(col) => {
+            // Column aggregation: return scalar
+            let result = blawktrust::sum(col);
+            Ok(Value::Float(result))
+        }
+        Value::TableView(tv) => {
+            // Orientation-aware aggregation (numeric columns only)
+            let reduce_mode = tv.reduce_mode();
+            let (log_nrows, log_ncols) = tv.logical_shape();
+            let (phys_nr, phys_nc) = tv.physical_shape();
+
+            // Get indices of F64 columns only
+            let numeric_cols: Vec<usize> = (0..phys_nc)
+                .filter(|&c| matches!(tv.table.columns[c], blawktrust::Column::F64(_)))
+                .collect();
+
+            if numeric_cols.is_empty() {
+                return Err("No numeric columns to sum".to_string());
+            }
+
+            match reduce_mode {
+                blawktrust::ReduceMode::ByRows => {
+                    // Z-oriented (row-wise): sum each row → output column with nrows elements
+                    // Note: in Z orientation, physical columns become logical rows
+                    let mut sums = Vec::with_capacity(log_nrows);
+                    for i in 0..log_nrows {
+                        let mut row_sum = 0.0;
+                        for j in 0..log_ncols {
+                            // Map logical (i,j) to physical (r,c) and check if numeric
+                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
+                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
+                                row_sum += tv.get_f64(i, j);
+                            }
+                        }
+                        sums.push(row_sum);
+                    }
+                    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(sums))))
+                }
+                blawktrust::ReduceMode::ByCols => {
+                    // H-oriented (column-wise): sum each column → output row with ncols elements
+                    let mut sums = Vec::with_capacity(log_ncols);
+                    for j in 0..log_ncols {
+                        let mut col_sum = 0.0;
+                        for i in 0..log_nrows {
+                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
+                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
+                                col_sum += tv.get_f64(i, j);
+                            }
+                        }
+                        sums.push(col_sum);
+                    }
+                    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(sums))))
+                }
+                blawktrust::ReduceMode::Scalar => {
+                    // R-oriented (scalar reduce): sum all elements → scalar
+                    let mut total = 0.0;
+                    for i in 0..log_nrows {
+                        for j in 0..log_ncols {
+                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
+                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
+                                total += tv.get_f64(i, j);
+                            }
+                        }
+                    }
+                    Ok(Value::Float(total))
+                }
+            }
+        }
+        _ => Err(format!("sum expects column or tableview, got {}", args[0].type_name()))
+    }
 }
 
 /// (sum0 col) - Sum column values (ignores NaN)
@@ -1620,6 +1777,275 @@ fn builtin_mean0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let col = args[0].as_col()?;
     let result = blawktrust::mean0(&col);
     Ok(Value::Float(result))
+}
+
+/// (std col) - Standard deviation of column values (propagates NaN, ddof=1)
+fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("std expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    // Compute std with ddof=1 (sample standard deviation)
+    let data = match col.as_ref() {
+        blawktrust::Column::F64(data) => data,
+        _ => return Err("std expects F64 column".to_string()),
+    };
+
+    let n = data.len();
+    if n < 2 {
+        return Ok(Value::Float(f64::NAN));
+    }
+
+    let mut sum = 0.0;
+    let mut sum_sq = 0.0;
+    let mut count = 0;
+
+    for &val in data {
+        if val.is_nan() {
+            return Ok(Value::Float(f64::NAN)); // Propagate NaN
+        }
+        sum += val;
+        sum_sq += val * val;
+        count += 1;
+    }
+
+    if count < 2 {
+        return Ok(Value::Float(f64::NAN));
+    }
+
+    let mean = sum / count as f64;
+    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+    Ok(Value::Float(variance.sqrt()))
+}
+
+/// (std0 col) - Standard deviation of column values (ignores NaN, ddof=1)
+fn builtin_std0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("std0 expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    let data = match col.as_ref() {
+        blawktrust::Column::F64(data) => data,
+        _ => return Err("std0 expects F64 column".to_string()),
+    };
+
+    let mut sum = 0.0;
+    let mut sum_sq = 0.0;
+    let mut count = 0;
+
+    for &val in data {
+        if !val.is_nan() {
+            sum += val;
+            sum_sq += val * val;
+            count += 1;
+        }
+    }
+
+    if count < 2 {
+        return Ok(Value::Float(f64::NAN));
+    }
+
+    let mean = sum / count as f64;
+    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+    Ok(Value::Float(variance.sqrt()))
+}
+
+/// (wstd col window) - Rolling standard deviation (propagates NaN)
+fn builtin_wstd(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wstd expects 2 arguments (col window), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let window = args[1].as_int()? as usize;
+
+    let result = wstd(&col, window);
+    Ok(Value::Col(Arc::new(result)))
+}
+
+/// (wstd0 col window) - Rolling standard deviation (ignores NaN)
+fn builtin_wstd0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wstd0 expects 2 arguments (col window), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let window = args[1].as_int()? as usize;
+
+    let result = wstd0(&col, window);
+    Ok(Value::Col(Arc::new(result)))
+}
+
+/// (wstd-cols table window) - Apply wstd to all F64 columns
+fn builtin_wstd_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wstd-cols expects 2 arguments (table window), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let window = args[1].as_int()? as usize;
+            let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd(col, window)))?;
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("wstd-cols expects TableView, got {}", args[0].type_name())),
+    }
+}
+
+/// (wstd0-cols table window) - Apply wstd0 to all F64 columns
+fn builtin_wstd0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wstd0-cols expects 2 arguments (table window), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let window = args[1].as_int()? as usize;
+            let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd0(col, window)))?;
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("wstd0-cols expects TableView, got {}", args[0].type_name())),
+    }
+}
+
+/// (wv col window) - Rolling volatility: wstd0(col, window) * sqrt(252)
+fn builtin_wv(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wv expects 2 arguments (col window), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let window = args[1].as_int()? as usize;
+
+    let wstd_col = wstd0(&col, window);
+
+    // Multiply by sqrt(252) for annualized volatility
+    let sqrt_252 = 252.0_f64.sqrt();
+    let result = match wstd_col {
+        blawktrust::Column::F64(data) => {
+            let scaled: Vec<f64> = data.iter().map(|&x| x * sqrt_252).collect();
+            blawktrust::Column::new_f64(scaled)
+        }
+        _ => return Err("wv: unexpected column type".to_string()),
+    };
+
+    Ok(Value::Col(Arc::new(result)))
+}
+
+/// (wv-cols table window) - Apply wv to all F64 columns
+fn builtin_wv_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wv-cols expects 2 arguments (table window), got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let window = args[1].as_int()? as usize;
+            let sqrt_252 = 252.0_f64.sqrt();
+
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                let wstd_col = wstd0(col, window);
+                Ok(match wstd_col {
+                    blawktrust::Column::F64(data) => {
+                        let scaled: Vec<f64> = data.iter().map(|&x| x * sqrt_252).collect();
+                        blawktrust::Column::new_f64(scaled)
+                    }
+                    _ => wstd_col,
+                })
+            })?;
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!("wv-cols expects TableView, got {}", args[0].type_name())),
+    }
+}
+
+/// (zscore col) - Z-score normalization: (x - mean(x)) / std(x)
+fn builtin_zscore(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("zscore expects 1 argument, got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+
+    let data = match col.as_ref() {
+        blawktrust::Column::F64(data) => data,
+        _ => return Err("zscore expects F64 column".to_string()),
+    };
+
+    // Compute mean and std
+    let n = data.len();
+    let mut sum = 0.0;
+    let mut sum_sq = 0.0;
+    let mut count = 0;
+
+    for &val in data {
+        if !val.is_nan() {
+            sum += val;
+            sum_sq += val * val;
+            count += 1;
+        }
+    }
+
+    if count < 2 {
+        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(vec![f64::NAN; n]))));
+    }
+
+    let mean = sum / count as f64;
+    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+    let std = variance.sqrt();
+
+    if std == 0.0 || std.is_nan() {
+        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(vec![f64::NAN; n]))));
+    }
+
+    // Apply z-score transformation
+    let result: Vec<f64> = data.iter().map(|&x| {
+        if x.is_nan() {
+            f64::NAN
+        } else {
+            (x - mean) / std
+        }
+    }).collect();
+
+    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+}
+
+/// (chop col min max) - Clip column values to [min, max]
+fn builtin_chop(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("chop expects 3 arguments (col min max), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let min_val = args[1].as_float()?;
+    let max_val = args[2].as_float()?;
+
+    if min_val > max_val {
+        return Err(format!("chop: min ({}) must be <= max ({})", min_val, max_val));
+    }
+
+    let data = match col.as_ref() {
+        blawktrust::Column::F64(data) => data,
+        _ => return Err("chop expects F64 column".to_string()),
+    };
+
+    let result: Vec<f64> = data.iter().map(|&x| {
+        if x.is_nan() {
+            f64::NAN
+        } else if x < min_val {
+            min_val
+        } else if x > max_val {
+            max_val
+        } else {
+            x
+        }
+    }).collect();
+
+    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
 }
 
 // ============================================================================
@@ -2146,6 +2572,37 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     }
 
     Ok(Value::Table(Arc::new(new_table)))
+}
+
+// ============================================================================
+// Orientation Builtin
+// ============================================================================
+
+/// (o table orientation) - Change table orientation
+/// Example: (o data WENS) rotates to row-wise view
+/// Example: (o data H) or (o data NSWE) for horizontal (default) view
+fn builtin_o(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("o expects 2 arguments (table orientation), got {}", args.len()));
+    }
+
+    // Get TableView from first argument
+    let tv = ensure_tableview(&args[0], rt)?;
+
+    // Get orientation name as symbol or string
+    let ori_name = match &args[1] {
+        Value::Sym(s) => rt.interner.resolve(*s),
+        Value::Str(s) => s.as_ref(),
+        _ => return Err(format!("o expects orientation name (symbol or string), got {}", args[1].type_name())),
+    };
+
+    // Look up orientation by name (H=NSWE, Z=WENS, N=SNWE, S=EWNS, X, R)
+    let ori_spec = lookup_ori(ori_name)
+        .ok_or_else(|| format!("Invalid orientation '{}'. Valid names: H, Z, N, S, X, R, _H, _N, _Z, _S", ori_name))?;
+
+    // Apply orientation change (O(1) operation, just changes view)
+    let result = tv.with_orientation(ori_spec.ori);
+    Ok(Value::TableView(Arc::new(result)))
 }
 
 #[cfg(test)]
