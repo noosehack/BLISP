@@ -722,10 +722,11 @@ fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_table))))
 }
 
-/// (xminus table half) - Pairwise spreads (A - B for all pairs of columns)
+/// (xminus table half) - Pairwise spreads (A - B for all pairs of numeric columns)
 ///
-/// If half=1, computes all pairs in first half minus second half:
-///   Columns [A, B, C, D] with half=1 → [A-C, A-D, B-C, B-D]
+/// If half=1, computes all pairs in first half minus second half of NUMERIC columns:
+///   Numeric columns [A, B, C, D] with half=1 → [A-C, A-D, B-C, B-D]
+///   Non-numeric columns (Date, Timestamp) are ignored
 ///
 /// Column naming: "A\B" means A minus B
 fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
@@ -740,9 +741,19 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         return Err("xminus: only half=1 currently supported".to_string());
     }
 
-    let ncols = tv.table.columns.len();
+    // Extract only numeric columns
+    let mut numeric_names = Vec::new();
+    let mut numeric_cols = Vec::new();
+    for (i, col) in tv.table.columns.iter().enumerate() {
+        if matches!(col, blawktrust::Column::F64(_)) {
+            numeric_names.push(tv.table.names[i].clone());
+            numeric_cols.push(col);
+        }
+    }
+
+    let ncols = numeric_cols.len();
     if ncols % 2 != 0 {
-        return Err(format!("xminus: expected even number of columns, got {}", ncols));
+        return Err(format!("xminus: expected even number of numeric columns, got {}", ncols));
     }
 
     let mid = ncols / 2;
@@ -752,14 +763,14 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     // Compute all pairs: first_half - second_half
     for i in 0..mid {
         for j in mid..ncols {
-            let col_a = &tv.table.columns[i];
-            let col_b = &tv.table.columns[j];
+            let col_a = numeric_cols[i];
+            let col_b = numeric_cols[j];
 
             // Compute A - B
             let result_col = subtract_columns_pair(col_a, col_b)?;
 
             // Name: A\B
-            let name = format!("{}\\{}", tv.table.names[i], tv.table.names[j]);
+            let name = format!("{}\\{}", numeric_names[i], numeric_names[j]);
             new_names.push(name);
             new_columns.push(result_col);
         }
