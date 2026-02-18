@@ -93,6 +93,11 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("xminus", builtin_xminus);
     rt.register_builtin("cs1", builtin_cs1);
 
+    // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
+    rt.register_builtin("mapr", builtin_mapr);
+    rt.register_builtin("ur", builtin_ur);
+    rt.register_builtin("wz0", builtin_wz0);
+
     // Utility
     rt.register_builtin("print", builtin_print);
     rt.register_builtin("type-of", builtin_type_of);
@@ -723,6 +728,201 @@ fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 }
 
 // ============================================================================
+// GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
+// ============================================================================
+
+/// (mapr target source) - LEFT JOIN: map source values to target row names
+///
+/// Joins tables by first column (row names/keys).
+/// - Target order preserved
+/// - O(1) lookup using HashMap
+/// - Returns target's first column + source's data columns
+///
+/// Example:
+///   target: [date: 2024-01-01, 2024-01-02, 2024-01-03]
+///   source: [date: 2024-01-01, signal: 1.5]
+///           [date: 2024-01-03, signal: 2.1]
+///   result: [date: 2024-01-01, signal: 1.5]
+///           [date: 2024-01-02, signal: NA]
+///           [date: 2024-01-03, signal: 2.1]
+fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("mapr expects 2 arguments (target source), got {}", args.len()));
+    }
+
+    let target = ensure_tableview(&args[0], rt)?;
+    let source = ensure_tableview(&args[1], rt)?;
+
+    if target.table.columns.is_empty() || source.table.columns.is_empty() {
+        return Err("mapr: both tables must have at least one column".to_string());
+    }
+
+    // Build HashMap from source first column (keys) to row indices
+    let source_keys = &source.table.columns[0];
+    use std::collections::HashMap;
+    let mut key_map: HashMap<String, usize> = HashMap::new();
+
+    match source_keys {
+        blawktrust::Column::Date(data) => {
+            for (i, &key) in data.iter().enumerate() {
+                key_map.insert(key.to_string(), i);
+            }
+        }
+        blawktrust::Column::F64(data) => {
+            for (i, &key) in data.iter().enumerate() {
+                key_map.insert(key.to_string(), i);
+            }
+        }
+        _ => return Err("mapr: first column must be Date or F64".to_string()),
+    }
+
+    // Prepare result columns
+    let mut result_names = vec![target.table.names[0].clone()];
+    let mut result_columns = vec![target.table.columns[0].clone()];
+
+    // For each source data column (skip first, it's the key)
+    for j in 1..source.table.columns.len() {
+        let source_col = &source.table.columns[j];
+
+        // Map source column to target keys
+        let mapped_col = map_column_by_keys(&target.table.columns[0], source_col, &key_map)?;
+
+        result_names.push(source.table.names[j].clone());
+        result_columns.push(mapped_col);
+    }
+
+    let result_table = blawktrust::Table::new(result_names, result_columns);
+    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(result_table))))
+}
+
+/// (ur col window decay) - Unit ratio (risk-adjusted returns)
+///
+/// Formula: value / (100 * sqrt(252) * rolling_stddev)
+/// - Uses rolling standard deviation with given window
+/// - Excludes zeros from stddev calculation
+/// - Returns NA where stddev is zero or NA
+///
+/// Example:
+///   (ur prices 250 5) ; 250-day window, decay=5
+fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("ur expects 3 arguments (col window decay), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let window = args[1].as_int()? as usize;
+    let decay = args[2].as_int()? as usize;
+
+    if window == 0 {
+        return Err("ur: window must be > 0".to_string());
+    }
+
+    if decay != 5 {
+        return Err("ur: only decay=5 currently supported".to_string());
+    }
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let n = data.len();
+            let mut result = vec![f64::NAN; n];
+            let scale = 100.0 * (252.0_f64).sqrt();
+
+            for i in 0..n {
+                let start = if i + 1 >= window { i + 1 - window } else { 0 };
+                let end = i + 1;
+
+                // Calculate rolling stddev using incremental formula
+                let mut sum = 0.0;
+                let mut sum_sq = 0.0;
+                let mut count = 0;
+
+                for j in start..end {
+                    let val = data[j];
+                    if !val.is_nan() && val != 0.0 {
+                        sum += val;
+                        sum_sq += val * val;
+                        count += 1;
+                    }
+                }
+
+                if count > 1 {
+                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                    if variance > 0.0 {
+                        let stddev = variance.sqrt();
+                        if !data[i].is_nan() {
+                            result[i] = data[i] / (scale * stddev);
+                        }
+                    }
+                }
+            }
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("ur only supported for F64 columns".to_string()),
+    }
+}
+
+/// (wz0 col window) - Rolling z-score
+///
+/// Formula: (value - rolling_mean) / rolling_stddev
+/// - Uses rolling window for mean and stddev
+/// - Returns NA where stddev is zero or NA
+///
+/// Example:
+///   (wz0 prices 25) ; 25-period rolling z-score
+fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("wz0 expects 2 arguments (col window), got {}", args.len()));
+    }
+
+    let col = args[0].as_col()?;
+    let window = args[1].as_int()? as usize;
+
+    if window == 0 {
+        return Err("wz0: window must be > 0".to_string());
+    }
+
+    match col.as_ref() {
+        blawktrust::Column::F64(data) => {
+            let n = data.len();
+            let mut result = vec![f64::NAN; n];
+
+            for i in 0..n {
+                let start = if i + 1 >= window { i + 1 - window } else { 0 };
+                let end = i + 1;
+
+                // Calculate rolling mean and stddev
+                let mut sum = 0.0;
+                let mut sum_sq = 0.0;
+                let mut count = 0;
+
+                for j in start..end {
+                    let val = data[j];
+                    if !val.is_nan() {
+                        sum += val;
+                        sum_sq += val * val;
+                        count += 1;
+                    }
+                }
+
+                if count > 1 {
+                    let mean = sum / count as f64;
+                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+
+                    if variance > 0.0 && !data[i].is_nan() {
+                        let stddev = variance.sqrt();
+                        result[i] = (data[i] - mean) / stddev;
+                    }
+                }
+            }
+
+            Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
+        }
+        _ => Err("wz0 only supported for F64 columns".to_string()),
+    }
+}
+
+// ============================================================================
 // Column Operations (Step 6) - Using blawktrust kernels
 // ============================================================================
 
@@ -1323,6 +1523,37 @@ fn subtract_columns_pair(a: &blawktrust::Column, b: &blawktrust::Column) -> Resu
             Ok(blawktrust::Column::new_f64(result))
         }
         _ => Err("Column subtraction only supported for F64 columns".to_string()),
+    }
+}
+
+/// Map source column values to target keys using HashMap lookup
+fn map_column_by_keys(
+    target_keys: &blawktrust::Column,
+    source_col: &blawktrust::Column,
+    key_map: &std::collections::HashMap<String, usize>,
+) -> Result<blawktrust::Column, String> {
+    use std::collections::HashMap;
+
+    // Extract target keys as strings
+    let target_key_strs: Vec<String> = match target_keys {
+        blawktrust::Column::Date(data) => data.iter().map(|k| k.to_string()).collect(),
+        blawktrust::Column::F64(data) => data.iter().map(|k| k.to_string()).collect(),
+        _ => return Err("map_column_by_keys: target keys must be Date or F64".to_string()),
+    };
+
+    // Map source values
+    match source_col {
+        blawktrust::Column::F64(source_data) => {
+            let result: Vec<f64> = target_key_strs.iter()
+                .map(|key| {
+                    key_map.get(key)
+                        .map(|&idx| source_data[idx])
+                        .unwrap_or(f64::NAN)
+                })
+                .collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("map_column_by_keys: source column must be F64".to_string()),
     }
 }
 
