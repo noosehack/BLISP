@@ -78,6 +78,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // Comparison Operations (GLD_NUM Tier 1)
     rt.register_builtin(">", builtin_gt);
+    rt.register_builtin(">-cols", builtin_gt_cols);
     rt.register_builtin("<", builtin_lt);
     rt.register_builtin(">=", builtin_gte);
     rt.register_builtin("<=", builtin_lte);
@@ -213,6 +214,12 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         }
         (Value::Int(s), Value::Col(c)) => {
             let result = mul_column_scalar(c, *s as f64)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+
+        // Col * Col (element-wise)
+        (Value::Col(a), Value::Col(b)) => {
+            let result = mul_columns(a, b)?;
             Ok(Value::Col(Arc::new(result)))
         }
 
@@ -519,6 +526,45 @@ fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 }
 
+/// (>-cols table scalar) - Apply > comparison to all numeric columns
+///
+/// Table-level wrapper: TableView -> TableView
+/// Returns table with 1.0/0.0 masks for all numeric columns
+fn builtin_gt_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(">-cols expects 2 arguments (table scalar), got {}", args.len()));
+    }
+
+    let threshold = args[1].as_float()?;
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let result: Vec<f64> = data.iter()
+                            .map(|&x| {
+                                if x.is_nan() {
+                                    f64::NAN
+                                } else if x > threshold {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .collect();
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::TableView(Arc::new(result)))
+        }
+        _ => Err(format!(">-cols expects TableView, got {}", args[0].type_name())),
+    }
+}
+
 // ============================================================================
 // GLD_NUM Tier 2: Shape and Null Handling
 // ============================================================================
@@ -759,6 +805,14 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let mid = ncols / 2;
     let mut new_names = Vec::new();
     let mut new_columns = Vec::new();
+
+    // Preserve first column if it's a Date column (for mapr join key)
+    if !tv.table.columns.is_empty() {
+        if matches!(tv.table.columns[0], blawktrust::Column::Date(_)) {
+            new_names.push(tv.table.names[0].clone());
+            new_columns.push(tv.table.columns[0].clone());
+        }
+    }
 
     // Compute all pairs: first_half - second_half
     for i in 0..mid {
@@ -1591,6 +1645,22 @@ fn mul_column_scalar(col: &blawktrust::Column, scalar: f64) -> Result<blawktrust
             Ok(blawktrust::Column::new_f64(result))
         }
         _ => Err("Column scalar multiplication only supported for F64 columns".to_string()),
+    }
+}
+
+fn mul_columns(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+    if a.len() != b.len() {
+        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+    }
+
+    match (a, b) {
+        (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
+            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+                .map(|(x, y)| x * y)
+                .collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Column multiplication only supported for F64 columns".to_string()),
     }
 }
 
