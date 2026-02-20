@@ -7,7 +7,8 @@ use blisp::planner::plan;
 use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blisp::ast::Expr;
+use blisp::ast::{Expr, Interner};
+use blisp::frame::IndexColumn;
 use common::{assert_frame_equiv, direct_eval, Env};
 use std::sync::Arc;
 
@@ -570,4 +571,90 @@ fn smoke_shift_after_unary() {
         ]),
     ]);
     check_equiv(rt, &env, expr);
+}
+
+// ============================================================================
+// Time-Series Identity: dlog
+// ============================================================================
+
+#[test]
+fn smoke_dlog_identity_handcrafted() {
+    // Property: dlog(x) == log(x / shift(1, x))
+    // Hand-crafted data to verify sign convention and NA behavior
+    
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+    
+    // Build a small positive-valued frame: [2.0, 4.0, 8.0, 4.0, 2.0]
+    // Expected dlog results:
+    // Row 0: NA (no prior value)
+    // Row 1: log(4/2) = log(2) ≈ 0.693
+    // Row 2: log(8/4) = log(2) ≈ 0.693
+    // Row 3: log(4/8) = log(0.5) ≈ -0.693
+    // Row 4: log(2/4) = log(0.5) ≈ -0.693
+    
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103, 20200104, 20200105,
+    ]));
+    
+    let col_data = blawktrust::Column::F64(vec![2.0, 4.0, 8.0, 4.0, 2.0]);
+    
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["price".to_string()],
+    );
+    
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 5,
+    };
+    
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+    
+    // LHS: (dlog x)
+    let dlog_sym = interner.intern("dlog");
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(dlog_sym),
+        Expr::Sym(x_sym),
+    ]);
+    
+    // RHS: (log (/ x (shift 1 x)))
+    let log_sym = interner.intern("log");
+    let div_sym = interner.intern("/");
+    let shift_sym = interner.intern("shift");
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(log_sym),
+        Expr::List(vec![
+            Expr::Sym(div_sym),
+            Expr::Sym(x_sym),
+            Expr::List(vec![
+                Expr::Sym(shift_sym),
+                Expr::Int(1),
+                Expr::Sym(x_sym),
+            ]),
+        ]),
+    ]);
+    
+    // Evaluate both via IR
+    let lhs_normalized = normalize(lhs_expr, &mut interner);
+    let lhs_plan = plan(&lhs_normalized, &interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+    
+    let rhs_normalized = normalize(rhs_expr, &mut interner);
+    let rhs_plan = plan(&rhs_normalized, &interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+    
+    // Verify identity
+    common::assert_frame_equiv(&lhs, &rhs);
 }

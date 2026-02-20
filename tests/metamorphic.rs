@@ -19,6 +19,7 @@ use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
 use blisp::ast::{Expr, Interner};
+use blisp::frame::IndexColumn;
 use common::{assert_frame_equiv, build_date_frame, Env};
 use std::sync::Arc;
 
@@ -974,6 +975,149 @@ fn meta_shift_all_na_when_k_exceeds_nrows() {
                 }
             }
             _ => panic!("Expected F64 column"),
+        }
+    }
+}
+
+// ============================================================================
+// Time-Series Identities (Foundation for Rolling Ops)
+// ============================================================================
+
+#[test]
+fn meta_dlog_identity_positive_domain() {
+    // Property: dlog(x) == log(x / shift(1, x))
+    // Validates: Shift sign convention, div-by-zero, NA propagation
+    //
+    // This is the STRONGEST semantic tripwire for time-series correctness.
+    // Catches: off-by-one, sign errors, NA/div0 edge cases
+    
+    let mut rt = Runtime::new();
+    
+    // Build positive-valued frame to stay in log domain
+    // Values in (0.1, 100.0) with controlled NA rate
+    let seed = 12345_u64;
+    let nrows = 20;
+    let ncols = 2;
+    
+    // Generate positive values
+    let mut rng = seed;
+    let mut dates = Vec::with_capacity(nrows);
+    for i in 0..nrows {
+        dates.push(20200101 + i as i32);
+    }
+    
+    let index = IndexColumn::Date(Arc::new(dates));
+    
+    let mut cols_data = Vec::new();
+    for _col in 0..ncols {
+        let mut col_vals = Vec::with_capacity(nrows);
+        for _row in 0..nrows {
+            rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+            
+            // 10% NA rate
+            if (rng % 100) < 10 {
+                col_vals.push(f64::NAN);
+            } else {
+                // Positive values in (0.1, 100.0)
+                let val = 0.1 + ((rng % 10000) as f64) / 100.0;
+                col_vals.push(val);
+            }
+        }
+        
+        
+        cols_data.push(blisp::frame::ColData::Mat(Arc::new(blawktrust::Column::F64(col_vals))));
+    }
+    
+    let colnames = (0..ncols).map(|i| format!("col{}", i)).collect();
+    
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        colnames,
+    );
+    
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: cols_data,
+        nrows,
+    };
+    
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+    
+    // LHS: (dlog x)
+    let dlog_sym = rt.interner.intern("dlog");
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(dlog_sym),
+        Expr::Sym(x_sym),
+    ]);
+    
+    // RHS: (log (/ x (shift 1 x)))
+    let log_sym = rt.interner.intern("log");
+    let div_sym = rt.interner.intern("/");
+    let shift_sym = rt.interner.intern("shift");
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(log_sym),
+        Expr::List(vec![
+            Expr::Sym(div_sym),
+            Expr::Sym(x_sym),
+            Expr::List(vec![
+                Expr::Sym(shift_sym),
+                Expr::Int(1),
+                Expr::Sym(x_sym),
+            ]),
+        ]),
+    ]);
+    
+    // Evaluate both via IR
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+    
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+    
+    // Layer 1: Tags/shape equivalence
+    assert_eq!(lhs.nrows, rhs.nrows, "dlog identity: nrows mismatch");
+    assert_eq!(lhs.cols.len(), rhs.cols.len(), "dlog identity: ncols mismatch");
+    
+    // Layer 2: Mask equivalence (NA patterns must match exactly)
+    for (col_idx, (lhs_col, rhs_col)) in lhs.cols.iter().zip(rhs.cols.iter()).enumerate() {
+        use blisp::frame::ColData;
+        let lhs_data = match lhs_col { ColData::Mat(col) => col };
+        let rhs_data = match rhs_col { ColData::Mat(col) => col };
+        
+        match (lhs_data.as_ref(), rhs_data.as_ref()) {
+            (blawktrust::Column::F64(lhs_vals), blawktrust::Column::F64(rhs_vals)) => {
+                for (row_idx, (&l, &r)) in lhs_vals.iter().zip(rhs_vals.iter()).enumerate() {
+                    // Mask equivalence: is_na(lhs) == is_na(rhs)
+                    assert_eq!(
+                        l.is_nan(), r.is_nan(),
+                        "dlog identity: NA mask mismatch at row {}, col {}",
+                        row_idx, col_idx
+                    );
+                    
+                    // Layer 3: Value equivalence for non-NA cells
+                    if !l.is_nan() && !r.is_nan() {
+                        let diff = (l - r).abs();
+                        assert!(
+                            diff < 1e-10,
+                            "dlog identity: value mismatch at row {}, col {}: {} vs {} (diff: {})",
+                            row_idx, col_idx, l, r, diff
+                        );
+                    }
+                }
+            }
+            _ => panic!("Expected F64 columns"),
         }
     }
 }
