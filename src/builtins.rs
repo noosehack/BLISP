@@ -1173,54 +1173,81 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 ///           [date: 2024-01-03, signal: 2.1]
 ///   result: [date: 2024-01-01, price: 100]
 ///           [date: 2024-01-03, price: 102]
+/// (mapr x y) - Map/reindex x onto y's index (RIGHT OUTER JOIN)
+///
+/// BLADE Blueprint Phase 2.2 semantics:
+/// - y provides target index (authority)
+/// - Output index = index(y) (Arc reused)
+/// - Output colnames = colnames(x) (Arc reused)
+/// - Values = reindex x onto y index; missing -> NA
+///
+/// This is SQL: SELECT y.date, x.* FROM y LEFT JOIN x ON x.date=y.date
+///
+/// Example:
+///   x: DATE=[2020-01-01, 2020-01-03], price=[100, 102]
+///   y: DATE=[2020-01-01, 2020-01-02, 2020-01-03]
+///   mapr(x, y): DATE=[2020-01-01, 2020-01-02, 2020-01-03], price=[100, NA, 102]
 fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("mapr expects 2 arguments (target source), got {}", args.len()));
+        return Err(format!("mapr expects 2 arguments (x y), got {}", args.len()));
     }
 
-    let target = ensure_tableview(&args[0], rt)?;
-    let source = ensure_tableview(&args[1], rt)?;
-
-    if target.table.columns.is_empty() || source.table.columns.is_empty() {
-        return Err("mapr: both tables must have at least one column".to_string());
-    }
-
-    // Build HashMap from target first column (keys) to row indices
-    let target_keys = &target.table.columns[0];
-    use std::collections::HashMap;
-    let mut key_map: HashMap<String, usize> = HashMap::new();
-
-    match target_keys {
-        blawktrust::Column::Date(data) => {
-            for (i, &key) in data.iter().enumerate() {
-                key_map.insert(key.to_string(), i);
-            }
+    // BLADE: Frame version using reindex_by
+    match (&args[0], &args[1]) {
+        (Value::Frame(x), Value::Frame(y)) => {
+            // mapr(x, y) = reindex x onto y's index
+            let result = frame::reindex_by(x, &y.tags.index);
+            Ok(Value::Frame(Arc::new(result)))
         }
-        blawktrust::Column::F64(data) => {
-            for (i, &key) in data.iter().enumerate() {
-                key_map.insert(key.to_string(), i);
+        (Value::TableView(_), Value::TableView(_)) => {
+            // Legacy TableView path (keep for compatibility)
+            let target = ensure_tableview(&args[0], rt)?;
+            let source = ensure_tableview(&args[1], rt)?;
+
+            if target.table.columns.is_empty() || source.table.columns.is_empty() {
+                return Err("mapr: both tables must have at least one column".to_string());
             }
+
+            // Build HashMap from target first column (keys) to row indices
+            let target_keys = &target.table.columns[0];
+            use std::collections::HashMap;
+            let mut key_map: HashMap<String, usize> = HashMap::new();
+
+            match target_keys {
+                blawktrust::Column::Date(data) => {
+                    for (i, &key) in data.iter().enumerate() {
+                        key_map.insert(key.to_string(), i);
+                    }
+                }
+                blawktrust::Column::F64(data) => {
+                    for (i, &key) in data.iter().enumerate() {
+                        key_map.insert(key.to_string(), i);
+                    }
+                }
+                _ => return Err("mapr: first column must be Date or F64".to_string()),
+            }
+
+            // Prepare result columns (use source's first column as row keys)
+            let mut result_names = vec![source.table.names[0].clone()];
+            let mut result_columns = vec![source.table.columns[0].clone()];
+
+            // For each target data column (skip first, it's the key)
+            for j in 1..target.table.columns.len() {
+                let target_col = &target.table.columns[j];
+
+                // Map target column to source keys
+                let mapped_col = map_column_by_keys(&source.table.columns[0], target_col, &key_map)?;
+
+                result_names.push(target.table.names[j].clone());
+                result_columns.push(mapped_col);
+            }
+
+            let result_table = blawktrust::Table::new(result_names, result_columns);
+            Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
-        _ => return Err("mapr: first column must be Date or F64".to_string()),
+        _ => Err(format!("mapr expects (Frame Frame) or (TableView TableView), got ({} {})",
+            args[0].type_name(), args[1].type_name())),
     }
-
-    // Prepare result columns (use source's first column as row keys)
-    let mut result_names = vec![source.table.names[0].clone()];
-    let mut result_columns = vec![source.table.columns[0].clone()];
-
-    // For each target data column (skip first, it's the key)
-    for j in 1..target.table.columns.len() {
-        let target_col = &target.table.columns[j];
-
-        // Map target column to source keys
-        let mapped_col = map_column_by_keys(&source.table.columns[0], target_col, &key_map)?;
-
-        result_names.push(target.table.names[j].clone());
-        result_columns.push(mapped_col);
-    }
-
-    let result_table = blawktrust::Table::new(result_names, result_columns);
-    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
 }
 
 /// (ur col window [step]) - Unit ratio: value / rolling_volatility (step default=1)
