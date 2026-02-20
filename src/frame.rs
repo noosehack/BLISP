@@ -197,7 +197,7 @@ pub enum IndexKey {
 ///   Result always has ALL rows from target_index
 ///   Matching rows from source preserved
 ///   Missing rows -> NA
-pub fn reindex_by(source: &Frame, target_index: &IndexColumn) -> Frame {
+pub fn reindex_by(source: &Frame, target_index: Arc<IndexColumn>) -> Frame {
     // Build hashmap: source index value -> row index
     let mut index_map: HashMap<IndexKey, usize> = HashMap::new();
     for i in 0..source.tags.index.len() {
@@ -261,7 +261,7 @@ pub fn reindex_by(source: &Frame, target_index: &IndexColumn) -> Frame {
     // Create new Tags with target_index and source colnames (both Arc-reused)
     let out_tags = Tags {
         index_name: source.tags.index_name.clone(), // Could be improved: take from target
-        index: Arc::new(target_index.clone()),      // TODO: Accept Arc directly to avoid clone
+        index: target_index,                         // Arc reused!
         colnames: Arc::clone(&source.tags.colnames), // Arc reused!
     };
 
@@ -604,7 +604,7 @@ mod tests {
         // Target: same dates (all should match)
         let target_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
 
-        let result = reindex_by(&source, &target_index);
+        let result = reindex_by(&source, Arc::new(target_index));
 
         // Check output
         assert_eq!(result.nrows(), 3);
@@ -637,7 +637,7 @@ mod tests {
         // Target: dates [18000, 18001, 18002] (18001 missing from source)
         let target_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
 
-        let result = reindex_by(&source, &target_index);
+        let result = reindex_by(&source, Arc::new(target_index));
 
         // Check output
         assert_eq!(result.nrows(), 3, "Should have 3 rows (target size)");
@@ -665,7 +665,7 @@ mod tests {
         // Target: dates [18000, 18001, 18002] (canonical order)
         let target_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
 
-        let result = reindex_by(&source, &target_index);
+        let result = reindex_by(&source, Arc::new(target_index));
 
         // Verify values reordered to match target: [100, 101, 102]
         let out_col = result.get_col(0).unwrap();
@@ -700,7 +700,7 @@ mod tests {
             "D".to_string(),
         ]));
 
-        let result = reindex_by(&source, &target_index);
+        let result = reindex_by(&source, Arc::new(target_index));
 
         // Result should be: [1, NA, 3, NA]
         assert_eq!(result.nrows(), 4, "RIGHT OUTER JOIN: all target rows");
@@ -736,9 +736,9 @@ mod tests {
         let y = Frame::new(y_tags, vec![y_col]);
 
         // First application
-        let once = reindex_by(&x, &y.tags.index);
+        let once = reindex_by(&x, Arc::clone(&y.tags.index));
         // Second application (should be identical)
-        let twice = reindex_by(&once, &y.tags.index);
+        let twice = reindex_by(&once, Arc::clone(&y.tags.index));
 
         // Numeric equality
         assert_eq!(once.nrows(), twice.nrows(), "Idempotence: row count");
@@ -778,7 +778,7 @@ mod tests {
         let x = Frame::new(x_tags, vec![x_col]);
 
         // y has SAME index values
-        let result = reindex_by(&x, &index);
+        let result = reindex_by(&x, Arc::new(index));
 
         // Numeric equality
         assert_eq!(result.nrows(), x.nrows(), "Identity: row count");
@@ -807,10 +807,11 @@ mod tests {
 
         // Large y
         let y_index = IndexColumn::Date(Arc::new(vec![17999, 18000, 18001, 18002, 18003]));
+        let y_nrows = y_index.len();
 
-        let result = reindex_by(&x, &y_index);
+        let result = reindex_by(&x, Arc::new(y_index));
 
-        assert_eq!(result.nrows(), y_index.len(),
+        assert_eq!(result.nrows(), y_nrows,
             "Monotonicity: output rows must equal target rows");
     }
 
@@ -825,7 +826,7 @@ mod tests {
         let x = Frame::new(x_tags, vec![x_col]);
 
         let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003]));
-        let result = reindex_by(&x, &y_index);
+        let result = reindex_by(&x, Arc::new(y_index));
 
         // Check: non-NA values must be from x
         let result_col = result.get_col(0).unwrap();
@@ -893,7 +894,7 @@ mod tests {
         let y = Frame::new(y_tags, vec![y_col]);
 
         let asof_result = asofr(&x, &y);
-        let mapr_result = reindex_by(&x, &y.tags.index);
+        let mapr_result = reindex_by(&x, Arc::clone(&y.tags.index));
 
         // Should be numerically identical
         assert_eq!(asof_result.nrows(), mapr_result.nrows());

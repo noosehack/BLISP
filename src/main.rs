@@ -7,6 +7,10 @@ mod eval;
 mod builtins;
 mod io;
 mod frame;
+mod normalize;
+mod ir;
+mod planner;
+mod exec;
 
 use runtime::Runtime;
 use reader::Reader;

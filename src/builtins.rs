@@ -1197,7 +1197,7 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Frame(x), Value::Frame(y)) => {
             // mapr(x, y) = reindex x onto y's index
-            let result = frame::reindex_by(x, &y.tags.index);
+            let result = frame::reindex_by(x, Arc::clone(&y.tags.index));
             Ok(Value::Frame(Arc::new(result)))
         }
         (Value::TableView(_), Value::TableView(_)) => {
