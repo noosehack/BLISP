@@ -798,3 +798,172 @@ fn smoke_rolling_mean_handcrafted() {
     assert!(values[4].is_nan(), "Row 4 should be NA (only 2 valid in window)");
     assert!(values[5].is_nan(), "Row 5 should be NA (only 2 valid in window)");
 }
+
+// ============================================================================
+// Rolling Std Operation Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_rolling_std_window_one() {
+    let (mut rt, env) = setup_env();
+    // (rolling-std 1 x) - window=1 should return 0.0 (single point has zero variance)
+    let rs_sym = rt.interner.intern("rolling-std");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(1),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_std_constant_series() {
+    // Constant series should have std = 0.0
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103, 20200104, 20200105,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![5.0, 5.0, 5.0, 5.0, 5.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["const".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 5,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    let rs_sym = interner.intern("rolling-std");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut interner);
+    let ir_plan = plan(&normalized, &interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let col = match &result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let values = match col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    assert!(values[0].is_nan(), "Row 0 should be NA (prefix)");
+    assert!(values[1].is_nan(), "Row 1 should be NA (prefix)");
+    assert!(values[2].abs() < 1e-10, "Row 2 should be 0.0 (constant)");
+    assert!(values[3].abs() < 1e-10, "Row 3 should be 0.0 (constant)");
+    assert!(values[4].abs() < 1e-10, "Row 4 should be 0.0 (constant)");
+}
+
+#[test]
+fn smoke_rolling_std_known_window() {
+    // Known window: [1, 2, 3]
+    // Mean = 2.0
+    // Variance = (1/3) * [(1-2)² + (2-2)² + (3-2)²] = (1/3) * [1 + 0 + 1] = 2/3
+    // Std = sqrt(2/3) ≈ 0.816496580927726
+
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["value".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 3,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    let rs_sym = interner.intern("rolling-std");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut interner);
+    let ir_plan = plan(&normalized, &interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let col = match &result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let values = match col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    assert!(values[0].is_nan(), "Row 0 should be NA (prefix)");
+    assert!(values[1].is_nan(), "Row 1 should be NA (prefix)");
+    let expected_std = (2.0_f64 / 3.0_f64).sqrt();
+    assert!((values[2] - expected_std).abs() < 1e-10, "Row 2 should be sqrt(2/3) ≈ 0.8165");
+}
+
+#[test]
+fn smoke_rolling_std_with_na() {
+    let (mut rt, env) = setup_env();
+    // (rolling-std 3 z) where z has NAs
+    let rs_sym = rt.interner.intern("rolling-std");
+    let z_sym = rt.interner.intern("z");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(3),
+        Expr::Sym(z_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_std_after_unary() {
+    let (mut rt, env) = setup_env();
+    // (rolling-std 2 (dlog x))
+    let rs_sym = rt.interner.intern("rolling-std");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(2),
+        Expr::List(vec![
+            Expr::Sym(dlog_sym),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+    check_equiv(rt, &env, expr);
+}

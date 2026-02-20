@@ -181,6 +181,55 @@ fn plan_expr(
                         Ok(plan.add_node(shift_node))
                     }
 
+                    // Rolling std: (rolling-std w x) where w is positive integer
+                    "rolling-std" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-std expects 2 arguments: (rolling-std w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-std w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-std w must be integer, not float".to_string()),
+                            _ => return Err("rolling-std w must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)
+                    }
+
+                    // Feature engineering: ft-std as planner rewrite
+                    // (ft-std w x) → (shift 1 (rolling-std w x))
+                    "ft-std" => {
+                        if elements.len() != 3 {
+                            return Err("ft-std expects 2 arguments: (ft-std w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-std w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("ft-std w must be integer, not float".to_string()),
+                            _ => return Err("ft-std w must be integer literal".to_string()),
+                        };
+
+                        // Plan inner rolling-std
+                        let rolling_node = plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)?;
+
+                        // Plan outer shift(1, ...)
+                        let input_node = plan.get_node(rolling_node).ok_or("Invalid rolling-std node")?;
+                        let shift_node_id = NodeId(plan.nodes.len());
+                        let shift_node = Node {
+                            id: shift_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: rolling_node,
+                                func: NumericFunc::Shift { k: 1 },
+                            }),
+                            schema: input_node.schema.clone(), // Shift preserves schema (I1-I3)
+                        };
+                        Ok(plan.add_node(shift_node))
+                    }
+
                     // Binary numeric operations
                     "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
                     "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),

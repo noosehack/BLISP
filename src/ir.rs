@@ -184,6 +184,18 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone
     RollMean { w: usize },
+    /// Rolling standard deviation: trailing window std (population, ddof=0)
+    ///
+    /// Contract (see contracts.md §5):
+    /// - Trailing window: [i-w+1 .. i] inclusive
+    /// - Skip NA in window, require w valid values (strict min_periods)
+    /// - Population std: σ = sqrt((1/w) * Σ(x-μ)²)
+    /// - Constant series → σ = 0.0 (not NA)
+    /// - Window=1 → σ = 0.0 for valid values
+    /// - Prefix i < w-1 always NA
+    /// - Shape preserved (I1-I3)
+    /// - NA mask monotone
+    RollStd { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)

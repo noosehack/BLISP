@@ -1394,3 +1394,324 @@ fn meta_ft_mean_derived_form_identity() {
     // Verify exact equivalence
     common::assert_frame_equiv(&lhs, &rhs);
 }
+
+// ============================================================================
+// Rolling Std Metamorphic Laws (contracts.md §6)
+// ============================================================================
+
+#[test]
+fn meta_rolling_std_non_negativity() {
+    // L2: rolling_std(w,x)[i] >= 0.0 for all valid (non-NA) results
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 20, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Execute (rolling-std 4 x)
+    let rs_sym = rt.interner.intern("rolling-std");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&plan_result, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify: all non-NA values are >= 0.0
+    for (col_idx, result_col) in result.cols.iter().enumerate() {
+        let result_data = match result_col {
+            blisp::frame::ColData::Mat(c) => c,
+            _ => panic!("Expected Mat"),
+        };
+
+        match result_data.as_ref() {
+            blawktrust::Column::F64(result_vals) => {
+                for (row_idx, &val) in result_vals.iter().enumerate() {
+                    if !val.is_nan() {
+                        assert!(
+                            val >= 0.0,
+                            "Non-negativity violation: result[{},{}] = {} (should be >= 0)",
+                            row_idx, col_idx, val
+                        );
+                    }
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+}
+
+#[test]
+fn meta_rolling_std_shift_commutation() {
+    // L3: shift(k, rolling_std(w,x)) == rolling_std(w, shift(k,x))
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.05);
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let shift_sym = rt.interner.intern("shift");
+    let rs_sym = rt.interner.intern("rolling-std");
+
+    // LHS: (shift 2 (rolling-std 3 x))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(2),
+        Expr::List(vec![
+            Expr::Sym(rs_sym),
+            Expr::Int(3),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // RHS: (rolling-std 3 (shift 2 x))
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(3),
+        Expr::List(vec![
+            Expr::Sym(shift_sym),
+            Expr::Int(2),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_rolling_std_scale_equivariance() {
+    // L3: rolling_std(w, x*c) == rolling_std(w,x) * |c| for scalar c != 0
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.0); // No NA for simplicity
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rs_sym = rt.interner.intern("rolling-std");
+    let mul_sym = rt.interner.intern("*");
+
+    let scale = 3.0;
+
+    // LHS: (rolling-std 4 (* x 3.0))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(4),
+        Expr::List(vec![
+            Expr::Sym(mul_sym),
+            Expr::Sym(x_sym),
+            Expr::Float(scale),
+        ]),
+    ]);
+
+    // RHS: (* (rolling-std 4 x) 3.0)
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(mul_sym),
+        Expr::List(vec![
+            Expr::Sym(rs_sym),
+            Expr::Int(4),
+            Expr::Sym(x_sym),
+        ]),
+        Expr::Float(scale),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_rolling_std_translation_invariance() {
+    // L4: rolling_std(w, x + c) == rolling_std(w,x) for scalar c (where defined)
+    // Std is translation-invariant
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.0); // No NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rs_sym = rt.interner.intern("rolling-std");
+    let add_sym = rt.interner.intern("+");
+
+    // LHS: (rolling-std 4 (+ x 10.0))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(4),
+        Expr::List(vec![
+            Expr::Sym(add_sym),
+            Expr::Sym(x_sym),
+            Expr::Float(10.0),
+        ]),
+    ]);
+
+    // RHS: (rolling-std 4 x)
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_rolling_std_mask_monotone() {
+    // mask(rolling_std(w,x)) ⊇ mask(x)
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.2); // 20% NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rs_sym = rt.interner.intern("rolling-std");
+    let expr = Expr::List(vec![
+        Expr::Sym(rs_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&plan_result, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify: for each cell, if x[i,j] is NA, then result[i,j] must also be NA
+    for (col_idx, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
+        let x_data = match x_col {
+            blisp::frame::ColData::Mat(c) => c,
+            _ => panic!("Expected Mat"),
+        };
+        let result_data = match result_col {
+            blisp::frame::ColData::Mat(c) => c,
+            _ => panic!("Expected Mat"),
+        };
+
+        match (x_data.as_ref(), result_data.as_ref()) {
+            (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
+                for (row_idx, (&x_val, &result_val)) in x_vals.iter().zip(result_vals.iter()).enumerate() {
+                    if x_val.is_nan() {
+                        assert!(
+                            result_val.is_nan(),
+                            "Mask monotonicity violation: x[{},{}] is NA but result is not NA",
+                            row_idx, col_idx
+                        );
+                    }
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+}
+
+#[test]
+fn meta_ft_std_derived_form_identity() {
+    // ft-std metamorphic identity: ft_std(w,x) == shift(1, rolling_std(w,x))
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 20, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let ft_std_sym = rt.interner.intern("ft-std");
+    let shift_sym = rt.interner.intern("shift");
+    let rs_sym = rt.interner.intern("rolling-std");
+
+    // LHS: (ft-std 3 x)
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(ft_std_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    // RHS: (shift 1 (rolling-std 3 x))
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(1),
+        Expr::List(vec![
+            Expr::Sym(rs_sym),
+            Expr::Int(3),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify exact equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}

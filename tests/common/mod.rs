@@ -391,6 +391,48 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         Ok(Arc::new(result))
                     }
 
+                    "rolling-std" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-std expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-std w must be positive, got {}", i)),
+                            _ => return Err("rolling-std w must be positive integer".to_string()),
+                        };
+
+                        let input = direct_eval(&elements[2], env, interner)?;
+                        let result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_std_column(col, w)
+                        });
+                        Ok(Arc::new(result))
+                    }
+
+                    "ft-std" => {
+                        if elements.len() != 3 {
+                            return Err("ft-std expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-std w must be positive, got {}", i)),
+                            _ => return Err("ft-std w must be positive integer".to_string()),
+                        };
+
+                        // ft-std(w, x) = shift(1, rolling-std(w, x))
+                        let input = direct_eval(&elements[2], env, interner)?;
+                        let rolling_result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_std_column(col, w)
+                        });
+                        let result = map_numeric_preserve_tags(&rolling_result, |col| {
+                            shift_column(col, 1)
+                        });
+                        Ok(Arc::new(result))
+                    }
+
                     // Joins: reindex_by/asofr
                     "mapr" => {
                         if elements.len() != 3 {
@@ -569,6 +611,50 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
 
                 if count >= w {
                     result[i] = sum / (w as f64);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+fn rolling_std_column(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            // Trailing window [i-w+1 .. i], strict min_periods, skip NA
+            for i in (w - 1)..nrows {
+                let window_start = i + 1 - w;
+                let window_end = i + 1;
+
+                // Collect valid values
+                let mut values = Vec::with_capacity(w);
+                for &x in &data[window_start..window_end] {
+                    if !x.is_nan() {
+                        values.push(x);
+                    }
+                }
+
+                // Strict min_periods: require w valid values
+                if values.len() >= w {
+                    // Compute mean
+                    let sum: f64 = values.iter().sum();
+                    let mean = sum / (w as f64);
+
+                    // Compute variance (population, ddof=0)
+                    let variance: f64 = values.iter()
+                        .map(|&x| {
+                            let diff = x - mean;
+                            diff * diff
+                        })
+                        .sum::<f64>() / (w as f64);
+
+                    // Std is sqrt of variance
+                    result[i] = variance.sqrt();
                 }
             }
 

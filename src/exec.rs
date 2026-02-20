@@ -115,6 +115,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Inv => inv_column(col),
                     NumericFunc::Shift { k } => shift_column(col, *k),
                     NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
+                    NumericFunc::RollStd { w } => rolling_std_column(col, *w),
                 }
             });
 
@@ -418,6 +419,64 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
                 // Strict min_periods: require w valid values
                 if count >= w {
                     result[i] = sum / (w as f64);
+                }
+                // Else: result[i] remains NA (already initialized)
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling standard deviation with strict min_periods semantics (population, ddof=0)
+///
+/// Contract (see contracts.md §5):
+/// - Trailing window: [i-w+1 .. i] inclusive
+/// - Skip NA in window, require w valid values (strict min_periods)
+/// - Population std: σ = sqrt((1/w) * Σ(x-μ)²)
+/// - Constant series → σ = 0.0 (not NA)
+/// - Window=1 → σ = 0.0 for valid values
+/// - Prefix i < w-1 always NA
+/// - Shape preserved, NA mask monotone
+fn rolling_std_column(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            // Contract: prefix i < w-1 is always NA (not enough observations)
+            // Already initialized to NAN above
+
+            // For each row i >= w-1, compute std of window [i-w+1 .. i]
+            for i in (w - 1)..nrows {
+                let window_start = i + 1 - w; // i - w + 1
+                let window_end = i + 1;        // Exclusive end: [start..end)
+
+                // Collect valid (non-NA) values in window
+                let mut values = Vec::with_capacity(w);
+                for &x in &data[window_start..window_end] {
+                    if !x.is_nan() {
+                        values.push(x);
+                    }
+                }
+
+                // Strict min_periods: require w valid values
+                if values.len() >= w {
+                    // Compute mean
+                    let sum: f64 = values.iter().sum();
+                    let mean = sum / (w as f64);
+
+                    // Compute variance (population, ddof=0)
+                    let variance: f64 = values.iter()
+                        .map(|&x| {
+                            let diff = x - mean;
+                            diff * diff
+                        })
+                        .sum::<f64>() / (w as f64);
+
+                    // Std is sqrt of variance
+                    result[i] = variance.sqrt();
                 }
                 // Else: result[i] remains NA (already initialized)
             }
