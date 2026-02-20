@@ -37,6 +37,32 @@ fn setup_env() -> (Runtime, Env) {
     (rt, env)
 }
 
+// Helper to set up Timestamp environment
+fn setup_env_ts() -> (Runtime, Env) {
+    let mut rt = Runtime::new();
+    let mut env = Env::new();
+
+    // Intern symbols first
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    let z_sym = rt.interner.intern("z");
+
+    // Build and bind timestamp frames
+    let x = common::build_timestamp_frame(42, "TIMESTAMP", 10, 2, false, 0.1);
+    env.bind("x", Arc::clone(&x));
+    rt.define(x_sym, Value::Frame(x));
+
+    let y = common::build_timestamp_frame(43, "TIMESTAMP", 15, 1, false, 0.05);
+    env.bind("y", Arc::clone(&y));
+    rt.define(y_sym, Value::Frame(y));
+
+    let z = common::build_timestamp_frame(44, "TIMESTAMP", 8, 3, true, 0.15);
+    env.bind("z", Arc::clone(&z));
+    rt.define(z_sym, Value::Frame(z));
+
+    (rt, env)
+}
+
 // Helper to run equivalence test
 fn check_equiv(mut rt: Runtime, env: &Env, expr: Expr) {
     let direct = direct_eval(&expr, env, &rt.interner).expect("direct eval failed");
@@ -151,6 +177,65 @@ fn smoke_nested_joins() {
             Expr::Sym(y_sym),
         ]),
         Expr::Sym(z_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+// ============================================================================
+// Timestamp Frame Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_timestamp_var() {
+    let (mut rt, env) = setup_env_ts();
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::Sym(x_sym);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_timestamp_mapr() {
+    let (mut rt, env) = setup_env_ts();
+    let mapr_sym = rt.interner.intern("mapr");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    let expr = Expr::List(vec![
+        Expr::Sym(mapr_sym),
+        Expr::Sym(x_sym),
+        Expr::Sym(y_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_timestamp_asofr() {
+    let (mut rt, env) = setup_env_ts();
+    let asofr_sym = rt.interner.intern("asofr");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    let expr = Expr::List(vec![
+        Expr::Sym(asofr_sym),
+        Expr::Sym(x_sym),
+        Expr::Sym(y_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_timestamp_pipeline() {
+    let (mut rt, env) = setup_env_ts();
+    // (asofr (dlog x) y)
+    let asofr_sym = rt.interner.intern("asofr");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    let expr = Expr::List(vec![
+        Expr::Sym(asofr_sym),
+        Expr::List(vec![
+            Expr::Sym(dlog_sym),
+            Expr::Sym(x_sym),
+        ]),
+        Expr::Sym(y_sym),
     ]);
     check_equiv(rt, &env, expr);
 }
