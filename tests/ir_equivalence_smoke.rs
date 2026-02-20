@@ -377,3 +377,115 @@ fn smoke_let_join_of_bound() {
 
     check_equiv(rt, &env, expr);
 }
+
+// ============================================================================
+// Binary Operations Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_binary_scalar_add() {
+    let (mut rt, env) = setup_env();
+    // (+ x 5.0)
+    let plus_sym = rt.interner.intern("+");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(plus_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(5.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_scalar_sub() {
+    let (mut rt, env) = setup_env();
+    // (- x 2.0)
+    let sub_sym = rt.interner.intern("-");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(sub_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(2.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_scalar_mul() {
+    let (mut rt, env) = setup_env();
+    // (* x 3.0)
+    let mul_sym = rt.interner.intern("*");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(mul_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(3.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_scalar_div() {
+    let (mut rt, env) = setup_env();
+    // (/ x 2.0)
+    let div_sym = rt.interner.intern("/");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(div_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(2.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_frame_frame_add() {
+    let (mut rt, env) = setup_env();
+    // (+ x x) - same frame added to itself
+    let plus_sym = rt.interner.intern("+");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(plus_sym),
+        Expr::Sym(x_sym),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_pipeline_with_scalar() {
+    let (mut rt, env) = setup_env();
+    // (* (dlog x) 100.0) - convert to percentage
+    let mul_sym = rt.interner.intern("*");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(mul_sym),
+        Expr::List(vec![
+            Expr::Sym(dlog_sym),
+            Expr::Sym(x_sym),
+        ]),
+        Expr::Float(100.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_binary_after_join() {
+    let (mut rt, env) = setup_env();
+    // (+ (mapr x y) 10.0)
+    let plus_sym = rt.interner.intern("+");
+    let mapr_sym = rt.interner.intern("mapr");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    let expr = Expr::List(vec![
+        Expr::Sym(plus_sym),
+        Expr::List(vec![
+            Expr::Sym(mapr_sym),
+            Expr::Sym(x_sym),
+            Expr::Sym(y_sym),
+        ]),
+        Expr::Float(10.0),
+    ]);
+    check_equiv(rt, &env, expr);
+}

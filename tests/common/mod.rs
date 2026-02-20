@@ -386,6 +386,41 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         direct_eval(&elements[2], &extended_env, interner)
                     }
 
+                    // Binary operations
+                    "+" | "-" | "*" | "/" => {
+                        if elements.len() != 3 {
+                            return Err(format!("{} expects 2 arguments", func_name));
+                        }
+
+                        let lhs = direct_eval(&elements[1], env, interner)?;
+
+                        // RHS can be scalar or frame
+                        let result = match &elements[2] {
+                            Expr::Float(scalar) => {
+                                // Scalar RHS: broadcast
+                                let result = map_numeric_preserve_tags(&lhs, |col| {
+                                    binary_scalar_column(col, *scalar, func_name)
+                                });
+                                Arc::new(result)
+                            }
+                            Expr::Int(i) => {
+                                // Integer scalar: convert to f64
+                                let scalar = *i as f64;
+                                let result = map_numeric_preserve_tags(&lhs, |col| {
+                                    binary_scalar_column(col, scalar, func_name)
+                                });
+                                Arc::new(result)
+                            }
+                            _ => {
+                                // Frame RHS: element-wise
+                                let rhs = direct_eval(&elements[2], env, interner)?;
+                                binary_frame_frame(&lhs, &rhs, func_name)?
+                            }
+                        };
+
+                        Ok(result)
+                    }
+
                     _ => Err(format!("Unknown function in direct eval: {}", func_name)),
                 }
             } else {
@@ -430,6 +465,81 @@ fn log_column(col: &Column) -> Column {
             Column::F64(result)
         }
         _ => col.clone(),
+    }
+}
+
+// Binary operation helpers
+fn binary_scalar_column(col: &Column, scalar: f64, op: &str) -> Column {
+    match col {
+        Column::F64(data) => {
+            let result = data.iter().map(|&x| {
+                if x.is_nan() || scalar.is_nan() {
+                    f64::NAN
+                } else {
+                    match op {
+                        "+" => x + scalar,
+                        "-" => x - scalar,
+                        "*" => x * scalar,
+                        "/" => if scalar == 0.0 { f64::NAN } else { x / scalar },
+                        _ => f64::NAN,
+                    }
+                }
+            }).collect();
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+fn binary_frame_frame(lhs: &Frame, rhs: &Frame, op: &str) -> Result<Arc<Frame>, String> {
+    if lhs.cols.len() != rhs.cols.len() {
+        return Err(format!("Binary op requires same column count: {} vs {}", lhs.cols.len(), rhs.cols.len()));
+    }
+    if lhs.nrows != rhs.nrows {
+        return Err(format!("Binary op requires same row count: {} vs {}", lhs.nrows, rhs.nrows));
+    }
+
+    let mut result_cols = Vec::with_capacity(lhs.cols.len());
+
+    for (lhs_col, rhs_col) in lhs.cols.iter().zip(rhs.cols.iter()) {
+        let lhs_data = match lhs_col { ColData::Mat(col) => col };
+        let rhs_data = match rhs_col { ColData::Mat(col) => col };
+
+        let result_col = binary_column_column(lhs_data, rhs_data, op)?;
+        result_cols.push(ColData::Mat(Arc::new(result_col)));
+    }
+
+    Ok(Arc::new(Frame {
+        tags: lhs.tags.clone(),
+        cols: result_cols,
+        nrows: lhs.nrows,
+    }))
+}
+
+fn binary_column_column(lhs: &Column, rhs: &Column, op: &str) -> Result<Column, String> {
+    match (lhs, rhs) {
+        (Column::F64(lhs_data), Column::F64(rhs_data)) => {
+            if lhs_data.len() != rhs_data.len() {
+                return Err(format!("Binary op requires same length: {} vs {}", lhs_data.len(), rhs_data.len()));
+            }
+
+            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&x, &y)| {
+                if x.is_nan() || y.is_nan() {
+                    f64::NAN
+                } else {
+                    match op {
+                        "+" => x + y,
+                        "-" => x - y,
+                        "*" => x * y,
+                        "/" => if y == 0.0 { f64::NAN } else { x / y },
+                        _ => f64::NAN,
+                    }
+                }
+            }).collect();
+
+            Ok(Column::F64(result))
+        }
+        _ => Err("Binary op requires F64 columns".to_string()),
     }
 }
 

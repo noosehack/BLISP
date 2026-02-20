@@ -501,3 +501,245 @@ fn meta_plan_deterministic() {
         "Planner must be deterministic (same AST → same plan)"
     );
 }
+
+// ============================================================================
+// Binary Operation Identity Laws (Algebraic Properties)
+// ============================================================================
+
+#[test]
+fn meta_binary_additive_identity() {
+    // Property: x + 0 == x (shape, tags, values)
+    // Validates: Scalar zero doesn't change frame
+
+    let mut rt = Runtime::new();
+    let mut env = Env::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    env.bind("x", Arc::clone(&x));
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (+ x 0)
+    let plus_sym = rt.interner.intern("+");
+    let expr = Expr::List(vec![
+        Expr::Sym(plus_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(0.0),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Shape identity
+    assert_eq!(result.nrows, x.nrows, "x + 0 must preserve nrows");
+    assert_eq!(result.cols.len(), x.cols.len(), "x + 0 must preserve ncols");
+
+    // Arc identity (I1-I3)
+    assert!(Arc::ptr_eq(&result.tags.index, &x.tags.index), "x + 0: I1 violation");
+    assert!(Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames), "x + 0: I2 violation");
+
+    // Value identity (within floating point tolerance)
+    assert_frame_equiv(&x, &result);
+}
+
+#[test]
+fn meta_binary_multiplicative_identity() {
+    // Property: x * 1 == x (shape, tags, values)
+    // Validates: Scalar one doesn't change frame
+
+    let mut rt = Runtime::new();
+    let mut env = Env::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    env.bind("x", Arc::clone(&x));
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (* x 1)
+    let mul_sym = rt.interner.intern("*");
+    let expr = Expr::List(vec![
+        Expr::Sym(mul_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(1.0),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Arc identity (I1-I3)
+    assert!(Arc::ptr_eq(&result.tags.index, &x.tags.index), "x * 1: I1 violation");
+    assert!(Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames), "x * 1: I2 violation");
+
+    assert_frame_equiv(&x, &result);
+}
+
+#[test]
+fn meta_binary_absorption_law() {
+    // Property: x * 0 yields 0 where x valid, NA where x NA (mask monotonic)
+    // Validates: Conservative NA policy, no invented values
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.2); // 20% NA rate
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (* x 0)
+    let mul_sym = rt.interner.intern("*");
+    let expr = Expr::List(vec![
+        Expr::Sym(mul_sym),
+        Expr::Sym(x_sym),
+        Expr::Float(0.0),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Check each column
+    for (i, result_col) in result.cols.iter().enumerate() {
+        use blisp::frame::ColData;
+        let result_data = match result_col {
+            ColData::Mat(col) => col,
+        };
+
+        let x_data = match &x.cols[i] {
+            ColData::Mat(col) => col,
+        };
+
+        match (x_data.as_ref(), result_data.as_ref()) {
+            (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
+                for j in 0..x_vals.len() {
+                    if x_vals[j].is_nan() {
+                        assert!(result_vals[j].is_nan(),
+                            "x * 0: Input NA must propagate (row {}, col {})", j, i);
+                    } else {
+                        assert_eq!(result_vals[j], 0.0,
+                            "x * 0: Valid input must become 0 (row {}, col {})", j, i);
+                    }
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+}
+
+#[test]
+fn meta_binary_preserves_lhs_tags() {
+    // Property: (op x scalar).tags == x.tags (pointer equality)
+    // Validates: Binary ops preserve LHS tags Arc (I1-I3)
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    let x_index_ptr = Arc::as_ptr(&x.tags.index);
+    let x_colnames_ptr = Arc::as_ptr(&x.tags.colnames);
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Test all four ops
+    for (op_name, op_val) in &[("+", 5.0), ("-", 2.0), ("*", 3.0), ("/", 2.0)] {
+        let op_sym = rt.interner.intern(op_name);
+        let expr = Expr::List(vec![
+            Expr::Sym(op_sym),
+            Expr::Sym(x_sym),
+            Expr::Float(*op_val),
+        ]);
+
+        let normalized = normalize(expr, &mut rt.interner);
+        let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+        let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+        let result = match result_val {
+            Value::Frame(f) => f,
+            _ => panic!("Expected Frame"),
+        };
+
+        // Arc pointer equality
+        let result_index_ptr = Arc::as_ptr(&result.tags.index);
+        let result_colnames_ptr = Arc::as_ptr(&result.tags.colnames);
+
+        assert_eq!(result_index_ptr, x_index_ptr,
+            "{} must preserve index Arc (I1)", op_name);
+        assert_eq!(result_colnames_ptr, x_colnames_ptr,
+            "{} must preserve colnames Arc (I2)", op_name);
+    }
+}
+
+#[test]
+fn meta_binary_na_propagation() {
+    // Property: mask(x op y) == mask(x) ∧ mask(y)
+    // Validates: Conservative NA policy for frame-frame ops
+
+    let mut rt = Runtime::new();
+
+    // Create two frames with different NA patterns
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.15);
+    let y = build_date_frame(42, "DATE", 10, 2, false, 0.20); // Same shape, same index
+
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+    rt.define(y_sym, Value::Frame(Arc::clone(&y)));
+
+    // Build (+ x y)
+    let plus_sym = rt.interner.intern("+");
+    let expr = Expr::List(vec![
+        Expr::Sym(plus_sym),
+        Expr::Sym(x_sym),
+        Expr::Sym(y_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Check NA propagation
+    for (i, ((x_col, y_col), result_col)) in x.cols.iter()
+        .zip(y.cols.iter())
+        .zip(result.cols.iter())
+        .enumerate() {
+
+        use blisp::frame::ColData;
+        let x_data = match x_col { ColData::Mat(col) => col };
+        let y_data = match y_col { ColData::Mat(col) => col };
+        let result_data = match result_col { ColData::Mat(col) => col };
+
+        match (x_data.as_ref(), y_data.as_ref(), result_data.as_ref()) {
+            (blawktrust::Column::F64(x_vals),
+             blawktrust::Column::F64(y_vals),
+             blawktrust::Column::F64(result_vals)) => {
+                for j in 0..x_vals.len() {
+                    if x_vals[j].is_nan() || y_vals[j].is_nan() {
+                        assert!(result_vals[j].is_nan(),
+                            "x + y: Either input NA must propagate (row {}, col {})", j, i);
+                    }
+                    // Note: We don't assert !NA → !NA because operations can create NA (e.g., div by 0)
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+}
