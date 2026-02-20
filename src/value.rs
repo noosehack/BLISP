@@ -169,6 +169,89 @@ fn display_column(col: &blawktrust::Column) -> String {
     }
 }
 
+/// Write Frame as CSV with INDEX FIRST (Blueprint Invariant I3)
+///
+/// Always renders: index_name, col1, col2, ...
+/// Streaming output to avoid memory bloat.
+pub fn write_frame_to<W: std::io::Write>(
+    writer: &mut W,
+    frame: &crate::frame::Frame,
+    _interner: &crate::ast::Interner,
+    max_rows: Option<usize>,
+) -> std::io::Result<()> {
+    let n_rows = frame.nrows();
+    let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
+
+    // Header: index_name, colnames...
+    write!(writer, "{}", frame.tags.index_name)?;
+    for colname in frame.tags.colnames.iter() {
+        write!(writer, ";{}", colname)?;
+    }
+    writeln!(writer)?;
+
+    // Data rows: index first, then numeric columns
+    for row_idx in 0..display_rows {
+        // Write index value
+        match &*frame.tags.index {
+            crate::frame::IndexColumn::Date(dates) => {
+                if row_idx < dates.len() {
+                    write!(writer, "{}", format_date(dates[row_idx]))?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+            crate::frame::IndexColumn::Timestamp(timestamps) => {
+                if row_idx < timestamps.len() {
+                    write!(writer, "{}", format_timestamp(timestamps[row_idx]))?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+            crate::frame::IndexColumn::String(strings) => {
+                if row_idx < strings.len() {
+                    write!(writer, "{}", strings[row_idx])?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+        }
+
+        // Write numeric columns
+        for col_data in &frame.cols {
+            write!(writer, ";")?;
+            match col_data {
+                crate::frame::ColData::Mat(col) => {
+                    match &**col {
+                        blawktrust::Column::F64(data) => {
+                            if row_idx < data.len() {
+                                let v = data[row_idx];
+                                if v.is_nan() {
+                                    write!(writer, "NA")?;
+                                } else {
+                                    write!(writer, "{}", v)?;
+                                }
+                            } else {
+                                write!(writer, "?")?;
+                            }
+                        }
+                        _ => {
+                            write!(writer, "?")?;
+                        }
+                    }
+                }
+            }
+        }
+        writeln!(writer)?;
+    }
+
+    // Show summary if truncated
+    if display_rows < n_rows {
+        writeln!(writer, "... ({} more rows, {} total)", n_rows - display_rows, n_rows)?;
+    }
+
+    Ok(())
+}
+
 /// Write table as CSV (semicolon-separated) with streaming output
 ///
 /// Writes incrementally to avoid building giant strings in memory.
@@ -429,8 +512,9 @@ pub enum Value {
     Sym(SymbolId),
     List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
-    Table(Arc<Table>),
+    Table(Arc<Table>),  // Deprecated - use Frame instead
     TableView(Arc<TableViewWithMetadata>),
+    Frame(Arc<crate::frame::Frame>),  // BLADE Frame (P2 policy)
     Lambda {
         params: Vec<SymbolId>,
         body: Vec<Expr>,
@@ -458,6 +542,7 @@ impl PartialEq for Value {
             (Value::Col(a), Value::Col(b)) => Arc::ptr_eq(a, b),
             (Value::Table(a), Value::Table(b)) => Arc::ptr_eq(a, b),
             (Value::TableView(a), Value::TableView(b)) => Arc::ptr_eq(a, b),
+            (Value::Frame(a), Value::Frame(b)) => Arc::ptr_eq(a, b),
             // Lambdas compare by pointer (params and body)
             (Value::Lambda { params: p1, body: b1, .. }, Value::Lambda { params: p2, body: b2, .. }) => {
                 p1 == p2 && b1 == b2
@@ -485,6 +570,7 @@ impl Value {
             Value::Col(_) => "col",
             Value::Table(_) => "table",
             Value::TableView(_) => "tableview",
+            Value::Frame(_) => "frame",
             Value::Lambda { .. } => "lambda",
             Value::Macro { .. } => "macro",
         }
@@ -536,6 +622,14 @@ impl Value {
         }
     }
 
+    /// Extract as frame
+    pub fn as_frame(&self) -> Result<Arc<crate::frame::Frame>, String> {
+        match self {
+            Value::Frame(f) => Ok(Arc::clone(f)),
+            _ => Err(format!("Expected frame, got {}", self.type_name())),
+        }
+    }
+
     /// Pretty-print value
     pub fn display(&self, interner: &crate::ast::Interner) -> String {
         match self {
@@ -573,6 +667,15 @@ impl Value {
                     _ => "?",
                 };
                 format!("TableView[ori={}, shape={}×{}]", ori_name, nr, nc)
+            }
+            Value::Frame(f) => {
+                // Write Frame as CSV with index first (Blueprint I3)
+                let mut buf = Vec::new();
+                if write_frame_to(&mut buf, f, interner, Some(30)).is_ok() {
+                    String::from_utf8_lossy(&buf).to_string()
+                } else {
+                    format!("Frame[{} rows × {} cols]", f.nrows(), f.ncols())
+                }
             }
             Value::Lambda { params, .. } => {
                 let param_names: Vec<String> = params.iter()

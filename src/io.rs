@@ -4,6 +4,7 @@
 
 use crate::value::{Value, Table};
 use crate::ast::{Interner, SymbolId};
+use crate::frame::{IndexColumn, Tags, Frame};
 use std::sync::Arc;
 use std::io::{self, Read};
 
@@ -13,19 +14,28 @@ use blawktrust::{NULL_DATE, NULL_TIMESTAMP};
 /// Number of rows to sample for type detection (bounded lookahead)
 const TYPE_DETECTION_ROWS: usize = 8;
 
-/// Load CSV file into a Table
+/// Load CSV file into a Frame (BLADE P2 policy)
 ///
-/// Format: First row is headers (column names), rest are data rows.
-/// All columns are assumed to be F64 for now.
+/// Format: First row is headers, rest are data rows.
+/// First column becomes index if it's DATE/TIMESTAMP or date/timestamp type.
+/// Remaining columns must be F64 (P2 policy).
 ///
 /// Example CSV:
 /// ```csv
-/// date,px,vol
-/// 2020-01-01,100.0,1000
-/// 2020-01-02,102.0,1200
+/// DATE;px;vol
+/// 2020-01-01;100.0;1000
+/// 2020-01-02;102.0;1200
 /// ```
 pub fn load_csv(filename: &str, interner: &mut Interner) -> Result<Value, String> {
-    parse_csv_from_file(filename, interner, None)
+    let file = std::fs::File::open(filename)
+        .map_err(|e| format!("Error opening file '{}': {}", filename, e))?;
+
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b';')
+        .from_reader(file);
+
+    parse_csv_to_frame(&mut csv_reader, interner, None)
 }
 
 /// Load CSV file with row limit (preview mode)
@@ -233,6 +243,165 @@ fn parse_csv_from_reader<R: std::io::Read>(reader: R, interner: &mut Interner, r
 /// This is the "preview parser" fast path for display/pipelines.
 fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
     parse_csv_from_reader(content.as_bytes(), interner, row_limit)
+}
+
+/// BLADE: Parse CSV to Frame with index preservation (Blueprint Phase 1)
+///
+/// First column is index if:
+/// - Name matches DATE/TIMESTAMP/TIME/date/timestamp, OR
+/// - Type is Date or Timestamp
+///
+/// Remaining columns must be F64 (P2 policy: numeric only).
+/// Returns Frame with Tags (index + colnames).
+fn parse_csv_to_frame<R: std::io::Read>(
+    reader: &mut csv::Reader<R>,
+    _interner: &mut Interner,
+    row_limit: Option<usize>
+) -> Result<Value, String> {
+    // Read headers
+    let headers = reader.headers()
+        .map_err(|e| format!("Error reading CSV headers: {}", e))?;
+
+    let column_names: Vec<String> = headers.iter()
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    if column_names.is_empty() {
+        return Err("CSV has no columns".to_string());
+    }
+
+    let num_cols = column_names.len();
+
+    // Sample rows for type detection
+    let sample_size = row_limit.map(|lim| lim.min(TYPE_DETECTION_ROWS)).unwrap_or(TYPE_DETECTION_ROWS);
+    let mut sample_rows: Vec<csv::StringRecord> = Vec::new();
+    for result in reader.records().take(sample_size) {
+        sample_rows.push(result.map_err(|e| format!("Error reading CSV record: {}", e))?);
+    }
+
+    if sample_rows.is_empty() {
+        // Empty CSV - return Frame with empty index and no columns
+        let index = IndexColumn::Date(Arc::new(vec![]));
+        let tags = Tags::new("DATE".to_string(), index, vec![]);
+        return Ok(Value::Frame(Arc::new(Frame::new(tags, vec![]))));
+    }
+
+    // Detect column types
+    let col_types: Vec<ColType> = (0..num_cols)
+        .map(|col_idx| {
+            for row in &sample_rows {
+                if col_idx < row.len() {
+                    let field = row.get(col_idx).unwrap().trim();
+                    if !is_na_token(field) {
+                        return detect_column_type(field);
+                    }
+                }
+            }
+            ColType::F64
+        })
+        .collect();
+
+    // Determine if first column is index
+    let first_col_is_index = matches!(col_types[0], ColType::Date | ColType::Timestamp)
+        || column_names[0].eq_ignore_ascii_case("DATE")
+        || column_names[0].eq_ignore_ascii_case("TIMESTAMP")
+        || column_names[0].eq_ignore_ascii_case("TIME");
+
+    let (index_name, index_start, numeric_start) = if first_col_is_index {
+        (column_names[0].clone(), 0, 1)
+    } else {
+        // No explicit index - create synthetic row numbers
+        ("ROW".to_string(), num_cols, 0)  // Special marker: index_start == num_cols
+    };
+
+    // Parse columns
+    let initial_capacity = row_limit.unwrap_or(256);
+    let mut index_dates: Vec<i32> = Vec::with_capacity(initial_capacity);
+    let mut index_timestamps: Vec<i64> = Vec::with_capacity(initial_capacity);
+    let mut index_strings: Vec<String> = Vec::with_capacity(initial_capacity);
+    let mut f64_columns: Vec<Vec<f64>> = (0..num_cols)
+        .map(|_| Vec::with_capacity(initial_capacity))
+        .collect();
+
+    // Process sample rows
+    let mut rows_parsed = 0;
+    for record in sample_rows {
+        // Parse index if exists
+        if index_start < num_cols {
+            let field = record.get(index_start).unwrap().trim();
+            match col_types[index_start] {
+                ColType::Date => index_dates.push(parse_date_or_null(field)),
+                ColType::Timestamp => index_timestamps.push(parse_timestamp_or_null(field)),
+                ColType::F64 => index_strings.push(field.to_string()),
+            }
+        } else {
+            // Synthetic row numbers
+            index_strings.push(rows_parsed.to_string());
+        }
+
+        // Parse numeric columns (P2: only F64)
+        for i in numeric_start..num_cols {
+            let field = record.get(i).unwrap().trim();
+            f64_columns[i].push(parse_numeric_with_na(field));
+        }
+        rows_parsed += 1;
+    }
+
+    // Read remaining rows
+    for result in reader.records() {
+        if let Some(limit) = row_limit {
+            if rows_parsed >= limit {
+                break;
+            }
+        }
+        let record = result.map_err(|e| format!("Error reading CSV record: {}", e))?;
+
+        // Parse index
+        if index_start < num_cols {
+            let field = record.get(index_start).unwrap().trim();
+            match col_types[index_start] {
+                ColType::Date => index_dates.push(parse_date_or_null(field)),
+                ColType::Timestamp => index_timestamps.push(parse_timestamp_or_null(field)),
+                ColType::F64 => index_strings.push(field.to_string()),
+            }
+        } else {
+            index_strings.push(rows_parsed.to_string());
+        }
+
+        // Parse numeric columns
+        for i in numeric_start..num_cols {
+            let field = record.get(i).unwrap().trim();
+            f64_columns[i].push(parse_numeric_with_na(field));
+        }
+        rows_parsed += 1;
+    }
+
+    // Build IndexColumn
+    let index_col = if index_start < num_cols {
+        match col_types[index_start] {
+            ColType::Date => IndexColumn::Date(Arc::new(index_dates)),
+            ColType::Timestamp => IndexColumn::Timestamp(Arc::new(index_timestamps)),
+            ColType::F64 => IndexColumn::String(Arc::new(index_strings)),
+        }
+    } else {
+        IndexColumn::String(Arc::new(index_strings))
+    };
+
+    // Build numeric column names and data (P2: F64 only)
+    let numeric_colnames: Vec<String> = column_names.iter()
+        .skip(numeric_start)
+        .cloned()
+        .collect();
+
+    let numeric_cols: Vec<Arc<blawktrust::Column>> = (numeric_start..num_cols)
+        .map(|i| Arc::new(blawktrust::Column::new_f64(f64_columns[i].clone())))
+        .collect();
+
+    // Create Frame with Tags
+    let tags = Tags::new(index_name, index_col, numeric_colnames);
+    let frame = Frame::new(tags, numeric_cols);
+
+    Ok(Value::Frame(Arc::new(frame)))
 }
 
 /// Core CSV parsing logic that works with any csv::Reader

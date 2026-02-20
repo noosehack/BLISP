@@ -6,6 +6,7 @@ mod runtime;
 mod eval;
 mod builtins;
 mod io;
+mod frame;
 
 use runtime::Runtime;
 use reader::Reader;

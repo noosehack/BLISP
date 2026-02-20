@@ -5,6 +5,7 @@
 
 use crate::runtime::Runtime;
 use crate::value::Value;
+use crate::frame;
 use std::sync::Arc;
 
 // Import blawktrust's optimized operations
@@ -1574,15 +1575,28 @@ fn builtin_wzs(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (dlog prices 5)  ; 5-day log returns
 fn builtin_dlog(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("dlog expects 2 arguments (col lag), got {}", args.len()));
+        return Err(format!("dlog expects 2 arguments (frame/col lag), got {}", args.len()));
     }
 
-    let col = args[0].as_col()?;
     let lag = args[1].as_int()? as usize;
 
-    // Use blawktrust's optimized dlog_column kernel
-    let result = dlog_column(&col, lag);
-    Ok(Value::Col(Arc::new(result)))
+    // Dispatch: Frame or Column
+    match &args[0] {
+        Value::Frame(f) => {
+            // BLADE: Use map_numeric_preserve_tags (Blueprint Phase 1)
+            // Invariants: I1 (tags.index Arc), I2 (tags.colnames Arc), I3 (nrows)
+            let result = frame::map_numeric_preserve_tags(f, |col| {
+                dlog_column(col, lag)
+            });
+            Ok(Value::Frame(Arc::new(result)))
+        }
+        Value::Col(col) => {
+            // Single column version
+            let result = dlog_column(col, lag);
+            Ok(Value::Col(Arc::new(result)))
+        }
+        _ => Err(format!("dlog expects frame or col, got {}", args[0].type_name())),
+    }
 }
 
 /// (shift col lag) - Shift/lag column values
@@ -2974,25 +2988,32 @@ fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     Ok(Value::Table(Arc::new(new_table)))
 }
 
-/// (dlog-cols table [lag]) → TableView
+/// (dlog-cols table [lag]) → Frame/TableView
 /// Apply dlog with lag to each F64 column (default lag=1)
+/// BLADE: Frame version uses map_numeric_preserve_tags (Blueprint I1-I3)
 fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let lag = match args.len() {
         1 => 1,
         2 => args[1].as_int()? as usize,
-        n => return Err(format!("dlog-cols expects 1-2 arguments, got {}", n)),
+        n => return Err(format!("dlog expects 1-2 arguments, got {}", n)),
     };
 
     match &args[0] {
+        Value::Frame(f) => {
+            // BLADE: Use map_numeric_preserve_tags (preserves I1-I3)
+            let result = frame::map_numeric_preserve_tags(f, |col| {
+                dlog_column(col, lag)
+            });
+            Ok(Value::Frame(Arc::new(result)))
+        }
         Value::TableView(tv) => {
             let result = map_numeric_cols(tv.as_ref(), |col| {
                 let col_arc = Arc::new(col.clone());
                 Ok(dlog_column(&col_arc, lag))
             })?;
-
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("dlog-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!("dlog expects Frame or TableView, got {}", args[0].type_name())),
     }
 }
 
