@@ -17,6 +17,7 @@ use std::collections::HashMap;
 const EPSILON: f64 = 1e-10;
 
 /// Test environment: variable name → Frame
+#[derive(Clone)]
 pub struct Env {
     pub frames: HashMap<String, Arc<Frame>>,
 }
@@ -350,6 +351,41 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         Ok(Arc::new(result))
                     }
 
+                    // Let bindings: (let ((name1 expr1) ...) body)
+                    "let" => {
+                        if elements.len() != 3 {
+                            return Err("let expects 2 arguments".to_string());
+                        }
+
+                        // Parse bindings
+                        let bindings_list = match &elements[1] {
+                            Expr::List(bindings) => bindings,
+                            _ => return Err("let expects list of bindings".to_string()),
+                        };
+
+                        // Create extended environment (sequential binding)
+                        let mut extended_env = env.clone();
+
+                        for binding in bindings_list {
+                            match binding {
+                                Expr::List(pair) if pair.len() == 2 => {
+                                    let name = match &pair[0] {
+                                        Expr::Sym(s) => interner.resolve(*s).to_string(),
+                                        _ => return Err("let binding expects symbol".to_string()),
+                                    };
+
+                                    // Evaluate in current extended env (sequential semantics)
+                                    let value = direct_eval(&pair[1], &extended_env, interner)?;
+                                    extended_env.bind(&name, value);
+                                }
+                                _ => return Err("let binding must be (symbol expr)".to_string()),
+                            }
+                        }
+
+                        // Evaluate body in extended environment
+                        direct_eval(&elements[2], &extended_env, interner)
+                    }
+
                     _ => Err(format!("Unknown function in direct eval: {}", func_name)),
                 }
             } else {
@@ -401,6 +437,95 @@ fn log_column(col: &Column) -> Column {
 // Expression Generators (well-typed, join-safe)
 // ============================================================================
 
+/// Generate a let* expression with well-typed bindings
+///
+/// Grammar: (let ((sym1 expr1) (sym2 expr2) ...) body)
+///
+/// Properties:
+/// - Sequential scoping (sym2 can reference sym1)
+/// - All bound expressions reference ONLY outer variables (x, y, z)
+/// - Body references ONLY bound symbols
+/// - This ensures type safety and prevents scope confusion
+fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
+    rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+
+    // Generate 1-2 bindings for simplicity
+    let num_bindings = 1 + (rng % 2) as usize;
+
+    let mut bindings = Vec::new();
+    let mut bound_symbols = Vec::new();
+
+    for i in 0..num_bindings {
+        rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+
+        // Generate unique symbol name
+        let sym_name = format!("_let{}", i);
+        let sym = interner.intern(&sym_name);
+        bound_symbols.push(sym);
+
+        // Generate SIMPLE bound expression using ONLY outer variables
+        // This prevents scope confusion
+        let var_choice = rng % 3;
+        let var_name = match var_choice {
+            0 => "x",
+            1 => "y",
+            _ => "z",
+        };
+
+        // Optionally apply a simple unary operation
+        let bound_expr = if (rng % 2) == 0 {
+            // Just the variable
+            Expr::Sym(interner.intern(var_name))
+        } else {
+            // Apply dlog to the variable
+            Expr::List(vec![
+                Expr::Sym(interner.intern("dlog")),
+                Expr::Sym(interner.intern(var_name)),
+            ])
+        };
+
+        bindings.push(Expr::List(vec![
+            Expr::Sym(sym),
+            bound_expr,
+        ]));
+    }
+
+    // Generate body using ONLY bound symbols
+    rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
+    let which_sym = (rng % bound_symbols.len() as u64) as usize;
+    let body = if num_bindings == 1 {
+        // Single binding: just return it or apply unary
+        if (rng % 2) == 0 {
+            Expr::Sym(bound_symbols[0])
+        } else {
+            Expr::List(vec![
+                Expr::Sym(interner.intern("dlog")),
+                Expr::Sym(bound_symbols[0]),
+            ])
+        }
+    } else {
+        // Multiple bindings: join them or return one
+        if (rng % 2) == 0 {
+            // Join two bound symbols
+            Expr::List(vec![
+                Expr::Sym(interner.intern("mapr")),
+                Expr::Sym(bound_symbols[0]),
+                Expr::Sym(bound_symbols[1]),
+            ])
+        } else {
+            // Just return one
+            Expr::Sym(bound_symbols[which_sym])
+        }
+    };
+
+    // Construct let expression
+    Expr::List(vec![
+        Expr::Sym(interner.intern("let")),
+        Expr::List(bindings),
+        body,
+    ])
+}
+
 /// Generate a well-typed Date-indexed expression
 ///
 /// Grammar (depth-bounded):
@@ -422,12 +547,12 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
         };
         Expr::Sym(interner.intern(var_name))
     } else {
-        // Internal node: unary or join
+        // Internal node: unary, join, or let
         rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
         let choice = rng % 10;
 
-        if choice < 5 {
-            // Unary operation (50% probability)
+        if choice < 4 {
+            // Unary operation (40% probability)
             let op_choice = rng % 3;
             let op_name = match op_choice {
                 0 => "dlog",
@@ -441,8 +566,8 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
                 Expr::Sym(interner.intern(op_name)),
                 sub,
             ])
-        } else {
-            // Join operation (50% probability)
+        } else if choice < 8 {
+            // Join operation (40% probability)
             let join_op = if (rng % 2) == 0 { "mapr" } else { "asofr" };
 
             let sub1 = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
@@ -453,6 +578,18 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
                 sub1,
                 sub2,
             ])
+        } else {
+            // Let binding (20% probability, only at depth > 2 to ensure enough depth)
+            if depth > 2 {
+                gen_let_expr(rng, depth, interner)
+            } else {
+                // Fall back to unary at low depth
+                let sub = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
+                Expr::List(vec![
+                    Expr::Sym(interner.intern("dlog")),
+                    sub,
+                ])
+            }
         }
     }
 }

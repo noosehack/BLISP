@@ -239,3 +239,141 @@ fn smoke_timestamp_pipeline() {
     ]);
     check_equiv(rt, &env, expr);
 }
+
+// ============================================================================
+// Let Binding Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_let_simple_reuse() {
+    let (mut rt, env) = setup_env();
+    // (let ((a (dlog x))) (mapr a y))
+    let let_sym = rt.interner.intern("let");
+    let a_sym = rt.interner.intern("a");
+    let dlog_sym = rt.interner.intern("dlog");
+    let mapr_sym = rt.interner.intern("mapr");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+
+    let expr = Expr::List(vec![
+        Expr::Sym(let_sym),
+        Expr::List(vec![
+            Expr::List(vec![
+                Expr::Sym(a_sym),
+                Expr::List(vec![
+                    Expr::Sym(dlog_sym),
+                    Expr::Sym(x_sym),
+                ]),
+            ]),
+        ]),
+        Expr::List(vec![
+            Expr::Sym(mapr_sym),
+            Expr::Sym(a_sym),
+            Expr::Sym(y_sym),
+        ]),
+    ]);
+
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_let_sequential_binding() {
+    let (mut rt, env) = setup_env();
+    // (let ((a (mapr x y)) (b (dlog a))) b)
+    let let_sym = rt.interner.intern("let");
+    let a_sym = rt.interner.intern("a");
+    let b_sym = rt.interner.intern("b");
+    let mapr_sym = rt.interner.intern("mapr");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+
+    let expr = Expr::List(vec![
+        Expr::Sym(let_sym),
+        Expr::List(vec![
+            Expr::List(vec![
+                Expr::Sym(a_sym),
+                Expr::List(vec![
+                    Expr::Sym(mapr_sym),
+                    Expr::Sym(x_sym),
+                    Expr::Sym(y_sym),
+                ]),
+            ]),
+            Expr::List(vec![
+                Expr::Sym(b_sym),
+                Expr::List(vec![
+                    Expr::Sym(dlog_sym),
+                    Expr::Sym(a_sym),
+                ]),
+            ]),
+        ]),
+        Expr::Sym(b_sym),
+    ]);
+
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_let_shadowing() {
+    let (mut rt, env) = setup_env();
+    // (let ((x (dlog x))) x)  - inner x shadows outer x
+    let let_sym = rt.interner.intern("let");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+
+    let expr = Expr::List(vec![
+        Expr::Sym(let_sym),
+        Expr::List(vec![
+            Expr::List(vec![
+                Expr::Sym(x_sym),
+                Expr::List(vec![
+                    Expr::Sym(dlog_sym),
+                    Expr::Sym(x_sym),  // Refers to outer x
+                ]),
+            ]),
+        ]),
+        Expr::Sym(x_sym),  // Refers to inner x (shadowed)
+    ]);
+
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_let_join_of_bound() {
+    let (mut rt, env) = setup_env();
+    // (let ((a (dlog x)) (b (dlog y))) (mapr a b))
+    let let_sym = rt.interner.intern("let");
+    let a_sym = rt.interner.intern("a");
+    let b_sym = rt.interner.intern("b");
+    let dlog_sym = rt.interner.intern("dlog");
+    let mapr_sym = rt.interner.intern("mapr");
+    let x_sym = rt.interner.intern("x");
+    let y_sym = rt.interner.intern("y");
+
+    let expr = Expr::List(vec![
+        Expr::Sym(let_sym),
+        Expr::List(vec![
+            Expr::List(vec![
+                Expr::Sym(a_sym),
+                Expr::List(vec![
+                    Expr::Sym(dlog_sym),
+                    Expr::Sym(x_sym),
+                ]),
+            ]),
+            Expr::List(vec![
+                Expr::Sym(b_sym),
+                Expr::List(vec![
+                    Expr::Sym(dlog_sym),
+                    Expr::Sym(y_sym),
+                ]),
+            ]),
+        ]),
+        Expr::List(vec![
+            Expr::Sym(mapr_sym),
+            Expr::Sym(a_sym),
+            Expr::Sym(b_sym),
+        ]),
+    ]);
+
+    check_equiv(rt, &env, expr);
+}

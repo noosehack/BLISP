@@ -117,21 +117,36 @@ fn plan_expr(
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),
                     "asofr" => plan_join(JoinKind::AsofR, &elements[1..], plan, ctx, interner),
 
-                    // Let bindings (for testing/composition)
+                    // Let bindings: (let ((name1 expr1) (name2 expr2) ...) body)
                     "let" => {
                         if elements.len() != 3 {
-                            return Err("let expects 2 arguments: (let name value)".to_string());
+                            return Err("let expects 2 arguments: (let ((bindings...)) body)".to_string());
                         }
 
-                        let name = match &elements[1] {
-                            Expr::Sym(s) => *s,
-                            _ => return Err("let expects symbol as first argument".to_string()),
+                        // Parse bindings
+                        let bindings_list = match &elements[1] {
+                            Expr::List(bindings) => bindings,
+                            _ => return Err("let expects list of bindings".to_string()),
                         };
 
-                        let value_node = plan_expr(&elements[2], plan, ctx, interner)?;
-                        ctx.bind(name, value_node);
+                        // Process bindings sequentially (let* semantics)
+                        for binding in bindings_list {
+                            match binding {
+                                Expr::List(pair) if pair.len() == 2 => {
+                                    let name = match &pair[0] {
+                                        Expr::Sym(s) => *s,
+                                        _ => return Err("let binding expects symbol".to_string()),
+                                    };
 
-                        Ok(value_node)
+                                    let value_node = plan_expr(&pair[1], plan, ctx, interner)?;
+                                    ctx.bind(name, value_node);
+                                }
+                                _ => return Err("let binding must be (symbol expr)".to_string()),
+                            }
+                        }
+
+                        // Plan body with bindings in scope
+                        plan_expr(&elements[2], plan, ctx, interner)
                     }
 
                     _ => Err(format!("Unknown function: {}", func_name)),
