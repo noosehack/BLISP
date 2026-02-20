@@ -794,6 +794,8 @@ mod tests {
 
         let result = eval_str(&mut rt, "(unknown-fn 1 2 3)");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown function"));
+        let err = result.unwrap_err();
+        // After variable lookup support, unknown functions show as undefined variables
+        assert!(err.contains("Undefined variable") || err.contains("Unknown function"));
     }
 }

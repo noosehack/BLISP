@@ -381,33 +381,29 @@ mod tests {
     fn test_plan_let_binding() {
         let mut interner = Interner::new();
 
-        // (let x (read-csv "data.csv")) ; binds x
-        // (dlog x)                      ; uses x
+        // (let ((x (read-csv "data.csv"))) (dlog x))
         let let_expr = Expr::List(vec![
             Expr::Sym(interner.intern("let")),
-            Expr::Sym(interner.intern("x")),
             Expr::List(vec![
-                Expr::Sym(interner.intern("read-csv")),
-                Expr::Str("data.csv".to_string()),
+                Expr::List(vec![
+                    Expr::Sym(interner.intern("x")),
+                    Expr::List(vec![
+                        Expr::Sym(interner.intern("read-csv")),
+                        Expr::Str("data.csv".to_string()),
+                    ]),
+                ]),
+            ]),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("dlog")),
+                Expr::Sym(interner.intern("x")),
             ]),
         ]);
 
         let normalized = normalize(let_expr, &mut interner);
-        let mut plan_obj = Plan::new();
-        let mut ctx = PlanContext::new();
+        let plan_result = plan(&normalized, &interner);
 
-        let result = plan_expr(normalized.inner(), &mut plan_obj, &mut ctx, &interner);
-        assert!(result.is_ok());
-
-        // Now use the binding
-        let use_expr = Expr::List(vec![
-            Expr::Sym(interner.intern("dlog")),
-            Expr::Sym(interner.intern("x")),
-        ]);
-
-        let use_result = plan_expr(&use_expr, &mut plan_obj, &mut ctx, &interner);
-        assert!(use_result.is_ok());
-
+        assert!(plan_result.is_ok());
+        let plan_obj = plan_result.unwrap();
         assert_eq!(plan_obj.nodes.len(), 2); // file + dlog
     }
 }
