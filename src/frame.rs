@@ -268,6 +268,226 @@ pub fn reindex_by(source: &Frame, target_index: &IndexColumn) -> Frame {
     Frame::new(out_tags, out_numeric)
 }
 
+/// Check if index is sorted (monotone nondecreasing)
+fn is_sorted(index: &IndexColumn) -> bool {
+    match index {
+        IndexColumn::Date(v) => v.windows(2).all(|w| w[0] <= w[1]),
+        IndexColumn::Timestamp(v) => v.windows(2).all(|w| w[0] <= w[1]),
+        IndexColumn::String(v) => v.windows(2).all(|w| w[0] <= w[1]),
+    }
+}
+
+/// Compare two index keys (for asof: ≤ comparison)
+fn index_key_le(a: &IndexKey, b: &IndexKey) -> bool {
+    match (a, b) {
+        (IndexKey::Date(x), IndexKey::Date(y)) => x <= y,
+        (IndexKey::Timestamp(x), IndexKey::Timestamp(y)) => x <= y,
+        (IndexKey::String(x), IndexKey::String(y)) => x <= y,
+        _ => false, // Type mismatch
+    }
+}
+
+/// PHASE 2 (Extended): Asof join primitive (RIGHT OUTER ASOF JOIN) - PUBLIC API
+///
+/// asofr(x, y) = For each t in y.index, pick t' = max{x.index ≤ t}
+///
+/// Algorithm:
+/// - Fast path (sorted indices): Two-pointer merge O(nx + ny)
+/// - Fallback (unsorted): Sort + merge or hashmap
+///
+/// Invariants (per docs/contracts.md):
+/// - Output index = y.index (Arc reused)
+/// - Output colnames = x.colnames (Arc reused)
+/// - Output nrows = y.nrows
+/// - At-or-before only (no forward-looking bias)
+/// - Duplicates in x: last wins
+/// - Missing → NA row
+///
+/// Semantics: RIGHT OUTER ASOF JOIN
+///   For each y timestamp, find the most recent x value at-or-before
+///   Never uses future x values (Ft-measurable)
+pub fn asofr(x: &Frame, y: &Frame) -> Frame {
+    let x_sorted = is_sorted(&x.tags.index);
+    let y_sorted = is_sorted(&y.tags.index);
+
+    if x_sorted && y_sorted {
+        // Fast path: Two-pointer merge O(nx + ny)
+        asofr_sorted(x, y)
+    } else {
+        // Fallback: Use hashmap approach (conservative)
+        // TODO: Implement sorted-view optimization for unsorted case
+        asofr_fallback(x, y)
+    }
+}
+
+/// Fast path: asof join with sorted indices (two-pointer merge)
+fn asofr_sorted(x: &Frame, y: &Frame) -> Frame {
+    let y_nrows = y.tags.index.len();
+    let x_nrows = x.tags.index.len();
+    let ncols = x.ncols();
+
+    // Allocate output columns
+    let mut out_cols: Vec<Vec<f64>> = (0..ncols)
+        .map(|_| Vec::with_capacity(y_nrows))
+        .collect();
+
+    // Two-pointer merge
+    let mut x_ptr = -1_isize; // Last valid x index (-1 = none found yet)
+
+    for y_row in 0..y_nrows {
+        let y_key = y.tags.index.get(y_row);
+
+        if let Some(y_key) = y_key {
+            // Advance x_ptr while next x value <= current y value
+            // Start from x_ptr+1 (or 0 if x_ptr=-1)
+            let start_check = if x_ptr < 0 { 0 } else { (x_ptr + 1) as usize };
+
+            for check_idx in start_check..x_nrows {
+                if let Some(x_key) = x.tags.index.get(check_idx) {
+                    if index_key_le(&x_key, &y_key) {
+                        x_ptr = check_idx as isize;  // Update to this x
+                    } else {
+                        break;  // x values beyond this are > y_key
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Emit row: use x_ptr if valid, else NA
+            if x_ptr >= 0 {
+                let source_row = x_ptr as usize;
+                for col_idx in 0..ncols {
+                    let val = match x.get_col(col_idx) {
+                        Some(col) => match &**col {
+                            blawktrust::Column::F64(data) => {
+                                if source_row < data.len() {
+                                    data[source_row]
+                                } else {
+                                    f64::NAN
+                                }
+                            }
+                            _ => f64::NAN,
+                        },
+                        None => f64::NAN,
+                    };
+                    out_cols[col_idx].push(val);
+                }
+            } else {
+                // No x value at-or-before y → NA row
+                for col_idx in 0..ncols {
+                    out_cols[col_idx].push(f64::NAN);
+                }
+            }
+        } else {
+            // Invalid y index → NA row
+            for col_idx in 0..ncols {
+                out_cols[col_idx].push(f64::NAN);
+            }
+        }
+    }
+
+    // Build output frame
+    let out_numeric: Vec<Arc<blawktrust::Column>> = out_cols
+        .into_iter()
+        .map(|vec| Arc::new(blawktrust::Column::new_f64(vec)))
+        .collect();
+
+    let out_tags = Tags {
+        index_name: y.tags.index_name.clone(),
+        index: Arc::clone(&y.tags.index),        // Arc reused!
+        colnames: Arc::clone(&x.tags.colnames),  // Arc reused!
+    };
+
+    Frame::new(out_tags, out_numeric)
+}
+
+/// Fallback: asof join with unsorted indices
+/// TODO: Optimize with sorted views
+fn asofr_fallback(x: &Frame, y: &Frame) -> Frame {
+    // For now: collect all (x_index, x_row) pairs, find best match per y
+    let y_nrows = y.tags.index.len();
+    let ncols = x.ncols();
+
+    // Build list of (x_key, x_row)
+    let mut x_entries: Vec<(IndexKey, usize)> = Vec::new();
+    for i in 0..x.tags.index.len() {
+        if let Some(key) = x.tags.index.get(i) {
+            x_entries.push((key, i));
+        }
+    }
+
+    // Allocate output
+    let mut out_cols: Vec<Vec<f64>> = (0..ncols)
+        .map(|_| Vec::with_capacity(y_nrows))
+        .collect();
+
+    // For each y row, find best x (linear scan - O(n²) but correct)
+    for y_row in 0..y_nrows {
+        let y_key = y.tags.index.get(y_row);
+
+        if let Some(y_key) = y_key {
+            // Find max { x_key : x_key <= y_key }
+            let mut best_x_row: Option<usize> = None;
+            let mut best_x_key: Option<&IndexKey> = None;
+
+            for (x_key, x_row) in &x_entries {
+                if index_key_le(x_key, &y_key) {
+                    if best_x_key.is_none() || index_key_le(best_x_key.unwrap(), x_key) {
+                        // x_key <= y_key and (no best yet or x_key >= best)
+                        best_x_key = Some(x_key);
+                        best_x_row = Some(*x_row);
+                    }
+                }
+            }
+
+            // Emit row
+            if let Some(source_row) = best_x_row {
+                for col_idx in 0..ncols {
+                    let val = match x.get_col(col_idx) {
+                        Some(col) => match &**col {
+                            blawktrust::Column::F64(data) => {
+                                if source_row < data.len() {
+                                    data[source_row]
+                                } else {
+                                    f64::NAN
+                                }
+                            }
+                            _ => f64::NAN,
+                        },
+                        None => f64::NAN,
+                    };
+                    out_cols[col_idx].push(val);
+                }
+            } else {
+                // No x at-or-before y → NA
+                for col_idx in 0..ncols {
+                    out_cols[col_idx].push(f64::NAN);
+                }
+            }
+        } else {
+            // Invalid y → NA
+            for col_idx in 0..ncols {
+                out_cols[col_idx].push(f64::NAN);
+            }
+        }
+    }
+
+    // Build output
+    let out_numeric: Vec<Arc<blawktrust::Column>> = out_cols
+        .into_iter()
+        .map(|vec| Arc::new(blawktrust::Column::new_f64(vec)))
+        .collect();
+
+    let out_tags = Tags {
+        index_name: y.tags.index_name.clone(),
+        index: Arc::clone(&y.tags.index),
+        colnames: Arc::clone(&x.tags.colnames),
+    };
+
+    Frame::new(out_tags, out_numeric)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,6 +874,252 @@ mod tests {
                 "Op {}: I2 violated - colnames Arc not preserved", i);
             assert_eq!(frame.nrows(), result.nrows(),
                 "Op {}: I3 violated - row count changed", i);
+        }
+    }
+
+    // ==================== ASOFR PROPERTY TESTS (Semantic Tripwires) ====================
+
+    #[test]
+    fn property_asofr_identity_when_indices_match() {
+        // Property: If x.index == y.index, asofr(x,y) == mapr(x,y) == x
+
+        let index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
+        let x_tags = Tags::new("DATE".to_string(), index.clone(), vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 101.0, 102.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        let y_tags = Tags::new("DATE".to_string(), index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let asof_result = asofr(&x, &y);
+        let mapr_result = reindex_by(&x, &y.tags.index);
+
+        // Should be numerically identical
+        assert_eq!(asof_result.nrows(), mapr_result.nrows());
+        let asof_col = asof_result.get_col(0).unwrap();
+        let mapr_col = mapr_result.get_col(0).unwrap();
+
+        match (&**asof_col, &**mapr_col) {
+            (blawktrust::Column::F64(a), blawktrust::Column::F64(m)) => {
+                for i in 0..a.len() {
+                    assert_eq!(a[i], m[i], "Row {}: asofr should equal mapr when indices match", i);
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+
+    #[test]
+    fn property_asofr_no_forward_looking_bias() {
+        // Property (STRONG): asofr NEVER uses future x values
+        // Construct x with a "future spike" - it must never appear at earlier y times
+
+        // x: [18000: 100, 18005: 999]  ← future spike at 18005
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18005]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 999.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // y: [18000, 18001, 18002, 18003, 18004, 18005, 18006]
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003, 18004, 18005, 18006]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 7]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let result = asofr(&x, &y);
+
+        let result_col = result.get_col(0).unwrap();
+        match &**result_col {
+            blawktrust::Column::F64(data) => {
+                assert_eq!(data[0], 100.0, "t=18000: exact match");
+                assert_eq!(data[1], 100.0, "t=18001: carry 100 (NOT 999!)");
+                assert_eq!(data[2], 100.0, "t=18002: carry 100 (NOT 999!)");
+                assert_eq!(data[3], 100.0, "t=18003: carry 100 (NOT 999!)");
+                assert_eq!(data[4], 100.0, "t=18004: carry 100 (NOT 999!)");
+                assert_eq!(data[5], 999.0, "t=18005: now 999 is valid");
+                assert_eq!(data[6], 999.0, "t=18006: carry 999");
+
+                // CRITICAL: 999 never appears before 18005
+                for i in 1..5 {
+                    assert_ne!(data[i], 999.0,
+                        "BIAS VIOLATION: Future value leaked to row {}", i);
+                }
+            }
+            _ => panic!("Expected F64 column"),
+        }
+    }
+
+    #[test]
+    fn property_asofr_monotonicity() {
+        // Property: For sorted y, selected x pointer is monotone nondecreasing
+
+        // x: [18000: 100, 18002: 102, 18005: 105]
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18002, 18005]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 102.0, 105.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // y: sorted [18000, 18001, 18002, 18003, 18004, 18005]
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003, 18004, 18005]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 6]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let result = asofr(&x, &y);
+
+        let result_col = result.get_col(0).unwrap();
+        match &**result_col {
+            blawktrust::Column::F64(data) => {
+                // Expected: [100, 100, 102, 102, 102, 105]
+                // Monotone nondecreasing
+                for i in 1..data.len() {
+                    if !data[i-1].is_nan() && !data[i].is_nan() {
+                        assert!(data[i-1] <= data[i],
+                            "Monotonicity violated: data[{}]={} > data[{}]={}",
+                            i-1, data[i-1], i, data[i]);
+                    }
+                }
+            }
+            _ => panic!("Expected F64 column"),
+        }
+    }
+
+    #[test]
+    fn property_asofr_idempotence() {
+        // Property: asofr(asofr(x,y), y) == asofr(x,y)
+
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18002]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 102.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 4]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let once = asofr(&x, &y);
+        let twice = asofr(&once, &y);
+
+        // Numeric equality
+        assert_eq!(once.nrows(), twice.nrows());
+        let once_col = once.get_col(0).unwrap();
+        let twice_col = twice.get_col(0).unwrap();
+
+        match (&**once_col, &**twice_col) {
+            (blawktrust::Column::F64(d1), blawktrust::Column::F64(d2)) => {
+                for i in 0..d1.len() {
+                    if d1[i].is_nan() && d2[i].is_nan() {
+                        continue;
+                    }
+                    assert_eq!(d1[i], d2[i], "Idempotence: row {}", i);
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+
+    #[test]
+    fn property_asofr_equivalence_to_naive() {
+        // Property: Optimized asofr equals naive O(n²) scan
+        // This catches edge cases in the two-pointer merge
+
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18003, 18003, 18005]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 101.0, 103.0, 103.5, 105.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        let y_index = IndexColumn::Date(Arc::new(vec![17999, 18000, 18002, 18003, 18004, 18006]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 6]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        // Optimized version (uses two-pointer merge since both sorted)
+        let optimized = asofr(&x, &y);
+
+        // Naive version (uses fallback)
+        let naive = asofr_fallback(&x, &y);
+
+        // Should be identical
+        assert_eq!(optimized.nrows(), naive.nrows());
+        let opt_col = optimized.get_col(0).unwrap();
+        let naive_col = naive.get_col(0).unwrap();
+
+        match (&**opt_col, &**naive_col) {
+            (blawktrust::Column::F64(o), blawktrust::Column::F64(n)) => {
+                for i in 0..o.len() {
+                    if o[i].is_nan() && n[i].is_nan() {
+                        continue;
+                    }
+                    assert_eq!(o[i], n[i],
+                        "Row {}: optimized != naive (edge case)", i);
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+
+    #[test]
+    fn test_asofr_basic_carry_forward() {
+        // Functional test: basic carry-forward behavior
+
+        // x: [18000: 100, 18003: 103]
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18003]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 103.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // y: [18000, 18001, 18002, 18003, 18004]
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003, 18004]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 5]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let result = asofr(&x, &y);
+
+        let result_col = result.get_col(0).unwrap();
+        match &**result_col {
+            blawktrust::Column::F64(data) => {
+                // Expected: [100, 100, 100, 103, 103]
+                assert_eq!(data[0], 100.0, "18000: exact");
+                assert_eq!(data[1], 100.0, "18001: carry 100");
+                assert_eq!(data[2], 100.0, "18002: carry 100");
+                assert_eq!(data[3], 103.0, "18003: exact");
+                assert_eq!(data[4], 103.0, "18004: carry 103");
+            }
+            _ => panic!("Expected F64 column"),
+        }
+    }
+
+    #[test]
+    fn test_asofr_no_past_values() {
+        // Functional test: y has times before all x values → NA
+
+        // x: [18005: 105, 18006: 106]
+        let x_index = IndexColumn::Date(Arc::new(vec![18005, 18006]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![105.0, 106.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // y: [18000, 18001, 18002, 18005]
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18005]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 4]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        let result = asofr(&x, &y);
+
+        let result_col = result.get_col(0).unwrap();
+        match &**result_col {
+            blawktrust::Column::F64(data) => {
+                // Expected: [NA, NA, NA, 105]
+                assert!(data[0].is_nan(), "18000: no past x → NA");
+                assert!(data[1].is_nan(), "18001: no past x → NA");
+                assert!(data[2].is_nan(), "18002: no past x → NA");
+                assert_eq!(data[3], 105.0, "18005: exact match");
+            }
+            _ => panic!("Expected F64 column"),
         }
     }
 }

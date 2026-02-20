@@ -115,6 +115,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
     rt.register_builtin("mapr", builtin_mapr);
+    rt.register_builtin("asofr", builtin_asofr);
     rt.register_builtin("ur", builtin_ur_cols);      // Surface name → table version
     rt.register_builtin("ur-cols", builtin_ur_cols); // Explicit table version
     rt.register_builtin("ur-col", builtin_ur);       // Single-column kernel
@@ -1246,6 +1247,37 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
         _ => Err(format!("mapr expects (Frame Frame) or (TableView TableView), got ({} {})",
+            args[0].type_name(), args[1].type_name())),
+    }
+}
+
+/// (asofr x y) - Asof join: reindex x onto y (at-or-before, RIGHT OUTER ASOF JOIN)
+///
+/// BLADE Phase 2 (Extended) semantics:
+/// - y provides target index (authority)
+/// - For each t in y.index, pick t' = max{x.index ≤ t}
+/// - Output index = index(y) (Arc reused)
+/// - Output colnames = colnames(x) (Arc reused)
+/// - Values = x values at-or-before y timestamps
+/// - No forward-looking bias (Ft-measurable)
+///
+/// Example:
+///   x: DATE=[2020-01-01, 2020-01-03], price=[100, 103]
+///   y: DATE=[2020-01-01, 2020-01-02, 2020-01-03]
+///   asofr(x, y): DATE=[2020-01-01, 2020-01-02, 2020-01-03], price=[100, 100, 103]
+///                                             ^^^ carry forward (at-or-before)
+fn builtin_asofr(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("asofr expects 2 arguments (x y), got {}", args.len()));
+    }
+
+    match (&args[0], &args[1]) {
+        (Value::Frame(x), Value::Frame(y)) => {
+            // BLADE: asof join using asofr primitive
+            let result = frame::asofr(x, y);
+            Ok(Value::Frame(Arc::new(result)))
+        }
+        _ => Err(format!("asofr expects (Frame Frame), got ({} {})",
             args[0].type_name(), args[1].type_name())),
     }
 }

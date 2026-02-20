@@ -219,6 +219,112 @@ x lj y  // where y is keyed table
 
 ---
 
+## asofr Semantics (RIGHT OUTER ASOF JOIN)
+
+### Core Contract
+
+```rust
+asofr(x: Frame, y: Frame) -> Frame
+```
+
+**Definition:** Reindex x onto y using "last observation carried backward in time" (at-or-before).
+
+**Invariants (MUST hold for all inputs):**
+
+1. **Output index = y's index** (Arc pointer preserved)
+   ```rust
+   let result = asofr(x, y);
+   Arc::ptr_eq(&result.tags.index, &y.tags.index)
+   ```
+
+2. **Output colnames = x's colnames** (Arc pointer preserved)
+   ```rust
+   Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames)
+   ```
+
+3. **Output nrows = y's nrows** (always)
+   ```rust
+   assert_eq!(result.nrows(), y.nrows());
+   ```
+
+4. **At-or-before semantics**
+   ```rust
+   // For each t in y.index, pick t' = max{x.index ≤ t}
+   // If no such t', output row is NA
+   ```
+
+### Semantics
+
+**SQL equivalent:**
+```sql
+SELECT y.date, x.*
+FROM y
+LEFT JOIN LATERAL (
+  SELECT * FROM x
+  WHERE x.date <= y.date
+  ORDER BY x.date DESC
+  LIMIT 1
+) ON true
+```
+
+**kdb equivalent:**
+```q
+aj[`date; y; x]  // asof join on date column
+```
+
+### Non-Negotiable Rules
+
+1. **Right side dominates:** Output has exactly y.nrows rows
+2. **At-or-before only:** For each `t` in `y.index`, pick `t' = max{x.index ≤ t}`
+3. **No forward-looking:** NEVER use `x.index > t` (bias-free by construction)
+4. **Missing → NA:** If no `x.index ≤ t`, entire row is NA
+5. **Duplicates in x:** Last wins (consistent with mapr)
+6. **Duplicates in y:** Each row resolved independently
+7. **Monotonicity:** If y.index sorted, selected x pointer is monotone nondecreasing
+8. **Index type must match:** `Date` only joins `Date`, etc. (no coercion)
+
+### Properties (MUST pass property tests)
+
+1. **Identity with matching indices:**
+   ```rust
+   // If x.index == y.index (same values):
+   asofr(x, y) == mapr(x, y) == x  // Numerically equal
+   ```
+
+2. **No forward-looking bias (STRONGER than mapr):**
+   ```rust
+   // Construct x with "future spike" at t+100
+   // Ensure it NEVER appears at earlier y times
+   ```
+
+3. **Monotonicity (for sorted y):**
+   ```rust
+   // For sorted y.index, selected source pointer never decreases
+   ```
+
+4. **Idempotence:**
+   ```rust
+   asofr(asofr(x, y), y) == asofr(x, y)
+   ```
+
+5. **Equivalence to naive scan (small sizes):**
+   ```rust
+   // Reference O(n²) implementation matches optimized version
+   ```
+
+### Performance Contract
+
+**Fast path (sorted indices):** O(nx + ny) two-pointer merge
+**Fallback (unsorted):** O(nx log nx + ny log ny) or hashmap
+
+**Benchmarks MUST NOT regress by >20%:**
+- asofr sorted x, sorted y (5M cells)
+- asofr unsorted x, sorted y
+- asofr sparse x, dense y (intraday grid)
+- asofr with heavy duplicates in x
+
+---
+
 ## Stable API Surface (Frozen)
 
 ### Core Primitives (Public API)
@@ -233,8 +339,11 @@ where F: Fn(&Column) -> Column;
 /// Reindex source onto target index (RIGHT OUTER JOIN primitive)
 pub fn reindex_by(source: &Frame, target_index: &IndexColumn) -> Frame;
 
-/// Map x onto y's index (thin wrapper around reindex_by)
+/// Map x onto y's index (exact match, RIGHT OUTER JOIN)
 pub fn mapr(x: &Frame, y: &Frame) -> Frame;
+
+/// Asof join: reindex x onto y (at-or-before, RIGHT OUTER ASOF JOIN)
+pub fn asofr(x: &Frame, y: &Frame) -> Frame;
 ```
 
 ### Everything Else
