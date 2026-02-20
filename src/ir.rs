@@ -117,6 +117,8 @@ pub enum Operation {
     Source(Source),
     /// Apply a unary operation (preserves tags via I1-I3)
     Unary(UnaryOp),
+    /// Apply a binary operation
+    Binary(BinaryOp),
     /// Join two frames
     Join(JoinOp),
 }
@@ -165,6 +167,47 @@ pub enum NumericFunc {
     Abs,
     /// Inverse: 1/x
     Inv,
+}
+
+/// Binary operations (element-wise combination of two inputs)
+///
+/// Contract: LHS tags preserved (Arc identity I1-I3)
+/// RHS can be:
+/// - Scalar: broadcast to all cells
+/// - Frame: must have compatible tags (same index type, values, colnames)
+#[derive(Debug, Clone)]
+pub enum BinaryOp {
+    /// Binary numeric operation
+    MapNumeric2 {
+        lhs: NodeId,
+        rhs: ValueRef,
+        func: BinaryFunc,
+    },
+}
+
+/// Value reference - either a scalar constant or a frame reference
+#[derive(Debug, Clone)]
+pub enum ValueRef {
+    /// Scalar constant (broadcast to all cells)
+    Scalar(f64),
+    /// Reference to another frame node
+    Frame(NodeId),
+}
+
+/// Binary numeric functions
+///
+/// Semantics: operate cell-wise on LHS with RHS
+/// NA propagation: if either cell is NA, result is NA
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryFunc {
+    /// Addition
+    Add,
+    /// Subtraction
+    Sub,
+    /// Multiplication
+    Mul,
+    /// Division
+    Div,
 }
 
 /// Join operations
@@ -247,6 +290,55 @@ impl Plan {
                         return Err("Unary op must preserve nrows (I3)".to_string());
                     }
                     // Note: Arc equality (I2) checked at execution time
+                }
+                Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
+                    let lhs_node = self.get_node(*lhs).ok_or("Invalid LHS node reference")?;
+
+                    // Verify LHS tags preserved (I1-I3)
+                    if node.schema.index_type != lhs_node.schema.index_type {
+                        return Err("Binary op must preserve LHS index type (I1)".to_string());
+                    }
+                    if node.schema.nrows != lhs_node.schema.nrows {
+                        return Err("Binary op must preserve LHS nrows (I3)".to_string());
+                    }
+
+                    // If RHS is a frame, enforce strict compatibility
+                    if let ValueRef::Frame(rhs_id) = rhs {
+                        let rhs_node = self.get_node(*rhs_id).ok_or("Invalid RHS node reference")?;
+
+                        // Same index type (no coercion)
+                        if let (Some(lhs_idx), Some(rhs_idx)) =
+                            (&lhs_node.schema.index_type, &rhs_node.schema.index_type) {
+                            if lhs_idx != rhs_idx {
+                                return Err(format!(
+                                    "Binary op requires compatible index types: {:?} vs {:?}. Use mapr/asofr for alignment.",
+                                    lhs_idx, rhs_idx
+                                ));
+                            }
+                        }
+
+                        // Same nrows (strict shape match)
+                        if let (Some(lhs_nrows), Some(rhs_nrows)) =
+                            (lhs_node.schema.nrows, rhs_node.schema.nrows) {
+                            if lhs_nrows != rhs_nrows {
+                                return Err(format!(
+                                    "Binary op requires compatible shapes: {} vs {} rows. Use mapr/asofr for alignment.",
+                                    lhs_nrows, rhs_nrows
+                                ));
+                            }
+                        }
+
+                        // Same colnames (strict compatibility)
+                        if let (Some(lhs_cols), Some(rhs_cols)) =
+                            (&lhs_node.schema.colnames, &rhs_node.schema.colnames) {
+                            if lhs_cols.len() != rhs_cols.len() {
+                                return Err(format!(
+                                    "Binary op requires same number of columns: {} vs {}",
+                                    lhs_cols.len(), rhs_cols.len()
+                                ));
+                            }
+                        }
+                    }
                 }
                 Operation::Source(_) => {
                     // Sources have no inputs to validate

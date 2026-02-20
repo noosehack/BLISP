@@ -9,7 +9,7 @@
 ///
 /// The planner does NOT execute - it only builds the IR DAG and validates it.
 
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, JoinOp, NumericFunc, SchemaInfo};
+use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaInfo};
 use crate::normalize::CanonExpr;
 use crate::ast::{Expr, Interner, SymbolId};
 use std::collections::HashMap;
@@ -112,6 +112,12 @@ fn plan_expr(
                     "sqrt" => plan_unary(NumericFunc::Sqrt, &elements[1..], plan, ctx, interner),
                     "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
+
+                    // Binary numeric operations
+                    "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
+                    "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),
+                    "*" => plan_binary(BinaryFunc::Mul, &elements[1..], plan, ctx, interner),
+                    "/" => plan_binary(BinaryFunc::Div, &elements[1..], plan, ctx, interner),
 
                     // Join operations
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),
@@ -234,6 +240,45 @@ fn plan_join(
             colnames: x_schema.colnames.clone(),
             nrows: y_schema.nrows,
         },
+    };
+
+    Ok(plan.add_node(node))
+}
+
+fn plan_binary(
+    func: BinaryFunc,
+    args: &[Expr],
+    plan: &mut Plan,
+    ctx: &mut PlanContext,
+    interner: &Interner,
+) -> Result<NodeId, String> {
+    if args.len() != 2 {
+        return Err(format!("Binary op expects 2 arguments, got {}", args.len()));
+    }
+
+    // LHS is always a frame expression
+    let lhs = plan_expr(&args[0], plan, ctx, interner)?;
+
+    // Clone schema before RHS planning to avoid borrow issues
+    let lhs_schema = plan.get_node(lhs).unwrap().schema.clone();
+
+    // RHS can be a scalar (number literal) or frame expression
+    let rhs = match &args[1] {
+        Expr::Float(f) => ValueRef::Scalar(*f),
+        Expr::Int(i) => ValueRef::Scalar(*i as f64),
+        _ => {
+            // Frame expression
+            let rhs_node = plan_expr(&args[1], plan, ctx, interner)?;
+            ValueRef::Frame(rhs_node)
+        }
+    };
+
+    // Output schema: LHS tags preserved (I1-I3)
+    let node_id = NodeId(plan.nodes.len());
+    let node = Node {
+        id: node_id,
+        op: Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }),
+        schema: lhs_schema,
     };
 
     Ok(plan.add_node(node))

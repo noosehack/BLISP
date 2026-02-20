@@ -10,7 +10,7 @@
 ///
 /// This is where Phase 2's frozen API earns its keep.
 
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, JoinOp, NumericFunc};
+use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc};
 use crate::frame::{Frame, map_numeric_preserve_tags, asofr};
 use crate::value::Value;
 use crate::runtime::Runtime;
@@ -69,6 +69,7 @@ fn execute_node(
     match &node.op {
         Operation::Source(source) => execute_source(source, rt),
         Operation::Unary(unary) => execute_unary(unary, ctx),
+        Operation::Binary(binary) => execute_binary(binary, ctx),
         Operation::Join(join) => execute_join(join, ctx),
     }
 }
@@ -130,6 +131,70 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             );
 
             Ok(Arc::new(result))
+        }
+    }
+}
+
+/// Execute a binary operation (element-wise combination)
+///
+/// Contract: LHS tags preserved (Arc identity I1-I3)
+/// RHS can be scalar (broadcast) or frame (strict compatibility required)
+fn execute_binary(binary: &BinaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> {
+    match binary {
+        BinaryOp::MapNumeric2 { lhs, rhs, func } => {
+            let lhs_frame = ctx.load(*lhs)
+                .ok_or_else(|| format!("LHS node {:?} not found", lhs))?;
+
+            match rhs {
+                ValueRef::Scalar(scalar_val) => {
+                    // Scalar RHS: broadcast to all cells
+                    let result = map_numeric_preserve_tags(&lhs_frame, |col| {
+                        binary_scalar_column(col, *scalar_val, *func)
+                    });
+
+                    // Verify Arc preservation (I1-I3)
+                    debug_assert!(
+                        Arc::ptr_eq(&result.tags.index, &lhs_frame.tags.index),
+                        "Binary scalar: I1 violation - index Arc not preserved"
+                    );
+                    debug_assert!(
+                        Arc::ptr_eq(&result.tags.colnames, &lhs_frame.tags.colnames),
+                        "Binary scalar: I2 violation - colnames Arc not preserved"
+                    );
+                    debug_assert_eq!(
+                        result.nrows, lhs_frame.nrows,
+                        "Binary scalar: I3 violation - nrows not preserved"
+                    );
+
+                    Ok(Arc::new(result))
+                }
+
+                ValueRef::Frame(rhs_id) => {
+                    // Frame RHS: strict compatibility required
+                    let rhs_frame = ctx.load(*rhs_id)
+                        .ok_or_else(|| format!("RHS node {:?} not found", rhs_id))?;
+
+                    // Validation should have already checked compatibility
+                    // Execute element-wise combination
+                    let result = binary_frame_frame(&lhs_frame, &rhs_frame, *func)?;
+
+                    // Verify Arc preservation (I1-I3)
+                    debug_assert!(
+                        Arc::ptr_eq(&result.tags.index, &lhs_frame.tags.index),
+                        "Binary frame: I1 violation - index Arc not preserved"
+                    );
+                    debug_assert!(
+                        Arc::ptr_eq(&result.tags.colnames, &lhs_frame.tags.colnames),
+                        "Binary frame: I2 violation - colnames Arc not preserved"
+                    );
+                    debug_assert_eq!(
+                        result.nrows, lhs_frame.nrows,
+                        "Binary frame: I3 violation - nrows not preserved"
+                    );
+
+                    Ok(Arc::new(result))
+                }
+            }
         }
     }
 }
@@ -293,6 +358,118 @@ fn inv_column(col: &Column) -> Column {
             Column::F64(result)
         }
         _ => col.clone(),
+    }
+}
+
+// ============================================================================
+// Binary operation kernels
+// ============================================================================
+
+/// Apply binary operation between column and scalar
+///
+/// Scalar is broadcast to all cells
+/// NA propagation: if cell is NA, result is NA
+fn binary_scalar_column(col: &Column, scalar: f64, func: BinaryFunc) -> Column {
+    match col {
+        Column::F64(data) => {
+            let result = data.iter().map(|&x| {
+                if x.is_nan() || scalar.is_nan() {
+                    f64::NAN
+                } else {
+                    match func {
+                        BinaryFunc::Add => x + scalar,
+                        BinaryFunc::Sub => x - scalar,
+                        BinaryFunc::Mul => x * scalar,
+                        BinaryFunc::Div => {
+                            if scalar == 0.0 {
+                                f64::NAN
+                            } else {
+                                x / scalar
+                            }
+                        }
+                    }
+                }
+            }).collect();
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Apply binary operation between two frames (element-wise)
+///
+/// Requires: frames have same shape and compatible tags
+/// NA propagation: if either cell is NA, result is NA
+fn binary_frame_frame(lhs: &Frame, rhs: &Frame, func: BinaryFunc) -> Result<Frame, String> {
+    if lhs.cols.len() != rhs.cols.len() {
+        return Err(format!(
+            "Frame-frame binary op requires same column count: {} vs {}",
+            lhs.cols.len(), rhs.cols.len()
+        ));
+    }
+
+    if lhs.nrows != rhs.nrows {
+        return Err(format!(
+            "Frame-frame binary op requires same row count: {} vs {}",
+            lhs.nrows, rhs.nrows
+        ));
+    }
+
+    let mut result_cols = Vec::with_capacity(lhs.cols.len());
+
+    for (lhs_col, rhs_col) in lhs.cols.iter().zip(rhs.cols.iter()) {
+        use crate::frame::ColData;
+        let lhs_data = match lhs_col {
+            ColData::Mat(col) => col,
+        };
+        let rhs_data = match rhs_col {
+            ColData::Mat(col) => col,
+        };
+
+        let result_col = binary_column_column(lhs_data, rhs_data, func)?;
+        result_cols.push(ColData::Mat(Arc::new(result_col)));
+    }
+
+    Ok(Frame {
+        tags: lhs.tags.clone(), // I1-I3: preserve LHS tags
+        cols: result_cols,
+        nrows: lhs.nrows,
+    })
+}
+
+/// Apply binary operation between two columns (element-wise)
+fn binary_column_column(lhs: &Column, rhs: &Column, func: BinaryFunc) -> Result<Column, String> {
+    match (lhs, rhs) {
+        (Column::F64(lhs_data), Column::F64(rhs_data)) => {
+            if lhs_data.len() != rhs_data.len() {
+                return Err(format!(
+                    "Column-column binary op requires same length: {} vs {}",
+                    lhs_data.len(), rhs_data.len()
+                ));
+            }
+
+            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&x, &y)| {
+                if x.is_nan() || y.is_nan() {
+                    f64::NAN
+                } else {
+                    match func {
+                        BinaryFunc::Add => x + y,
+                        BinaryFunc::Sub => x - y,
+                        BinaryFunc::Mul => x * y,
+                        BinaryFunc::Div => {
+                            if y == 0.0 {
+                                f64::NAN
+                            } else {
+                                x / y
+                            }
+                        }
+                    }
+                }
+            }).collect();
+
+            Ok(Column::F64(result))
+        }
+        _ => Err("Binary op requires F64 columns".to_string()),
     }
 }
 
