@@ -2,40 +2,44 @@
 
 **Last Updated**: 2026-02-20
 **Branch**: `reconstruct/tableview-only`
-**Current Phase**: Step 3C.3.1 Complete → Ready for Step 3C.4 (Rolling Ops)
+**Current Phase**: ✅ Step 3C Complete (Rolling Ops) → Ready for Phase 4 (Optimizer/Fusion)
 
 ---
 
 ## Executive Summary
 
-**IR v1 is feature-complete and battle-tested** with 88 passing tests (800+ property cases).
+**IR v1 is production-ready** with 116 passing tests (800+ property cases).
 
 The IR layer now supports:
 - ✅ Unary operations (dlog, ret, log, exp, sqrt, abs, inv, **shift**)
 - ✅ Binary operations (+, -, *, /, **strict semantics**)
 - ✅ Join operations (mapr, asofr, **no implicit alignment**)
 - ✅ Let-bindings (sequential scoping, **let\* semantics**)
-- ✅ **dlog identity proven** (highest-leverage semantic tripwire)
+- ✅ **Rolling window operations** (mean, std, zscore, **ft_* feature variants**)
+- ✅ **Temporal correctness tripwires** (dlog identity, shift commutation, no-self-reference)
 
-**Contracts enforced**:
+**Contracts enforced** (see contracts.md):
 - No index coercion (explicit mapr/asofr required for alignment)
 - Arc preservation (I1-I3 invariants, zero-copy)
-- Conservative NA policy (no invented values)
+- Conservative NA policy (no invented values, mask monotone)
 - Lag-only shift (no forward-looking by construction)
+- Rolling: trailing window, strict min_periods, skip NA
 
-**Next**: Rolling window operations (mean, std, zscore)
+**Architecture highlight**: zscore implemented as derived form (planner rewrite), not IR primitive. Keeps IR minimal (3 rolling ops) while leveraging existing tripwires via composition.
+
+**Next**: Optimizer/fusion or expand operation set
 
 ---
 
-## Test Coverage (88 tests, 800+ property cases)
+## Test Coverage (116 tests, 800+ property cases)
 
 ### Test Suites
 
 | Suite | Tests | Purpose | Status |
 |-------|-------|---------|--------|
 | `ir_equivalence` | 9 | Property tests (600 cases: 300 Date + 300 Timestamp) | ✅ ALL PASS |
-| `ir_equivalence_smoke` | 35 | Deterministic smoke tests | ✅ ALL PASS |
-| `metamorphic` | 29 | Semantic tripwires (contracts.md) | ✅ ALL PASS |
+| `ir_equivalence_smoke` | 48 | Deterministic smoke tests | ✅ ALL PASS |
+| `metamorphic` | 44 | Semantic tripwires (contracts.md) | ✅ ALL PASS |
 | `differential_exec` | 15 | AST vs IR oracle comparison | ✅ ALL PASS |
 
 ### Metamorphic Properties Proven
@@ -68,6 +72,33 @@ The IR layer now supports:
   - Hand-crafted smoke test (5 rows, known values)
   - Property test (20 rows, positive domain, 3-layer assertion)
 
+**Rolling Operations Laws** (Step 3C.4):
+
+*rolling_mean*:
+- Window=1 identity: `rolling_mean(1, x) == x` (Arc ptr_eq)
+- Constant series: `rolling_mean(w, const) == const` for i ≥ w-1
+- Shift commutation: `shift(k, rolling_mean(w,x)) == rolling_mean(w, shift(k,x))`
+- Mask monotone: Can only add NAs (prefix), never remove
+
+*rolling_std* (population, ddof=0):
+- Non-negativity: `rolling_std(w,x) ≥ 0.0` for all valid results
+- Window=1 → 0: `rolling_std(1, x) == 0.0` (single point has zero variance)
+- Shift commutation: `shift(k, rolling_std(w,x)) == rolling_std(w, shift(k,x))`
+- Scale equivariance: `rolling_std(w, x*c) == rolling_std(w,x) * |c|`
+- Translation invariance: `rolling_std(w, x+c) == rolling_std(w,x)`
+
+*rolling_zscore* (derived form, no IR primitive):
+- Rewrite identity: `rolling_zscore(w,x) == (x - rolling_mean(w,x)) / rolling_std(w,x)`
+- Scale invariance: `rolling_zscore(w, x*c) == rolling_zscore(w, x)`
+- Translation invariance: `rolling_zscore(w, x+c) == rolling_zscore(w, x)`
+- Division by zero (std=0) → NA (frozen policy)
+
+*ft_\* feature family* (no self-reference):
+- Derived identity: `ft_R(w,x) == shift(1, R(w,x))` for all rolling ops
+- Rewrite identities proven for ft-mean, ft-std, ft-zscore
+- No information leakage: x[i] vs yesterday's distribution only
+- Spike test: `|ft_zscore[i]| > |rolling_zscore[i]|` at anomalies
+
 ---
 
 ## Implementation Architecture
@@ -85,6 +116,9 @@ pub enum Operation {
 pub enum UnaryFunc {
     Dlog, Ret, Log, Exp, Sqrt, Abs, Inv,
     Shift { k: usize },      // Lag-only (k ≥ 0)
+    RollMean { w: usize },   // Trailing window mean
+    RollStd { w: usize },    // Population std (ddof=0)
+    // Note: RollZ NOT in IR - implemented as derived form (planner rewrite)
 }
 
 pub enum BinaryFunc {
@@ -113,6 +147,12 @@ pub enum ValueRef {
 - `(shift k x)` → `Unary(MapNumeric { input, func: Shift { k } })`
   - Validates: `k ≥ 0` (integer literal only)
   - **Rejects**: negative k, float k, expression k
+- `(rolling-mean w x)` → `Unary(MapNumeric { input, func: RollMean { w } })`
+- `(rolling-std w x)` → `Unary(MapNumeric { input, func: RollStd { w } })`
+- `(rolling-zscore w x)` → **Planner rewrite** to `(/ (- x (rolling-mean w x)) (rolling-std w x))`
+- `(ft-mean w x)` → **Planner rewrite** to `(shift 1 (rolling-mean w x))`
+- `(ft-std w x)` → **Planner rewrite** to `(shift 1 (rolling-std w x))`
+- `(ft-zscore w x)` → **Planner rewrite** to `(/ (- x (ft-mean w x)) (ft-std w x))`
 - `(mapr x y)` → `Join(MapR { x, y })`
 - `(let ((bindings...)) body)` → sequential evaluation (let\* semantics)
 
@@ -123,7 +163,10 @@ pub enum ValueRef {
 - Binary scalar: `binary_scalar_column` (broadcast)
 - Binary frame: `binary_frame_frame` (element-wise, strict compatibility)
 - Shift: `shift_column` (memmove-style, prefix NA)
+- Rolling mean: `rolling_mean_column` (trailing window, skip NA, strict min_periods)
+- Rolling std: `rolling_std_column` (population std ddof=0, zero variance → 0.0)
 - Joins: `reindex_by` (mapr), `asofr` (right outer asof join)
+- **Note**: rolling_zscore has NO kernel (derived form leverages existing primitives)
 
 **Arc Preservation** (runtime verification):
 ```rust
@@ -285,102 +328,169 @@ debug_assert_eq!(result.nrows, input.nrows);
 
 ---
 
-## Next Steps: Step 3C.4 - Rolling Operations
+### Step 3C.4: Rolling Window Operations ✅
 
-### Contract Design (Must Decide First)
+**Status**: ✅ **COMPLETE** (Step 3C done)
 
-**Operations to add**:
-1. `rolling_mean(window, x)`
-2. `rolling_std(window, x, ddof=1)`
-3. `rolling_zscore(window, x)`
+#### Step 3C.4.1: rolling_mean ✅
 
-**Contract Questions** (freeze before implementation):
+**Commits**:
+- `86570c0` Add rolling_mean operation and ft-mean feature transform
 
-1. **Window definition**:
-   - Inclusive or exclusive?
-   - Trailing window (past k observations) or centered?
-   - **Recommendation**: Trailing, inclusive (row i uses rows [i-k+1..i])
+**IR**: `NumericFunc::RollMean { w }`
 
-2. **min_periods behavior**:
-   - Always require full window (NA if < k observations)?
-   - Allow partial windows with `min_periods` parameter?
-   - **Recommendation**: `min_periods=window` (require full window, simpler)
+**Contract** (see contracts.md §5):
+- Trailing window [i-w+1..i] inclusive
+- Skip NA in window, strict min_periods (require w valid values)
+- Prefix i < w-1 always NA
+- Arc preservation (I1-I3), mask monotone
 
-3. **NA handling**:
-   - Skip NAs (compute mean of non-NA values in window)?
-   - Poison (any NA in window → result NA)?
-   - **Recommendation**: Skip NAs (more useful, matches pandas default)
+**ft-mean**: Planner rewrite to `shift(1, rolling-mean(w,x))` - "yesterday's distribution"
 
-4. **Prefix handling**:
-   - First k-1 rows: always NA (not enough observations)?
-   - **Recommendation**: Yes (conservative, matches shift prefix behavior)
+**Tests**: 5 smoke + 4 metamorphic + 1 ft-mean identity = 10 tests
 
-5. **std ddof** (degrees of freedom):
-   - ddof=0 (population std) or ddof=1 (sample std)?
-   - **Recommendation**: ddof=1 (sample std, matches pandas/numpy default)
+**Laws Proven**:
+- Window=1 identity: `rolling_mean(1, x) == x` (Arc ptr_eq)
+- Constant series invariant
+- Shift commutation: `shift(k, rolling_mean(w,x)) == rolling_mean(w, shift(k,x))`
+- Mask monotonicity
 
-6. **zscore zero-std handling**:
-   - If window has zero variance: return NA or 0?
-   - **Recommendation**: Return NA (conservative, avoids division by zero)
+---
 
-### Implementation Plan
+#### Step 3C.4.2: rolling_std ✅
 
-**Commit 1**: IR + Planner
-- Add `RollingFunc { window: usize, func: RollingOp }`
-- Parse `(rolling-mean k x)`, `(rolling-std k x)`, `(rolling-zscore k x)`
-- Validate window > 0
+**Commits**:
+- `fc3e509` Add rolling_std operation and ft-std feature transform
 
-**Commit 2**: Executor (rolling_mean)
-- Implement `rolling_mean_column(col, window, min_periods)`
-- Sliding window sum + count (skip NAs)
-- Prefix NA handling
+**IR**: `NumericFunc::RollStd { w }`
 
-**Commit 3**: Executor (rolling_std)
-- Welford's online algorithm (numerically stable)
-- ddof=1 (sample std)
-- Skip NAs
+**Contract** (see contracts.md §5):
+- Population std: σ = sqrt((1/w) * Σ(x-μ)²), ddof=0
+- Constant series → σ = 0.0 (not NA)
+- Window=1 → σ = 0.0 for valid values
+- Arc preservation (I1-I3), mask monotone
 
-**Commit 4**: Executor (rolling_zscore)
-- Compose mean + std
-- Zero-std → NA
+**ft-std**: Planner rewrite to `shift(1, rolling-std(w,x))`
 
-**Commit 5**: Tests
-- Smoke tests (hand-crafted sequences)
-- Metamorphic properties:
-  - `rolling_mean(1, x) == x` (window=1 is identity)
-  - `rolling_zscore` has mean ≈ 0, std ≈ 1 (when valid)
-  - Mask monotonicity (rolling can only add NAs)
-  - Composition with shift
-- Differential tests
+**Tests**: 5 smoke + 5 metamorphic + 1 ft-std identity = 11 tests
 
-### Metamorphic Properties to Add
+**Laws Proven**:
+- Non-negativity: σ ≥ 0.0
+- Shift commutation
+- Scale equivariance: `rolling_std(w, x*c) == rolling_std(w,x) * |c|`
+- Translation invariance: `rolling_std(w, x+c) == rolling_std(w,x)`
+- Mask monotonicity
 
-1. **Window=1 identities**:
-   - `rolling_mean(1, x) == x`
-   - `rolling_std(1, x) == 0` (all rows with 1 observation → zero variance)
+---
 
-2. **Prefix behavior**:
-   - First `window-1` rows always NA
+#### Step 3C.4.3: rolling_zscore ✅ (derived form)
 
-3. **Mask monotonicity**:
-   - `mask(rolling_op(k, x)) ⊇ mask(x)` (can only add NAs, never remove)
+**Commits**:
+- `aa6f097` Add rolling_zscore and ft-zscore as planner rewrites (derived forms)
 
-4. **Zscore properties** (when valid):
-   - `mean(rolling_zscore(k, x)[k:]) ≈ 0` (standardized)
-   - `std(rolling_zscore(k, x)[k:]) ≈ 1` (unit variance)
+**IR**: **NO primitive** (keeps IR minimal)
 
-5. **NA handling**:
-   - Any NA in window propagates (if poison policy)
-   - OR: result valid if enough non-NA values (if skip policy)
+**Implementation**: Planner rewrite (syntax sugar)
+- `rolling-zscore(w,x)` → `(/ (- x (rolling-mean w x)) (rolling-std w x))`
+- `ft-zscore(w,x)` → `(/ (- x (ft-mean w x)) (ft-std w x))`
 
-### Files to Modify
+**Contract**:
+- Division by zero (std=0) → NA (frozen policy)
+- Leverages existing binary/rolling/shift tripwires
+- No new validation needed (compositional semantics)
 
-- `src/ir.rs`: Add `RollingFunc` enum
-- `src/planner.rs`: Parse rolling ops
-- `src/exec.rs`: Implement kernels
-- `tests/ir_equivalence_smoke.rs`: Add smoke tests
-- `tests/metamorphic.rs`: Add rolling metamorphic laws
-- `tests/common/mod.rs`: Add `rolling_*_column` to direct_eval
+**Tests**: 3 smoke + 4 metamorphic = 7 tests
+
+**Laws Proven**:
+- Rewrite identities (standard + feature): validates planner correctness
+- Scale invariance: `rolling_zscore(w, x*c) == rolling_zscore(w, x)`
+- Translation invariance: `rolling_zscore(w, x+c) == rolling_zscore(w, x)`
+- Spike test: `|ft_zscore[i]| > |rolling_zscore[i]|` at anomalies (no self-reference)
+
+**Architecture Decision**: Derived form (not IR primitive) because:
+- Keeps IR minimal (3 rolling ops vs 5)
+- Transparent semantics (explicit composition)
+- Existing tripwires validate everything (binary div0, rolling contracts, shift NA)
+- Fusion-ready (can optimize to primitive later if profiling shows need)
+
+---
+
+## Next Steps: Phase 4 Options
+
+**Step 3C Complete** ✅ - Time-series foundation is solid.
+
+### Option A: Optimizer / Fusion (Performance)
+
+**Goal**: Make rolling operations fast via optimization passes.
+
+**Potential optimizations**:
+1. **Rolling fusion**: Combine `rolling_mean + rolling_std` into single pass
+2. **Common subexpression elimination**: Detect shared windows
+3. **Vectorization hints**: SIMD-friendly loop generation
+4. **Memoization**: Cache intermediate rolling results
+
+**Legality**: All optimizations must preserve contracts.md semantics exactly. Metamorphic tests validate correctness.
+
+**Priority**: Medium (rolling ops work correctly; optimize only if profiling shows bottleneck)
+
+---
+
+### Option B: Expand Operation Set
+
+**Additional rolling ops** (if needed):
+- `rolling-min`, `rolling-max`: straightforward (skip NA, strict min_periods)
+- `rolling-sum`: useful for feature engineering
+- `rolling-median`: requires sorting (more complex)
+- `rolling-cov`, `rolling-corr`: bivariate windows (more complex)
+
+**Other time-series ops**:
+- `ewma` (exponentially weighted moving average)
+- `cumsum`, `cumprod`, `cummax`, `cummin`
+- `rank`, `quantile`
+
+**Priority**: Add on-demand (no speculative features)
+
+---
+
+### Option C: Performance Profiling
+
+**Goal**: Measure actual bottlenecks before optimizing.
+
+**Tasks**:
+1. Benchmark suite for rolling ops (vary window size, data size, NA density)
+2. Profile executor hot paths (rolling vs binary vs shift)
+3. Measure Arc overhead (is zero-copy tags actually zero cost?)
+4. Compare derived zscore vs hypothetical primitive
+
+**Output**: Data-driven optimization priorities
+
+**Priority**: High (measure before optimizing)
+
+---
+
+### Option D: Expand Test Matrix
+
+**Goal**: More edge case coverage.
+
+**Areas to test**:
+- Larger window sizes (w > nrows)
+- High NA density (>50%)
+- Single-row frames
+- Empty frames
+- Mixed Date/Timestamp scenarios
+- Pathological cases (all NA, all constant)
+
+**Priority**: Low (current 116 tests cover core contracts well)
+
+---
+
+### Recommendation
+
+**Priority order**:
+1. **Option C** (profiling) - Measure before optimizing
+2. **Option B** (expand ops) - Add operations as needed by users
+3. **Option A** (optimizer) - Only if profiling shows need
+4. **Option D** (test matrix) - Current coverage is strong
 
 ---
 
@@ -426,9 +536,12 @@ cargo test smoke_shift_zero_identity
 
 ---
 
-## Current Commits (Step 3C)
+## Current Commits (Step 3C Complete)
 
 ```
+aa6f097 Add rolling_zscore and ft-zscore as planner rewrites (derived forms)
+fc3e509 Add rolling_std operation and ft-std feature transform
+86570c0 Add rolling_mean operation and ft-mean feature transform
 79fccd3 Add dlog identity metamorphic test (highest-leverage tripwire)
 02b6387 Add comprehensive shift operation tests
 06c6f80 Add shift unary op (lag-only, contracts-grade)
@@ -442,23 +555,39 @@ b74ba5e Add metamorphic property suite for IR equivalence
 
 ## Ready State
 
-**IR v1 is production-ready for**:
-- Time series transformations (dlog, ret, shift)
-- Binary arithmetic (strict semantics)
-- Join operations (explicit alignment)
-- Let-bindings (compositional pipelines)
+**IR v1 is production-ready** ✅
 
-**Proven via**:
-- 88 tests, 800+ property cases
-- Metamorphic laws (contracts.md)
+**Supported operations**:
+- ✅ Time-series transformations (dlog, ret, log, exp, sqrt, abs, inv, shift)
+- ✅ Binary arithmetic (+, -, *, /, strict semantics)
+- ✅ Rolling window operations (mean, std, zscore with ft_* feature variants)
+- ✅ Join operations (mapr, asofr, explicit alignment)
+- ✅ Let-bindings (compositional pipelines, let* semantics)
+
+**Proven via 116 tests**:
+- 9 property tests (600 cases: Date + Timestamp)
+- 48 smoke tests (deterministic, hand-crafted)
+- 44 metamorphic laws (contracts.md tripwires)
+- 15 differential tests (AST vs IR oracle)
+
+**Critical tripwires validated**:
 - dlog identity (temporal correctness)
-- Differential oracles (AST vs IR)
+- Shift commutation (rolling + shift interop)
+- Scale/translation invariance (zscore correctness)
+- No-self-reference verification (ft_* no leakage)
+- Arc preservation (zero-copy tags, I1-I3)
+- Mask monotonicity (conservative NA policy)
 
-**Next**: Rolling window operations (mean, std, zscore) to complete time-series foundation.
+**Architecture highlights**:
+- Minimal IR (3 rolling primitives, zscore as derived form)
+- Transparent composition (planner rewrites leverage existing tripwires)
+- Frozen contracts (contracts.md = single source of truth)
+- Fusion-ready (can optimize derived forms without changing semantics)
 
-**Status**: ✅ **Ready for Step 3C.4**
+**Status**: ✅ **Step 3C Complete → Ready for Phase 4** (Optimizer/Fusion or expand ops)
 
 ---
 
 *Document maintained by: Claude Sonnet 4.5*
-*Last test run: 2026-02-20, all tests passing*
+*Last test run: 2026-02-20, 116 tests passing*
+*Phase: Step 3C Complete*
