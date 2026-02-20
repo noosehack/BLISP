@@ -743,3 +743,237 @@ fn meta_binary_na_propagation() {
         }
     }
 }
+
+// ============================================================================
+// Shift Operation Laws (Time Series Foundation)
+// ============================================================================
+
+#[test]
+fn meta_shift_zero_identity() {
+    // Property: shift(0, x) == x (exact, including Arc ptr_eq)
+    // Validates: k=0 special case, no spurious copies
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    let x_index_ptr = Arc::as_ptr(&x.tags.index);
+    let x_colnames_ptr = Arc::as_ptr(&x.tags.colnames);
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (shift 0 x)
+    let shift_sym = rt.interner.intern("shift");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(0),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Arc pointer equality
+    let result_index_ptr = Arc::as_ptr(&result.tags.index);
+    let result_colnames_ptr = Arc::as_ptr(&result.tags.colnames);
+
+    assert_eq!(result_index_ptr, x_index_ptr, "shift 0: I1 violation");
+    assert_eq!(result_colnames_ptr, x_colnames_ptr, "shift 0: I2 violation");
+
+    // Value equality
+    assert_frame_equiv(&x, &result);
+}
+
+#[test]
+fn meta_shift_composition_law() {
+    // Property: shift(a, shift(b, x)) == shift(a+b, x)
+    // Validates: Compositionality, associativity
+
+    let mut rt = Runtime::new();
+    let mut env = Env::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    env.bind("x", Arc::clone(&x));
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(x));
+
+    let shift_sym = rt.interner.intern("shift");
+
+    // LHS: (shift 2 (shift 3 x))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(2),
+        Expr::List(vec![
+            Expr::Sym(shift_sym),
+            Expr::Int(3),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // RHS: (shift 5 x)
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(5),
+        Expr::Sym(x_sym),
+    ]);
+
+    // Evaluate both
+    let lhs = common::direct_eval(&lhs_expr, &env, &rt.interner).expect("LHS eval failed");
+
+    let normalized_rhs = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&normalized_rhs, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_shift_mask_monotonic() {
+    // Property: NA positions only grow with k > 0
+    // Validates: No invented values, conservative NA policy
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.15); // 15% NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (shift 2 x)
+    let shift_sym = rt.interner.intern("shift");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(2),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Check each column: input NA → output NA (monotone)
+    for (i, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
+        use blisp::frame::ColData;
+        let x_data = match x_col { ColData::Mat(col) => col };
+        let result_data = match result_col { ColData::Mat(col) => col };
+
+        match (x_data.as_ref(), result_data.as_ref()) {
+            (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
+                // First 2 rows must be NA (shift introduces)
+                for j in 0..2 {
+                    assert!(result_vals[j].is_nan(),
+                        "shift 2: First {} rows must be NA (col {})", 2, i);
+                }
+
+                // For rows j >= 2: if input[j-2] is NA, output[j] must be NA
+                for j in 2..result_vals.len() {
+                    if x_vals[j - 2].is_nan() {
+                        assert!(result_vals[j].is_nan(),
+                            "shift 2: Input NA at {} must propagate to output at {} (col {})",
+                            j - 2, j, i);
+                    }
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+}
+
+#[test]
+fn meta_shift_preserves_tags_arc() {
+    // Property: shift preserves LHS tags Arc (I1-I3)
+    // Validates: Zero-copy semantics
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    let x_index_ptr = Arc::as_ptr(&x.tags.index);
+    let x_colnames_ptr = Arc::as_ptr(&x.tags.colnames);
+    rt.define(x_sym, Value::Frame(x));
+
+    // Test various k values
+    for k in [1, 2, 5] {
+        let shift_sym = rt.interner.intern("shift");
+        let expr = Expr::List(vec![
+            Expr::Sym(shift_sym),
+            Expr::Int(k),
+            Expr::Sym(x_sym),
+        ]);
+
+        let normalized = normalize(expr, &mut rt.interner);
+        let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+        let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+        let result = match result_val {
+            Value::Frame(f) => f,
+            _ => panic!("Expected Frame"),
+        };
+
+        let result_index_ptr = Arc::as_ptr(&result.tags.index);
+        let result_colnames_ptr = Arc::as_ptr(&result.tags.colnames);
+
+        assert_eq!(result_index_ptr, x_index_ptr,
+            "shift {}: I1 violation - index Arc not preserved", k);
+        assert_eq!(result_colnames_ptr, x_colnames_ptr,
+            "shift {}: I2 violation - colnames Arc not preserved", k);
+    }
+}
+
+#[test]
+fn meta_shift_all_na_when_k_exceeds_nrows() {
+    // Property: shift(k, x) yields all NA when k >= nrows
+    // Validates: Edge case handling
+
+    let mut rt = Runtime::new();
+
+    let x = build_date_frame(42, "DATE", 8, 2, false, 0.0); // 8 rows, no NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    // Build (shift 10 x) where 10 > 8
+    let shift_sym = rt.interner.intern("shift");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(10),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut rt.interner);
+    let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // All cells must be NA
+    for (i, result_col) in result.cols.iter().enumerate() {
+        use blisp::frame::ColData;
+        let result_data = match result_col { ColData::Mat(col) => col };
+
+        match result_data.as_ref() {
+            blawktrust::Column::F64(vals) => {
+                for (j, &val) in vals.iter().enumerate() {
+                    assert!(val.is_nan(),
+                        "shift(k >= nrows) must yield all NA (row {}, col {})", j, i);
+                }
+            }
+            _ => panic!("Expected F64 column"),
+        }
+    }
+}

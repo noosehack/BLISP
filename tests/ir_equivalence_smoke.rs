@@ -489,3 +489,85 @@ fn smoke_binary_after_join() {
     ]);
     check_equiv(rt, &env, expr);
 }
+
+// ============================================================================
+// Shift Operation Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_shift_zero_identity() {
+    let (mut rt, env) = setup_env();
+    // (shift 0 x) should be exact identity
+    let shift_sym = rt.interner.intern("shift");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(0),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_shift_one_lag() {
+    let (mut rt, env) = setup_env();
+    // (shift 1 x) - lag by 1 row
+    let shift_sym = rt.interner.intern("shift");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(1),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_shift_large_k() {
+    let (mut rt, env) = setup_env();
+    // (shift 100 x) - k > nrows produces all NA
+    let shift_sym = rt.interner.intern("shift");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(100),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_shift_composition() {
+    let (mut rt, env) = setup_env();
+    // (shift 2 (shift 1 x)) - nested shifts
+    let shift_sym = rt.interner.intern("shift");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(2),
+        Expr::List(vec![
+            Expr::Sym(shift_sym),
+            Expr::Int(1),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_shift_after_unary() {
+    let (mut rt, env) = setup_env();
+    // (shift 1 (dlog x)) - shift after transformation
+    let shift_sym = rt.interner.intern("shift");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(shift_sym),
+        Expr::Int(1),
+        Expr::List(vec![
+            Expr::Sym(dlog_sym),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+    check_equiv(rt, &env, expr);
+}
