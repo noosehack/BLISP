@@ -658,3 +658,143 @@ fn smoke_dlog_identity_handcrafted() {
     // Verify identity
     common::assert_frame_equiv(&lhs, &rhs);
 }
+
+// ============================================================================
+// Rolling Mean Operation Smoke Tests
+// ============================================================================
+
+#[test]
+fn smoke_rolling_mean_window_one() {
+    let (mut rt, env) = setup_env();
+    // (rolling-mean 1 x) - window=1 should be identity-like (each value equals itself)
+    let rm_sym = rt.interner.intern("rolling-mean");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rm_sym),
+        Expr::Int(1),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_mean_window_three() {
+    let (mut rt, env) = setup_env();
+    // (rolling-mean 3 x) - basic trailing window
+    let rm_sym = rt.interner.intern("rolling-mean");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rm_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_mean_large_window() {
+    let (mut rt, env) = setup_env();
+    // (rolling-mean 100 x) - window > nrows produces all NA
+    let rm_sym = rt.interner.intern("rolling-mean");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rm_sym),
+        Expr::Int(100),
+        Expr::Sym(x_sym),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_mean_after_unary() {
+    let (mut rt, env) = setup_env();
+    // (rolling-mean 2 (dlog x)) - rolling mean after transformation
+    let rm_sym = rt.interner.intern("rolling-mean");
+    let dlog_sym = rt.interner.intern("dlog");
+    let x_sym = rt.interner.intern("x");
+    let expr = Expr::List(vec![
+        Expr::Sym(rm_sym),
+        Expr::Int(2),
+        Expr::List(vec![
+            Expr::Sym(dlog_sym),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+    check_equiv(rt, &env, expr);
+}
+
+#[test]
+fn smoke_rolling_mean_handcrafted() {
+    // Hand-crafted data to verify rolling mean correctness with NA handling
+    // Series: [1.0, 2.0, 3.0, NA, 5.0, 6.0]
+    // Window = 3, strict min_periods
+    // Expected (with skip NA):
+    // [0]: window [1.0] - count=1 < 3 -> NA
+    // [1]: window [1.0, 2.0] - count=2 < 3 -> NA
+    // [2]: window [1.0, 2.0, 3.0] - count=3 == 3 -> mean = 2.0
+    // [3]: window [2.0, 3.0, NA] - count=2 < 3 -> NA
+    // [4]: window [3.0, NA, 5.0] - count=2 < 3 -> NA
+    // [5]: window [NA, 5.0, 6.0] - count=2 < 3 -> NA
+
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103, 20200104, 20200105, 20200106,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0, f64::NAN, 5.0, 6.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["value".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 6,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    // Execute (rolling-mean 3 x)
+    let rm_sym = interner.intern("rolling-mean");
+    let expr = Expr::List(vec![
+        Expr::Sym(rm_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut interner);
+    let ir_plan = plan(&normalized, &interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify result
+    assert_eq!(result.nrows, 6);
+    assert_eq!(result.cols.len(), 1);
+
+    let result_col = match &result.cols[0] {
+        blisp::frame::ColData::Mat(col) => col,
+        _ => panic!("Expected Mat column"),
+    };
+
+    let values = match &**result_col {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64 column"),
+    };
+
+    // Check expected values
+    assert!(values[0].is_nan(), "Row 0 should be NA (window too small)");
+    assert!(values[1].is_nan(), "Row 1 should be NA (window too small)");
+    assert!((values[2] - 2.0).abs() < 1e-10, "Row 2 should be 2.0 (mean of 1,2,3)");
+    assert!(values[3].is_nan(), "Row 3 should be NA (only 2 valid in window)");
+    assert!(values[4].is_nan(), "Row 4 should be NA (only 2 valid in window)");
+    assert!(values[5].is_nan(), "Row 5 should be NA (only 2 valid in window)");
+}

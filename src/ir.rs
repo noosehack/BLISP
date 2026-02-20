@@ -175,6 +175,15 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone (only grows)
     Shift { k: usize },
+    /// Rolling mean: trailing window mean
+    ///
+    /// Contract (see contracts.md §5):
+    /// - Trailing window: [i-w+1 .. i] inclusive
+    /// - Skip NA in window, require w valid values (strict min_periods)
+    /// - Prefix i < w-1 always NA
+    /// - Shape preserved (I1-I3)
+    /// - NA mask monotone
+    RollMean { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)

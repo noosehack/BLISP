@@ -130,6 +130,57 @@ fn plan_expr(
                         plan_unary(NumericFunc::Shift { k }, &elements[2..], plan, ctx, interner)
                     }
 
+                    // Rolling mean: (rolling-mean w x) where w is positive integer
+                    "rolling-mean" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-mean expects 2 arguments: (rolling-mean w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-mean w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-mean w must be integer, not float".to_string()),
+                            _ => return Err("rolling-mean w must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)
+                    }
+
+                    // Feature engineering: ft-mean as planner rewrite
+                    // (ft-mean w x) → (shift 1 (rolling-mean w x))
+                    // Semantics: "yesterday's distribution" (no self-reference)
+                    "ft-mean" => {
+                        if elements.len() != 3 {
+                            return Err("ft-mean expects 2 arguments: (ft-mean w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-mean w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("ft-mean w must be integer, not float".to_string()),
+                            _ => return Err("ft-mean w must be integer literal".to_string()),
+                        };
+
+                        // Plan inner rolling-mean
+                        let rolling_node = plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)?;
+
+                        // Plan outer shift(1, ...)
+                        // Create a temporary node reference for the rolling-mean result
+                        let input_node = plan.get_node(rolling_node).ok_or("Invalid rolling-mean node")?;
+                        let shift_node_id = NodeId(plan.nodes.len());
+                        let shift_node = Node {
+                            id: shift_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: rolling_node,
+                                func: NumericFunc::Shift { k: 1 },
+                            }),
+                            schema: input_node.schema.clone(), // Shift preserves schema (I1-I3)
+                        };
+                        Ok(plan.add_node(shift_node))
+                    }
+
                     // Binary numeric operations
                     "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
                     "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),

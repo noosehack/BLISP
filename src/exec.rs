@@ -114,6 +114,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Abs => abs_column(col),
                     NumericFunc::Inv => inv_column(col),
                     NumericFunc::Shift { k } => shift_column(col, *k),
+                    NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
                 }
             });
 
@@ -375,6 +376,51 @@ fn shift_column(col: &Column, k: usize) -> Column {
                 result[k..].copy_from_slice(&data[0..nrows - k]);
             }
             // If k >= nrows, all rows are NA (already initialized)
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling mean with strict min_periods semantics
+///
+/// Contract (see contracts.md §5):
+/// - Trailing window: [i-w+1 .. i] inclusive
+/// - Skip NA in window, require w valid values (strict min_periods)
+/// - Prefix i < w-1 always NA
+/// - Shape preserved, NA mask monotone
+fn rolling_mean_column(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            // Contract: prefix i < w-1 is always NA (not enough observations)
+            // Already initialized to NAN above
+
+            // For each row i >= w-1, compute mean of window [i-w+1 .. i]
+            for i in (w - 1)..nrows {
+                let window_start = i + 1 - w; // i - w + 1
+                let window_end = i + 1;        // Exclusive end: [start..end)
+
+                // Count valid (non-NA) values in window
+                let mut sum = 0.0;
+                let mut count = 0;
+
+                for &x in &data[window_start..window_end] {
+                    if !x.is_nan() {
+                        sum += x;
+                        count += 1;
+                    }
+                }
+
+                // Strict min_periods: require w valid values
+                if count >= w {
+                    result[i] = sum / (w as f64);
+                }
+                // Else: result[i] remains NA (already initialized)
+            }
 
             Column::F64(result)
         }

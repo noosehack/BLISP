@@ -349,6 +349,48 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         Ok(Arc::new(result))
                     }
 
+                    "rolling-mean" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-mean expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-mean w must be positive, got {}", i)),
+                            _ => return Err("rolling-mean w must be positive integer".to_string()),
+                        };
+
+                        let input = direct_eval(&elements[2], env, interner)?;
+                        let result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_mean_column(col, w)
+                        });
+                        Ok(Arc::new(result))
+                    }
+
+                    "ft-mean" => {
+                        if elements.len() != 3 {
+                            return Err("ft-mean expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-mean w must be positive, got {}", i)),
+                            _ => return Err("ft-mean w must be positive integer".to_string()),
+                        };
+
+                        // ft-mean(w, x) = shift(1, rolling-mean(w, x))
+                        let input = direct_eval(&elements[2], env, interner)?;
+                        let rolling_result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_mean_column(col, w)
+                        });
+                        let result = map_numeric_preserve_tags(&rolling_result, |col| {
+                            shift_column(col, 1)
+                        });
+                        Ok(Arc::new(result))
+                    }
+
                     // Joins: reindex_by/asofr
                     "mapr" => {
                         if elements.len() != 3 {
@@ -496,6 +538,38 @@ fn shift_column(col: &Column, k: usize) -> Column {
             // output[i] = input[i-k] for i >= k, NA for i < k
             if k < nrows {
                 result[k..].copy_from_slice(&data[0..nrows - k]);
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+fn rolling_mean_column(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            // Trailing window [i-w+1 .. i], strict min_periods, skip NA
+            for i in (w - 1)..nrows {
+                let window_start = i + 1 - w;
+                let window_end = i + 1;
+
+                let mut sum = 0.0;
+                let mut count = 0;
+
+                for &x in &data[window_start..window_end] {
+                    if !x.is_nan() {
+                        sum += x;
+                        count += 1;
+                    }
+                }
+
+                if count >= w {
+                    result[i] = sum / (w as f64);
+                }
             }
 
             Column::F64(result)
