@@ -2,8 +2,12 @@
 //!
 //! Step 4: Full implementation with Col and Table types.
 
-use crate::ast::SymbolId;
+use crate::ast::{SymbolId, Expr};
 use std::sync::Arc;
+use std::collections::HashMap;
+
+/// Captured lexical environment for closures
+pub type LexicalSnapshot = Vec<HashMap<SymbolId, Value>>;
 
 /// Convert days since epoch to YYYY-MM-DD (Howard Hinnant algorithm)
 fn format_date(days: i32) -> String {
@@ -236,11 +240,182 @@ pub fn write_table_to<W: std::io::Write>(
     Ok(())
 }
 
-/// Table: columnar data structure
+/// Physical memory layout (8 CLISPI-compatible orientation codes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// Column-major family (columns contiguous in memory)
+    NSWE,  // Normal (default) - "H"
+    SNWE,  // Rows reversed - "N"
+    NSEW,  // Columns reversed
+    SNEW,  // Both reversed
+
+    /// Row-major family (rows contiguous in memory)
+    WENS,  // Normal row-major - "Z"
+    EWNS,  // Synonym for WENS - "S"
+    EWSN,  // Rows reversed
+    WESN,  // Columns reversed
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout::NSWE  // Column-major default (time-series optimal)
+    }
+}
+
+impl Layout {
+    /// Parse layout from string name (supports both 4-letter codes and aliases)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            // Column-major family
+            "NSWE" | "H" => Some(Layout::NSWE),
+            "SNWE" | "N" => Some(Layout::SNWE),
+            "NSEW" => Some(Layout::NSEW),
+            "SNEW" => Some(Layout::SNEW),
+            // Row-major family
+            "WENS" | "Z" => Some(Layout::WENS),
+            "EWNS" | "S" => Some(Layout::EWNS),
+            "EWSN" => Some(Layout::EWSN),
+            "WESN" => Some(Layout::WESN),
+            _ => None,
+        }
+    }
+
+    /// Get the string name for this layout
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Layout::NSWE => "NSWE",
+            Layout::SNWE => "SNWE",
+            Layout::NSEW => "NSEW",
+            Layout::SNEW => "SNEW",
+            Layout::WENS => "WENS",
+            Layout::EWNS => "EWNS",
+            Layout::EWSN => "EWSN",
+            Layout::WESN => "WESN",
+        }
+    }
+}
+
+/// Semantic axis for operations (column-wise vs row-wise)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    Col,  // Operate down time per column (default, kdb-like)
+    Row,  // Operate across columns per row (cross-sectional)
+}
+
+impl Default for Axis {
+    fn default() -> Self {
+        Axis::Col  // Column-wise default
+    }
+}
+
+/// Table: columnar data structure with orientation metadata
 #[derive(Debug, Clone)]
 pub struct Table {
     pub columns: Vec<(SymbolId, blawktrust::Column)>,
     pub row_count: usize,
+    pub layout: Layout,
+    pub axis: Axis,
+}
+
+/// TableView with orientation metadata
+#[derive(Debug, Clone)]
+pub struct TableViewWithMetadata {
+    pub view: Arc<blawktrust::TableView>,
+    pub layout: Layout,
+    pub axis: Axis,
+}
+
+impl TableViewWithMetadata {
+    /// Create from Arc<TableView> with default metadata
+    #[inline]
+    pub fn from_view(view: Arc<blawktrust::TableView>) -> Self {
+        Self {
+            view,
+            layout: Layout::default(),
+            axis: Axis::default(),
+        }
+    }
+
+    /// Create from raw TableView with default metadata
+    #[inline]
+    pub fn new(view: blawktrust::TableView) -> Self {
+        Self::from_view(Arc::new(view))
+    }
+
+    /// Create from blawktrust::Table with default metadata
+    #[inline]
+    pub fn from_table(table: blawktrust::Table) -> Self {
+        Self::from_view(Arc::new(blawktrust::TableView::new(table)))
+    }
+
+    /// Create with specific metadata
+    #[inline]
+    pub fn with_meta(view: Arc<blawktrust::TableView>, layout: Layout, axis: Axis) -> Self {
+        Self { view, layout, axis }
+    }
+
+    /// Clone with different metadata
+    #[inline]
+    pub fn with_new_metadata(&self, layout: Layout, axis: Axis) -> Self {
+        Self {
+            view: Arc::clone(&self.view),
+            layout,
+            axis,
+        }
+    }
+
+    // ==================== View Access Helpers ====================
+
+    /// Get reference to underlying TableView (&TableView)
+    #[inline]
+    pub fn view_ref(&self) -> &blawktrust::TableView {
+        self.view.as_ref()
+    }
+
+    /// Clone the underlying TableView Arc (Arc<TableView>)
+    #[inline]
+    pub fn view_arc(&self) -> Arc<blawktrust::TableView> {
+        Arc::clone(&self.view)
+    }
+
+    // ==================== Metadata Manipulation Helpers ====================
+
+    /// Create shallow clone (shares underlying view)
+    #[inline]
+    pub fn clone_shallow(&self) -> Self {
+        Self {
+            view: Arc::clone(&self.view),
+            layout: self.layout,
+            axis: self.axis,
+        }
+    }
+
+    /// Clone with different axis (shares underlying view)
+    #[inline]
+    pub fn with_axis(&self, axis: Axis) -> Self {
+        let mut out = self.clone_shallow();
+        out.axis = axis;
+        out
+    }
+
+    /// Clone with different layout (shares underlying view)
+    #[inline]
+    pub fn with_layout(&self, layout: Layout) -> Self {
+        let mut out = self.clone_shallow();
+        out.layout = layout;
+        out
+    }
+}
+
+/// Deref to TableView for maximum compatibility
+/// This allows tv.method() to resolve methods on TableView automatically
+impl std::ops::Deref for TableViewWithMetadata {
+    type Target = blawktrust::TableView;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.view.as_ref()
+    }
 }
 
 /// Runtime value
@@ -255,7 +430,17 @@ pub enum Value {
     List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
     Table(Arc<Table>),
-    TableView(Arc<blawktrust::TableView>),
+    TableView(Arc<TableViewWithMetadata>),
+    Lambda {
+        params: Vec<SymbolId>,
+        body: Vec<Expr>,
+        env: LexicalSnapshot,
+    },
+    Macro {
+        params: Vec<SymbolId>,
+        body: Vec<Expr>,
+        env: LexicalSnapshot,
+    },
 }
 
 // Manual PartialEq because Column doesn't implement it
@@ -273,6 +458,14 @@ impl PartialEq for Value {
             (Value::Col(a), Value::Col(b)) => Arc::ptr_eq(a, b),
             (Value::Table(a), Value::Table(b)) => Arc::ptr_eq(a, b),
             (Value::TableView(a), Value::TableView(b)) => Arc::ptr_eq(a, b),
+            // Lambdas compare by pointer (params and body)
+            (Value::Lambda { params: p1, body: b1, .. }, Value::Lambda { params: p2, body: b2, .. }) => {
+                p1 == p2 && b1 == b2
+            }
+            // Macros compare by pointer (params and body)
+            (Value::Macro { params: p1, body: b1, .. }, Value::Macro { params: p2, body: b2, .. }) => {
+                p1 == p2 && b1 == b2
+            }
             _ => false,
         }
     }
@@ -292,6 +485,8 @@ impl Value {
             Value::Col(_) => "col",
             Value::Table(_) => "table",
             Value::TableView(_) => "tableview",
+            Value::Lambda { .. } => "lambda",
+            Value::Macro { .. } => "macro",
         }
     }
 
@@ -336,7 +531,7 @@ impl Value {
     /// Extract as tableview
     pub fn as_tableview(&self) -> Result<Arc<blawktrust::TableView>, String> {
         match self {
-            Value::TableView(tv) => Ok(Arc::clone(tv)),
+            Value::TableView(tv) => Ok(tv.view_arc()),
             _ => Err(format!("Expected tableview, got {}", self.type_name())),
         }
     }
@@ -379,7 +574,40 @@ impl Value {
                 };
                 format!("TableView[ori={}, shape={}×{}]", ori_name, nr, nc)
             }
+            Value::Lambda { params, .. } => {
+                let param_names: Vec<String> = params.iter()
+                    .map(|p| interner.resolve(*p).to_string())
+                    .collect();
+                format!("#<lambda ({})>", param_names.join(" "))
+            }
+            Value::Macro { params, .. } => {
+                let param_names: Vec<String> = params.iter()
+                    .map(|p| interner.resolve(*p).to_string())
+                    .collect();
+                format!("#<macro ({})>", param_names.join(" "))
+            }
         }
+    }
+
+    // ==================== TableView Constructor Helpers ====================
+    // These make it easy to create Value::TableView from various sources
+
+    /// Create Value::TableView from a raw blawktrust::TableView
+    #[inline]
+    pub fn tableview(view: blawktrust::TableView) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::new(view)))
+    }
+
+    /// Create Value::TableView from Arc<blawktrust::TableView>
+    #[inline]
+    pub fn tableview_arc(view: Arc<blawktrust::TableView>) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::from_view(view)))
+    }
+
+    /// Create Value::TableView from blawktrust::Table
+    #[inline]
+    pub fn from_table(table: blawktrust::Table) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::from_table(table)))
     }
 }
 
@@ -389,6 +617,8 @@ impl Table {
         Self {
             columns: Vec::new(),
             row_count: 0,
+            layout: Layout::default(),
+            axis: Axis::default(),
         }
     }
 

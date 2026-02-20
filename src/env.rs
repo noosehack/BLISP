@@ -64,6 +64,17 @@ impl LexicalEnv {
     pub fn depth(&self) -> usize {
         self.frames.len()
     }
+
+    /// Create a snapshot of the current lexical environment (for closures)
+    pub fn snapshot(&self) -> crate::value::LexicalSnapshot {
+        self.frames.clone()
+    }
+
+    /// Restore a captured environment and push a new frame for parameters
+    pub fn restore_and_push(&mut self, snapshot: &crate::value::LexicalSnapshot) {
+        self.frames = snapshot.clone();
+        self.push_frame();
+    }
 }
 
 impl Default for LexicalEnv {

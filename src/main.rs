@@ -16,28 +16,63 @@ fn main() {
 
     // Parse command line arguments
     if args.len() < 2 {
-        eprintln!("blisp v0.1.0");
+        eprintln!("blisp v0.2.0");
         eprintln!("Usage:");
-        eprintln!("  blisp -e '<expression>'    Execute expression");
-        eprintln!("  blisp <file.lisp>          Execute file");
+        eprintln!("  blisp [--load <file>]... -e '<expression>'");
+        eprintln!("  blisp [--load <file>]... <script.lisp>");
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  blisp -e '(+ 1 2)'");
-        eprintln!("  blisp -e '(dlog prices 1)'");
+        eprintln!("  blisp --load stdlib/core.cl -e '(inc 2)'");
         eprintln!("  blisp script.lisp");
         std::process::exit(1);
     }
 
     let mut rt = Runtime::new();
 
-    // Handle -e flag (expression evaluation)
-    if args[1] == "-e" {
-        if args.len() < 3 {
-            eprintln!("Error: -e requires an expression");
+    // Parse arguments
+    let mut i = 1;
+    let mut load_files = Vec::new();
+    let mut expression = None;
+    let mut script_file = None;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--load" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --load requires a file path");
+                    std::process::exit(1);
+                }
+                load_files.push(args[i + 1].clone());
+                i += 2;
+            }
+            "-e" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: -e requires an expression");
+                    std::process::exit(1);
+                }
+                expression = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                // Assume it's a script file
+                script_file = Some(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    // Load files
+    for file in load_files {
+        if let Err(e) = load_file(&mut rt, &file) {
+            eprintln!("Error loading {}: {}", file, e);
             std::process::exit(1);
         }
+    }
 
-        let code = &args[2];
+    // Execute -e or script
+    if let Some(expr) = expression {
+        let code = &expr;
         match eval_code(&mut rt, code) {
             Ok(val) => {
                 // Stream output directly to stdout with BufWriter for efficiency
@@ -68,10 +103,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    } else {
+    } else if let Some(file) = script_file {
         // File execution
-        let filename = &args[1];
-        match std::fs::read_to_string(filename) {
+        match std::fs::read_to_string(&file) {
             Ok(code) => {
                 match eval_code(&mut rt, &code) {
                     Ok(val) => {
@@ -105,11 +139,41 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("Error reading file '{}': {}", filename, e);
+                eprintln!("Error reading file '{}': {}", file, e);
                 std::process::exit(1);
             }
         }
+    } else {
+        eprintln!("Error: must provide -e <expr> or <script>");
+        std::process::exit(1);
     }
+}
+
+fn load_file(rt: &mut Runtime, path: &str) -> Result<(), String> {
+    let code = std::fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read file: {}", e))?;
+
+    let mut reader = Reader::new(&code)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    // Read and eval all forms
+    loop {
+        match reader.read(&mut rt.interner) {
+            Ok(expr) => {
+                rt.eval(&expr)?;
+            }
+            Err(e) => {
+                let err_str = format!("{:?}", e);
+                if err_str.contains("Unexpected EOF") || err_str.contains("EOF") {
+                    break;
+                } else {
+                    return Err(format!("Read error: {}", e));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn demo_column_ops() {

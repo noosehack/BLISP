@@ -12,6 +12,8 @@ pub struct Runtime {
     pub global: GlobalEnv,
     pub interner: Interner,
     pub builtins: HashMap<SymbolId, BuiltinFn>,
+    pub macros: HashMap<SymbolId, Value>,
+    gensym_counter: usize,
 }
 
 impl Runtime {
@@ -21,6 +23,8 @@ impl Runtime {
             global: GlobalEnv::new(),
             interner: Interner::new(),
             builtins: HashMap::new(),
+            macros: HashMap::new(),
+            gensym_counter: 0,
         };
 
         // Register all builtins
@@ -106,6 +110,24 @@ impl Runtime {
     /// Used by let* to bind variables
     pub fn define_local(&mut self, sym: SymbolId, val: Value) {
         self.lexical.define_local(sym, val);
+    }
+
+    /// Define a macro
+    pub fn define_macro(&mut self, sym: SymbolId, macro_val: Value) {
+        self.macros.insert(sym, macro_val);
+    }
+
+    /// Lookup a macro
+    pub fn lookup_macro(&self, sym: SymbolId) -> Option<&Value> {
+        self.macros.get(&sym)
+    }
+
+    /// Generate a unique symbol (for macro hygiene)
+    pub fn gensym(&mut self, prefix: Option<&str>) -> SymbolId {
+        let prefix = prefix.unwrap_or("G");
+        self.gensym_counter += 1;
+        let name = format!("{}#{}", prefix, self.gensym_counter);
+        self.interner.intern(&name)
     }
 }
 

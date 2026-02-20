@@ -16,7 +16,7 @@ use blawktrust::lookup_ori;
 /// Convert Table to TableView automatically
 fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView>, String> {
     match v {
-        Value::TableView(tv) => Ok(Arc::clone(tv)),
+        Value::TableView(tv) => Ok(tv.view_arc()),
         Value::Table(t) => {
             let mut names = Vec::new();
             let mut columns = Vec::new();
@@ -47,10 +47,15 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("exp", builtin_exp);
     rt.register_builtin("abs", builtin_abs);
 
-    // Column Operations (Step 6)
-    rt.register_builtin("dlog", builtin_dlog);
-    rt.register_builtin("shift", builtin_shift);
-    rt.register_builtin("diff", builtin_diff);
+    // Column Operations (Step 6) - Surface names point to table versions
+    rt.register_builtin("dlog", builtin_dlog_cols);   // Table version (default lag=1)
+    rt.register_builtin("shift", builtin_shift_cols); // Table version (default lag=1)
+    rt.register_builtin("diff", builtin_diff_cols);   // Table version (default lag=1)
+
+    // Single-column kernels (renamed to avoid collision)
+    rt.register_builtin("dlog-col", builtin_dlog);
+    rt.register_builtin("shift-col", builtin_shift);
+    rt.register_builtin("diff-col", builtin_diff);
 
     // Aggregations (kdb-style)
     rt.register_builtin("sum", builtin_sum);
@@ -82,8 +87,9 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("diff-cols", builtin_diff_cols);
 
     // Comparison Operations (GLD_NUM Tier 1)
-    rt.register_builtin(">", builtin_gt);
-    rt.register_builtin(">-cols", builtin_gt_cols);
+    rt.register_builtin(">", builtin_gt_cols);      // Surface name → table version
+    rt.register_builtin(">-cols", builtin_gt_cols); // Explicit table version
+    rt.register_builtin(">-col", builtin_gt);       // Single-column kernel
     rt.register_builtin("<", builtin_lt);
     rt.register_builtin(">=", builtin_gte);
     rt.register_builtin("<=", builtin_lte);
@@ -99,16 +105,21 @@ pub fn register_builtins(rt: &mut Runtime) {
     // GLD_NUM Tier 3: Table Transforms
     rt.register_builtin("w5", builtin_w5);
     rt.register_builtin("xminus", builtin_xminus);
-    rt.register_builtin("cs1", builtin_cs1);
-    rt.register_builtin("cs1-cols", builtin_cs1_cols);
-    rt.register_builtin("ecs1", builtin_ecs1);
+    rt.register_builtin("cs1", builtin_cs1_cols);      // Surface name → table version
+    rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
+    rt.register_builtin("cs1-col", builtin_cs1);       // Single-column kernel
+    rt.register_builtin("ecs1", builtin_ecs1_cols);    // Surface name → table version
     rt.register_builtin("ecs1-cols", builtin_ecs1_cols);
+    rt.register_builtin("ecs1-col", builtin_ecs1);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
     rt.register_builtin("mapr", builtin_mapr);
-    rt.register_builtin("ur", builtin_ur);
+    rt.register_builtin("ur", builtin_ur_cols);      // Surface name → table version
+    rt.register_builtin("ur-cols", builtin_ur_cols); // Explicit table version
+    rt.register_builtin("ur-col", builtin_ur);       // Single-column kernel
     rt.register_builtin("wz0", builtin_wz0);
     rt.register_builtin("wz0-cols", builtin_wz0_cols);
+    rt.register_builtin("wzs", builtin_wzs);  // Composite: locf(keep-shape(wz0))
 
     // Rolling Statistics
     rt.register_builtin("wstd", builtin_wstd);
@@ -243,6 +254,41 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         (Value::Col(a), Value::Col(b)) => {
             let result = mul_columns(a, b)?;
             Ok(Value::Col(Arc::new(result)))
+        }
+
+        // TableView * TableView (element-wise, column-aligned)
+        (Value::TableView(tv_a), Value::TableView(tv_b)) => {
+            // Get numeric columns from both tables
+            let cols_a: Vec<_> = tv_a.table.columns.iter()
+                .filter(|c| matches!(c, blawktrust::Column::F64(_)))
+                .collect();
+            let cols_b: Vec<_> = tv_b.table.columns.iter()
+                .filter(|c| matches!(c, blawktrust::Column::F64(_)))
+                .collect();
+
+            if cols_a.len() != cols_b.len() {
+                return Err(format!("* cannot multiply tables with different number of numeric columns: {} vs {}",
+                    cols_a.len(), cols_b.len()));
+            }
+
+            // Multiply corresponding columns
+            let mut result_names = Vec::new();
+            let mut result_columns = Vec::new();
+
+            for (col_a, col_b) in cols_a.iter().zip(cols_b.iter()) {
+                let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
+                result_columns.push(mul_result);
+            }
+
+            // Use names from first table
+            for (i, col) in tv_a.table.columns.iter().enumerate() {
+                if matches!(col, blawktrust::Column::F64(_)) {
+                    result_names.push(tv_a.table.names[i].clone());
+                }
+            }
+
+            let result_table = blawktrust::Table::new(result_names, result_columns);
+            Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
 
         _ => Err(format!("* cannot multiply {} and {}", args[0].type_name(), args[1].type_name())),
@@ -581,7 +627,7 @@ fn builtin_gt_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 }
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!(">-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -659,7 +705,7 @@ fn builtin_locf_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 }
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("locf-cols expects TableView, got {}. Use (file ...) which returns TableView.", args[0].type_name())),
     }
@@ -731,7 +777,7 @@ fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, S
                 }
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("keep-shape-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -787,7 +833,7 @@ fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         .collect();
 
     let new_table = blawktrust::Table::new(new_names, new_columns);
-    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_table))))
+    Ok(Value::tableview(blawktrust::TableView::new(new_table)))
 }
 
 /// (xminus table half) - Pairwise spreads (A - B for all pairs of numeric columns)
@@ -853,7 +899,7 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 
     let new_table = blawktrust::Table::new(new_names, new_columns);
-    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_table))))
+    Ok(Value::tableview(blawktrust::TableView::new(new_table)))
 }
 
 /// (cs1 col) - Cumulative sum starting from 1.0
@@ -891,9 +937,10 @@ fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 }
 
-/// (cs1-cols table) - Apply cs1 to all numeric columns
+/// (cs1-cols table) - Cumulative sum starting from 1.0, axis-aware
 ///
-/// Table-level wrapper: TableView -> TableView
+/// axis=:col (default) → cumulative down rows per column
+/// axis=:row → cumulative across columns per row
 fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("cs1-cols expects 1 argument (table), got {}", args.len()));
@@ -901,29 +948,82 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
     match &args[0] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        let mut result = Vec::with_capacity(data.len());
-                        let mut sum = 1.0;
+            use crate::value::Axis;
 
-                        for &val in data {
-                            if val.is_nan() {
-                                // Carry forward last cumsum (like locf), don't output NaN
-                                result.push(sum);
-                            } else {
-                                sum += val;
-                                result.push(sum);
+            match tv.axis {
+                Axis::Col => {
+                    // Cumulative down rows, per column (fast path)
+                    let result = map_numeric_cols(tv.as_ref(), |col| {
+                        match col {
+                            blawktrust::Column::F64(data) => {
+                                let mut result = Vec::with_capacity(data.len());
+                                let mut sum = 1.0;
+
+                                for &val in data {
+                                    if val.is_nan() {
+                                        result.push(sum);  // LOCF
+                                    } else {
+                                        sum += val;
+                                        result.push(sum);
+                                    }
+                                }
+
+                                Ok(blawktrust::Column::new_f64(result))
+                            }
+                            _ => unreachable!("map_numeric_cols only passes F64"),
+                        }
+                    })?;
+
+                    Ok(Value::tableview(result))
+                }
+                Axis::Row => {
+                    // Cumulative across columns, per row (slow path)
+                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
+                    let ncols = tv.table.columns.len();
+
+                    // Collect numeric column indices
+                    let numeric_indices: Vec<usize> = tv.table.columns.iter().enumerate()
+                        .filter_map(|(i, col)| if matches!(col, blawktrust::Column::F64(_)) { Some(i) } else { None })
+                        .collect();
+
+                    if numeric_indices.is_empty() {
+                        return Err("cs1-cols: no numeric columns".to_string());
+                    }
+
+                    // Build output: one column per numeric input column
+                    let mut result_cols = Vec::new();
+                    let mut result_names = Vec::new();
+
+                    for &col_idx in &numeric_indices {
+                        let mut col_data = vec![0.0; nrows];
+
+                        // For each row, scan across columns up to this one
+                        if let blawktrust::Column::F64(data) = &tv.table.columns[col_idx] {
+                            for row in 0..nrows {
+                                let mut cumsum = 1.0;
+                                for &nc_idx in &numeric_indices {
+                                    if nc_idx > col_idx {
+                                        break;  // Haven't reached this column yet in the scan
+                                    }
+                                    if let blawktrust::Column::F64(nc_data) = &tv.table.columns[nc_idx] {
+                                        let val = nc_data[row];
+                                        if !val.is_nan() {
+                                            cumsum += val;
+                                        }
+                                    }
+                                }
+                                col_data[row] = cumsum;
                             }
                         }
 
-                        Ok(blawktrust::Column::new_f64(result))
+                        result_cols.push(blawktrust::Column::new_f64(col_data));
+                        result_names.push(tv.table.names[col_idx].clone());
                     }
-                    _ => unreachable!("map_numeric_cols only passes F64"),
-                }
-            })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+                    let result_table = blawktrust::Table::new(result_names, result_cols);
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+            }
         }
         _ => Err(format!("cs1-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -961,7 +1061,10 @@ fn builtin_ecs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 }
 
-/// (ecs1-cols table) - Apply ecs1 to all numeric columns
+/// (ecs1-cols table) - Exponential cumulative sum, axis-aware
+///
+/// axis=:col (default) → cumulative down rows per column
+/// axis=:row → cumulative across columns per row
 fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("ecs1-cols expects 1 argument (table), got {}", args.len()));
@@ -969,28 +1072,80 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 
     match &args[0] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        let mut result = Vec::with_capacity(data.len());
-                        let mut cumsum: f64 = 0.0;
+            use crate::value::Axis;
 
-                        for &val in data {
-                            if val.is_nan() {
-                                result.push(cumsum.exp());
-                            } else {
-                                cumsum += val;
-                                result.push(cumsum.exp());
+            match tv.axis {
+                Axis::Col => {
+                    // Cumulative down rows, per column (fast path)
+                    let result = map_numeric_cols(tv.as_ref(), |col| {
+                        match col {
+                            blawktrust::Column::F64(data) => {
+                                let mut result = Vec::with_capacity(data.len());
+                                let mut cumsum: f64 = 0.0;
+
+                                for &val in data {
+                                    if val.is_nan() {
+                                        result.push(cumsum.exp());  // LOCF
+                                    } else {
+                                        cumsum += val;
+                                        result.push(cumsum.exp());
+                                    }
+                                }
+
+                                Ok(blawktrust::Column::new_f64(result))
+                            }
+                            _ => unreachable!("map_numeric_cols only passes F64"),
+                        }
+                    })?;
+
+                    Ok(Value::tableview(result))
+                }
+                Axis::Row => {
+                    // Cumulative across columns, per row (slow path)
+                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
+
+                    // Collect numeric column indices
+                    let numeric_indices: Vec<usize> = tv.table.columns.iter().enumerate()
+                        .filter_map(|(i, col)| if matches!(col, blawktrust::Column::F64(_)) { Some(i) } else { None })
+                        .collect();
+
+                    if numeric_indices.is_empty() {
+                        return Err("ecs1-cols: no numeric columns".to_string());
+                    }
+
+                    // Build output: one column per numeric input column
+                    let mut result_cols = Vec::new();
+                    let mut result_names = Vec::new();
+
+                    for &col_idx in &numeric_indices {
+                        let mut col_data = vec![0.0; nrows];
+
+                        if let blawktrust::Column::F64(_data) = &tv.table.columns[col_idx] {
+                            for row in 0..nrows {
+                                let mut cumsum = 0.0;
+                                for &nc_idx in &numeric_indices {
+                                    if nc_idx > col_idx {
+                                        break;
+                                    }
+                                    if let blawktrust::Column::F64(nc_data) = &tv.table.columns[nc_idx] {
+                                        let val = nc_data[row];
+                                        if !val.is_nan() {
+                                            cumsum += val;
+                                        }
+                                    }
+                                }
+                                col_data[row] = cumsum.exp();
                             }
                         }
 
-                        Ok(blawktrust::Column::new_f64(result))
+                        result_cols.push(blawktrust::Column::new_f64(col_data));
+                        result_names.push(tv.table.names[col_idx].clone());
                     }
-                    _ => unreachable!("map_numeric_cols only passes F64"),
-                }
-            })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+                    let result_table = blawktrust::Table::new(result_names, result_cols);
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+            }
         }
         _ => Err(format!("ecs1-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -1064,10 +1219,10 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 
     let result_table = blawktrust::Table::new(result_names, result_columns);
-    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(result_table))))
+    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
 }
 
-/// (ur col window decay) - Unit ratio (risk-adjusted returns)
+/// (ur col window [step]) - Unit ratio: value / rolling_volatility (step default=1)
 ///
 /// Formula: value / (100 * sqrt(252) * rolling_stddev)
 /// - Uses rolling standard deviation with given window
@@ -1077,20 +1232,24 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Example:
 ///   (ur prices 250 5) ; 250-day window, decay=5
 fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() != 3 {
-        return Err(format!("ur expects 3 arguments (col window decay), got {}", args.len()));
+    if args.len() < 2 || args.len() > 3 {
+        return Err(format!("ur expects 2-3 arguments (col window [step]), got {}", args.len()));
     }
 
     let col = args[0].as_col()?;
     let window = args[1].as_int()? as usize;
-    let decay = args[2].as_int()? as usize;
+    let step = if args.len() == 3 {
+        args[2].as_int()? as usize
+    } else {
+        1
+    };
 
     if window == 0 {
         return Err("ur: window must be > 0".to_string());
     }
 
-    if decay != 5 {
-        return Err("ur: only decay=5 currently supported".to_string());
+    if step == 0 {
+        return Err("ur: step must be > 0".to_string());
     }
 
     match col.as_ref() {
@@ -1099,38 +1258,152 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let mut result = vec![f64::NAN; n];
             let scale = 100.0 * (252.0_f64).sqrt();
 
+            // Step parameter: recalculate volatility every 'step' rows, but output every row
+            let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
+
             for i in 0..n {
-                let start = if i >= window { i - window } else { 0 };
-                let end = i;  // EXCLUDE current value (Ft-measurable: use only past)
+                // Rolling window philosophy: require full window before computing
+                if i < window {
+                    result[i] = f64::NAN;
+                    continue;
+                }
 
-                // Calculate rolling stddev using incremental formula
-                let mut sum = 0.0;
-                let mut sum_sq = 0.0;
-                let mut count = 0;
+                // Recalculate volatility every 'step' rows
+                if i % step == 0 || current_inv_vol.is_nan() {
+                    let start = i - window;
+                    let end = i;  // EXCLUDE current value (Ft-measurable: use only past)
 
-                for j in start..end {
-                    let val = data[j];
-                    if !val.is_nan() && val != 0.0 {
-                        sum += val;
-                        sum_sq += val * val;
-                        count += 1;
+                    // Calculate rolling stddev
+                    let mut sum = 0.0;
+                    let mut sum_sq = 0.0;
+                    let mut count = 0;
+
+                    for j in start..end {
+                        let val = data[j];
+                        if !val.is_nan() && val != 0.0 {
+                            sum += val;
+                            sum_sq += val * val;
+                            count += 1;
+                        }
+                    }
+
+                    if count > 1 {
+                        let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                        if variance > 0.0 {
+                            let stddev = variance.sqrt();
+                            current_inv_vol = 1.0 / (scale * stddev);
+                        } else {
+                            current_inv_vol = f64::NAN;
+                        }
+                    } else {
+                        current_inv_vol = f64::NAN;
                     }
                 }
 
-                if count > 1 {
-                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
-                    if variance > 0.0 {
-                        let stddev = variance.sqrt();
-                        if !data[i].is_nan() {
-                            result[i] = data[i] / (scale * stddev);
-                        }
-                    }
+                // Apply current volatility coefficient to every row
+                if !data[i].is_nan() && !current_inv_vol.is_nan() {
+                    result[i] = data[i] * current_inv_vol;
+                } else {
+                    result[i] = f64::NAN;
                 }
             }
 
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
         }
         _ => Err("ur only supported for F64 columns".to_string()),
+    }
+}
+
+/// (ur-cols table window [step]) - Apply ur to all numeric columns (step default=1)
+///
+/// Table-level wrapper: TableView -> TableView
+fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(format!("ur-cols expects 2-3 arguments (table window [step]), got {}", args.len()));
+    }
+
+    let window = args[1].as_int()? as usize;
+    let step = if args.len() == 3 {
+        args[2].as_int()? as usize
+    } else {
+        1
+    };
+
+    if window == 0 {
+        return Err("ur-cols: window must be > 0".to_string());
+    }
+
+    if step == 0 {
+        return Err("ur-cols: step must be > 0".to_string());
+    }
+
+    match &args[0] {
+        Value::TableView(tv) => {
+            let result = map_numeric_cols(tv.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        let n = data.len();
+                        let mut result = vec![f64::NAN; n];
+                        let scale = 100.0 * (252.0_f64).sqrt();
+
+                        // Step parameter: recalculate volatility every 'step' rows, but output every row
+                        let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
+
+                        for i in 0..n {
+                            // Rolling window philosophy: require full window before computing
+                            if i < window {
+                                result[i] = f64::NAN;
+                                continue;
+                            }
+
+                            // Recalculate volatility every 'step' rows
+                            if i % step == 0 || current_inv_vol.is_nan() {
+                                let start = i - window;
+                                let end = i;
+
+                                let mut sum = 0.0;
+                                let mut sum_sq = 0.0;
+                                let mut count = 0;
+
+                                for j in start..end {
+                                    let val = data[j];
+                                    if !val.is_nan() && val != 0.0 {
+                                        sum += val;
+                                        sum_sq += val * val;
+                                        count += 1;
+                                    }
+                                }
+
+                                if count > 1 {
+                                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                                    if variance > 0.0 {
+                                        let stddev = variance.sqrt();
+                                        current_inv_vol = 1.0 / (scale * stddev);
+                                    } else {
+                                        current_inv_vol = f64::NAN;
+                                    }
+                                } else {
+                                    current_inv_vol = f64::NAN;
+                                }
+                            }
+
+                            // Apply current volatility coefficient to every row
+                            if !data[i].is_nan() && !current_inv_vol.is_nan() {
+                                result[i] = data[i] * current_inv_vol;
+                            } else {
+                                result[i] = f64::NAN;
+                            }
+                        }
+
+                        Ok(blawktrust::Column::new_f64(result))
+                    }
+                    _ => unreachable!("map_numeric_cols only passes F64"),
+                }
+            })?;
+
+            Ok(Value::tableview(result))
+        }
+        _ => Err(format!("ur-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
@@ -1260,10 +1533,29 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
                 }
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("wz0-cols expects TableView, got {}", args[0].type_name())),
     }
+}
+
+/// (wzs table window step) - Rolling z-score with keep-shape and locf
+///
+/// Composition: locf(keep-shape(wz0(table, window), step))
+/// This is the standard finance pipeline for z-score signals
+fn builtin_wzs(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("wzs expects 3 arguments (table window step), got {}", args.len()));
+    }
+
+    // Step 1: wz0-cols
+    let wz0_result = builtin_wz0_cols(rt, &[args[0].clone(), args[1].clone()])?;
+
+    // Step 2: keep-shape-cols
+    let keep_result = builtin_keep_shape_cols(rt, &[wz0_result, args[2].clone()])?;
+
+    // Step 3: locf-cols
+    builtin_locf_cols(rt, &[keep_result])
 }
 
 // ============================================================================
@@ -1541,7 +1833,7 @@ fn builtin_setcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 
     let new_bt = blawktrust::Table::new(names, columns);
-    Ok(Value::TableView(Arc::new(blawktrust::TableView::new(new_bt))))
+    Ok(Value::tableview(blawktrust::TableView::new(new_bt)))
 }
 
 /// (withcol table "colname" fn [args...]) → TableView
@@ -1602,7 +1894,7 @@ fn builtin_withcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     // Use setcol to update the table
     let col_name_val = Value::Str(col_name.into());
-    builtin_setcol(rt, &[Value::TableView(tv), col_name_val, Value::Col(new_col)])
+    builtin_setcol(rt, &[Value::tableview_arc(tv), col_name_val, Value::Col(new_col)])
 }
 
 /// (make-col v1 v2 v3 ...) - Create column from values
@@ -1667,7 +1959,11 @@ fn builtin_len(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 // Aggregation Builtins (kdb-style)
 // ============================================================================
 
-/// (sum col) - Sum column values (propagates NaN)
+/// (sum table) - Sum values according to axis
+///
+/// Axis-aware aggregation:
+///   axis=:col (default) → sum down rows, per column → 1×N output
+///   axis=:row → sum across columns, per row → M×1 output
 fn builtin_sum(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("sum expects 1 argument, got {}", args.len()));
@@ -1675,70 +1971,71 @@ fn builtin_sum(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     match &args[0] {
         Value::Col(col) => {
-            // Column aggregation: return scalar
-            let result = blawktrust::sum(col);
-            Ok(Value::Float(result))
+            // Single column: compute sum ignoring NAs
+            let data = match col.as_ref() {
+                blawktrust::Column::F64(data) => data,
+                _ => return Err("sum expects F64 column".to_string()),
+            };
+            let mut sum = 0.0;
+            for &val in data {
+                if !val.is_nan() {
+                    sum += val;
+                }
+            }
+            Ok(Value::Float(sum))
         }
         Value::TableView(tv) => {
-            // Orientation-aware aggregation (numeric columns only)
-            let reduce_mode = tv.reduce_mode();
-            let (log_nrows, log_ncols) = tv.logical_shape();
-            let (phys_nr, phys_nc) = tv.physical_shape();
+            use crate::value::Axis;
 
-            // Get indices of F64 columns only
-            let numeric_cols: Vec<usize> = (0..phys_nc)
-                .filter(|&c| matches!(tv.table.columns[c], blawktrust::Column::F64(_)))
-                .collect();
+            // Axis-aware aggregation
+            match tv.axis {
+                Axis::Col => {
+                    // Sum down rows, per column → 1×N output (ignore NAs)
+                    let mut result_cols = Vec::new();
+                    let mut result_names = Vec::new();
 
-            if numeric_cols.is_empty() {
-                return Err("No numeric columns to sum".to_string());
-            }
-
-            match reduce_mode {
-                blawktrust::ReduceMode::ByRows => {
-                    // Z-oriented (row-wise): sum each row → output column with nrows elements
-                    // Note: in Z orientation, physical columns become logical rows
-                    let mut sums = Vec::with_capacity(log_nrows);
-                    for i in 0..log_nrows {
-                        let mut row_sum = 0.0;
-                        for j in 0..log_ncols {
-                            // Map logical (i,j) to physical (r,c) and check if numeric
-                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
-                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
-                                row_sum += tv.get_f64(i, j);
+                    for (i, col) in tv.table.columns.iter().enumerate() {
+                        if let blawktrust::Column::F64(data) = col {
+                            // Compute sum ignoring NAs
+                            let mut sum = 0.0;
+                            for &val in data {
+                                if !val.is_nan() {
+                                    sum += val;
+                                }
                             }
+                            result_cols.push(blawktrust::Column::new_f64(vec![sum]));
+                            result_names.push(tv.table.names[i].clone());
                         }
-                        sums.push(row_sum);
                     }
-                    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(sums))))
+
+                    if result_cols.is_empty() {
+                        return Err("sum: no numeric columns".to_string());
+                    }
+
+                    let result_table = blawktrust::Table::new(result_names, result_cols);
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
-                blawktrust::ReduceMode::ByCols => {
-                    // H-oriented (column-wise): sum each column → output row with ncols elements
-                    let mut sums = Vec::with_capacity(log_ncols);
-                    for j in 0..log_ncols {
-                        let mut col_sum = 0.0;
-                        for i in 0..log_nrows {
-                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
-                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
-                                col_sum += tv.get_f64(i, j);
-                            }
-                        }
-                        sums.push(col_sum);
-                    }
-                    Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(sums))))
-                }
-                blawktrust::ReduceMode::Scalar => {
-                    // R-oriented (scalar reduce): sum all elements → scalar
-                    let mut total = 0.0;
-                    for i in 0..log_nrows {
-                        for j in 0..log_ncols {
-                            let (phys_r, phys_c) = tv.ori.map_ij(phys_nr, phys_nc, i, j);
-                            if matches!(tv.table.columns[phys_c], blawktrust::Column::F64(_)) {
-                                total += tv.get_f64(i, j);
+                Axis::Row => {
+                    // Sum across columns, per row → M×1 output (single column)
+                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
+                    let mut sums = vec![0.0; nrows];
+
+                    // Sum each row across numeric columns
+                    for col in &tv.table.columns {
+                        if let blawktrust::Column::F64(data) = col {
+                            for (i, &val) in data.iter().enumerate() {
+                                if !val.is_nan() {
+                                    sums[i] += val;
+                                }
                             }
                         }
                     }
-                    Ok(Value::Float(total))
+
+                    let result_table = blawktrust::Table::new(
+                        vec!["sum".to_string()],
+                        vec![blawktrust::Column::new_f64(sums)]
+                    );
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
             }
         }
@@ -1757,15 +2054,112 @@ fn builtin_sum0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     Ok(Value::Float(result))
 }
 
-/// (mean col) - Mean of column values (propagates NaN)
+/// (mean table) - Mean of values according to axis
+///
+/// Axis-aware aggregation:
+///   axis=:col (default) → mean down rows, per column → 1×N output
+///   axis=:row → mean across columns, per row → M×1 output
 fn builtin_mean(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("mean expects 1 argument, got {}", args.len()));
     }
 
-    let col = args[0].as_col()?;
-    let result = blawktrust::mean(&col);
-    Ok(Value::Float(result))
+    match &args[0] {
+        Value::Col(col) => {
+            // Single column: compute mean ignoring NAs
+            let data = match col.as_ref() {
+                blawktrust::Column::F64(data) => data,
+                _ => return Err("mean expects F64 column".to_string()),
+            };
+            let mut sum = 0.0;
+            let mut count = 0;
+            for &val in data {
+                if !val.is_nan() {
+                    sum += val;
+                    count += 1;
+                }
+            }
+            let result = if count > 0 {
+                sum / count as f64
+            } else {
+                f64::NAN
+            };
+            Ok(Value::Float(result))
+        }
+        Value::TableView(tv) => {
+            use crate::value::Axis;
+
+            match tv.axis {
+                Axis::Col => {
+                    // Mean down rows, per column → 1×N output (ignore NAs)
+                    let mut result_cols = Vec::new();
+                    let mut result_names = Vec::new();
+
+                    for (i, col) in tv.table.columns.iter().enumerate() {
+                        if let blawktrust::Column::F64(data) = col {
+                            // Compute mean ignoring NAs
+                            let mut sum = 0.0;
+                            let mut count = 0;
+                            for &val in data {
+                                if !val.is_nan() {
+                                    sum += val;
+                                    count += 1;
+                                }
+                            }
+                            let mean_val = if count > 0 {
+                                sum / count as f64
+                            } else {
+                                f64::NAN
+                            };
+                            result_cols.push(blawktrust::Column::new_f64(vec![mean_val]));
+                            result_names.push(tv.table.names[i].clone());
+                        }
+                    }
+
+                    if result_cols.is_empty() {
+                        return Err("mean: no numeric columns".to_string());
+                    }
+
+                    let result_table = blawktrust::Table::new(result_names, result_cols);
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+                Axis::Row => {
+                    // Mean across columns, per row → M×1 output
+                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
+                    let mut means = vec![0.0; nrows];
+                    let mut counts = vec![0; nrows];
+
+                    // Sum each row across numeric columns
+                    for col in &tv.table.columns {
+                        if let blawktrust::Column::F64(data) = col {
+                            for (i, &val) in data.iter().enumerate() {
+                                if !val.is_nan() {
+                                    means[i] += val;
+                                    counts[i] += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    // Compute means
+                    for (i, count) in counts.iter().enumerate() {
+                        if *count > 0 {
+                            means[i] /= *count as f64;
+                        } else {
+                            means[i] = f64::NAN;
+                        }
+                    }
+
+                    let result_table = blawktrust::Table::new(
+                        vec!["mean".to_string()],
+                        vec![blawktrust::Column::new_f64(means)]
+                    );
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+            }
+        }
+        _ => Err(format!("mean expects column or tableview, got {}", args[0].type_name()))
+    }
 }
 
 /// (mean0 col) - Mean of column values (ignores NaN)
@@ -1779,45 +2173,128 @@ fn builtin_mean0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     Ok(Value::Float(result))
 }
 
-/// (std col) - Standard deviation of column values (propagates NaN, ddof=1)
+/// (std table) - Standard deviation, axis-aware (sample std, ddof=1, ignores NA)
+///
+/// axis=:col (default) → std down rows per column → 1×N output
+/// axis=:row → std across columns per row → M×1 output
+/// NA handling: ignore NAs, output NA if valid count < 2
 fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
         return Err(format!("std expects 1 argument, got {}", args.len()));
     }
 
-    let col = args[0].as_col()?;
+    match &args[0] {
+        Value::Col(col) => {
+            // Single column: compute sample std
+            let data = match col.as_ref() {
+                blawktrust::Column::F64(data) => data,
+                _ => return Err("std expects F64 column".to_string()),
+            };
 
-    // Compute std with ddof=1 (sample standard deviation)
-    let data = match col.as_ref() {
-        blawktrust::Column::F64(data) => data,
-        _ => return Err("std expects F64 column".to_string()),
-    };
+            let mut sum = 0.0;
+            let mut sum_sq = 0.0;
+            let mut count = 0;
 
-    let n = data.len();
-    if n < 2 {
-        return Ok(Value::Float(f64::NAN));
-    }
+            for &val in data {
+                if !val.is_nan() {
+                    sum += val;
+                    sum_sq += val * val;
+                    count += 1;
+                }
+            }
 
-    let mut sum = 0.0;
-    let mut sum_sq = 0.0;
-    let mut count = 0;
+            if count < 2 {
+                return Ok(Value::Float(f64::NAN));
+            }
 
-    for &val in data {
-        if val.is_nan() {
-            return Ok(Value::Float(f64::NAN)); // Propagate NaN
+            let mean = sum / count as f64;
+            let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+            Ok(Value::Float(variance.sqrt()))
         }
-        sum += val;
-        sum_sq += val * val;
-        count += 1;
-    }
+        Value::TableView(tv) => {
+            use crate::value::Axis;
 
-    if count < 2 {
-        return Ok(Value::Float(f64::NAN));
-    }
+            match tv.axis {
+                Axis::Col => {
+                    // Std down rows, per column → 1×N output
+                    let mut result_cols = Vec::new();
+                    let mut result_names = Vec::new();
 
-    let mean = sum / count as f64;
-    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
-    Ok(Value::Float(variance.sqrt()))
+                    for (i, col) in tv.table.columns.iter().enumerate() {
+                        if let blawktrust::Column::F64(data) = col {
+                            let mut sum = 0.0;
+                            let mut sum_sq = 0.0;
+                            let mut count = 0;
+
+                            for &val in data {
+                                if !val.is_nan() {
+                                    sum += val;
+                                    sum_sq += val * val;
+                                    count += 1;
+                                }
+                            }
+
+                            let std_val = if count < 2 {
+                                f64::NAN
+                            } else {
+                                let mean = sum / count as f64;
+                                let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                                variance.sqrt()
+                            };
+
+                            result_cols.push(blawktrust::Column::new_f64(vec![std_val]));
+                            result_names.push(tv.table.names[i].clone());
+                        }
+                    }
+
+                    if result_cols.is_empty() {
+                        return Err("std: no numeric columns".to_string());
+                    }
+
+                    let result_table = blawktrust::Table::new(result_names, result_cols);
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+                Axis::Row => {
+                    // Std across columns, per row → M×1 output (Welford algorithm)
+                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
+                    let mut stds = vec![0.0; nrows];
+
+                    for i in 0..nrows {
+                        let mut n = 0;
+                        let mut mean = 0.0;
+                        let mut m2 = 0.0;
+
+                        // Welford's online algorithm for numerical stability
+                        for col in &tv.table.columns {
+                            if let blawktrust::Column::F64(data) = col {
+                                let val = data[i];
+                                if !val.is_nan() {
+                                    n += 1;
+                                    let delta = val - mean;
+                                    mean += delta / n as f64;
+                                    let delta2 = val - mean;
+                                    m2 += delta * delta2;
+                                }
+                            }
+                        }
+
+                        stds[i] = if n < 2 {
+                            f64::NAN
+                        } else {
+                            (m2 / (n - 1) as f64).sqrt()
+                        };
+                    }
+
+                    let result_table = blawktrust::Table::new(
+                        vec!["std".to_string()],
+                        vec![blawktrust::Column::new_f64(stds)]
+                    );
+                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+                }
+            }
+        }
+        _ => Err(format!("std expects column or tableview, got {}", args[0].type_name()))
+    }
 }
 
 /// (std0 col) - Standard deviation of column values (ignores NaN, ddof=1)
@@ -1890,7 +2367,7 @@ fn builtin_wstd_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
         Value::TableView(tv) => {
             let window = args[1].as_int()? as usize;
             let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd(col, window)))?;
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("wstd-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -1906,7 +2383,7 @@ fn builtin_wstd0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
         Value::TableView(tv) => {
             let window = args[1].as_int()? as usize;
             let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd0(col, window)))?;
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("wstd0-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -1957,7 +2434,7 @@ fn builtin_wv_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     _ => wstd_col,
                 })
             })?;
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("wv-cols expects TableView, got {}", args[0].type_name())),
     }
@@ -2497,14 +2974,14 @@ fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     Ok(Value::Table(Arc::new(new_table)))
 }
 
-/// (dlog-cols table lag) → TableView
-/// Apply dlog with lag to each F64 column
+/// (dlog-cols table [lag]) → TableView
+/// Apply dlog with lag to each F64 column (default lag=1)
 fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err(format!("dlog-cols expects 2 arguments (table lag), got {}", args.len()));
-    }
-
-    let lag = args[1].as_int()? as usize;
+    let lag = match args.len() {
+        1 => 1,
+        2 => args[1].as_int()? as usize,
+        n => return Err(format!("dlog-cols expects 1-2 arguments, got {}", n)),
+    };
 
     match &args[0] {
         Value::TableView(tv) => {
@@ -2513,45 +2990,47 @@ fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 Ok(dlog_column(&col_arc, lag))
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("dlog-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
-/// (shift-cols table n) → Table
-/// Apply shift with n to each F64 column
+/// (shift-cols table [lag]) → Table
+/// Apply shift with lag to each F64 column (default lag=1)
 fn builtin_shift_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err(format!("shift-cols expects 2 arguments (table n), got {}", args.len()));
-    }
+    let lag = match args.len() {
+        1 => 1,
+        2 => args[1].as_int()?,
+        n => return Err(format!("shift-cols expects 1-2 arguments, got {}", n)),
+    };
 
-    let n = args[1].as_int()?;
-    if n < 0 {
+    if lag < 0 {
         return Err("shift-cols with negative lag not yet implemented".to_string());
     }
 
     match &args[0] {
         Value::TableView(tv) => {
             let result = map_numeric_cols(tv.as_ref(), |col| {
-                shift_column(col, n as usize)
+                shift_column(col, lag as usize)
             })?;
 
-            Ok(Value::TableView(Arc::new(result)))
+            Ok(Value::tableview(result))
         }
         _ => Err(format!("shift-cols expects TableView, got {}", args[0].type_name())),
     }
 }
 
-/// (diff-cols table n) → Table
-/// Apply diff with n to each F64 column
+/// (diff-cols table [lag]) → Table
+/// Apply diff with lag to each F64 column (default lag=1)
 fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err(format!("diff-cols expects 2 arguments (table n), got {}", args.len()));
-    }
+    let lag = match args.len() {
+        1 => 1,
+        2 => args[1].as_int()? as usize,
+        n => return Err(format!("diff-cols expects 1-2 arguments, got {}", n)),
+    };
 
     let table = args[0].as_table()?;
-    let n = args[1].as_int()? as usize;
 
     let mut new_table = crate::value::Table::new();
 
@@ -2559,8 +3038,8 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     for (name, col) in &table.columns {
         match col {
             blawktrust::Column::F64(_) => {
-                // Compute: col - shift(col, n)
-                let shifted = shift_column(col, n)?;
+                // Compute: col - shift(col, lag)
+                let shifted = shift_column(col, lag)?;
                 let result_col = subtract_columns(col, &shifted)?;
                 new_table.add_column(*name, result_col);
             }
@@ -2582,27 +3061,73 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 /// Example: (o data WENS) rotates to row-wise view
 /// Example: (o data H) or (o data NSWE) for horizontal (default) view
 fn builtin_o(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() != 2 {
-        return Err(format!("o expects 2 arguments (table orientation), got {}", args.len()));
+    use crate::value::{Axis, Layout, TableViewWithMetadata};
+
+    match args.len() {
+        1 => {
+            // Unary form: (o MODE) returns a function
+            // This is a special case - we return a lambda-like value
+            // For now, just return an error - proper lambda support needs more work
+            Err("o: unary form (o MODE) not yet implemented - use (o MODE table) instead".to_string())
+        }
+        2 => {
+            // Binary form: (o MODE table) returns modified table
+            let mode_arg = &args[0];
+            let table_arg = &args[1];
+
+            // Parse the mode argument (keyword or symbol)
+            let mode_name = match mode_arg {
+                Value::Sym(s) => rt.interner.resolve(*s),
+                Value::Str(s) => s.as_ref(),
+                _ => return Err(format!("o expects keyword (:col/:row/:reset) or symbol (NSWE/WENS/...), got {}", mode_arg.type_name())),
+            };
+
+            // Check if it's a keyword (starts with :) for axis semantics
+            if mode_name.starts_with(':') {
+                // Keyword form: axis semantics
+                let keyword = &mode_name[1..]; // Strip leading ':'
+                let axis = match keyword {
+                    "col" => Axis::Col,
+                    "row" => Axis::Row,
+                    "reset" => Axis::Col, // :reset = back to column-wise default
+                    _ => return Err(format!("o: unknown axis keyword :{}. Valid: :col, :row, :reset", keyword)),
+                };
+
+                // Get table and set axis
+                match table_arg {
+                    Value::TableView(tv) => {
+                        let new_tv = tv.with_axis(axis);
+                        Ok(Value::TableView(Arc::new(new_tv)))
+                    }
+                    _ => {
+                        // Try to convert to TableView first
+                        let tv = ensure_tableview(table_arg, rt)?;
+                        let tv_meta = TableViewWithMetadata::from_view(tv).with_axis(axis);
+                        Ok(Value::TableView(Arc::new(tv_meta)))
+                    }
+                }
+            } else {
+                // Symbol form: layout (physical orientation)
+                let layout = Layout::from_str(mode_name)
+                    .ok_or_else(|| format!("o: unknown layout symbol '{}'. Valid: NSWE, WENS, SNWE, EWNS, H, Z, N, S, etc.", mode_name))?;
+
+                // Get table and set layout
+                match table_arg {
+                    Value::TableView(tv) => {
+                        let new_tv = tv.with_layout(layout);
+                        Ok(Value::TableView(Arc::new(new_tv)))
+                    }
+                    _ => {
+                        // Try to convert to TableView first
+                        let tv = ensure_tableview(table_arg, rt)?;
+                        let tv_meta = TableViewWithMetadata::from_view(tv).with_layout(layout);
+                        Ok(Value::TableView(Arc::new(tv_meta)))
+                    }
+                }
+            }
+        }
+        _ => Err(format!("o expects 1 or 2 arguments, got {}", args.len())),
     }
-
-    // Get TableView from first argument
-    let tv = ensure_tableview(&args[0], rt)?;
-
-    // Get orientation name as symbol or string
-    let ori_name = match &args[1] {
-        Value::Sym(s) => rt.interner.resolve(*s),
-        Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("o expects orientation name (symbol or string), got {}", args[1].type_name())),
-    };
-
-    // Look up orientation by name (H=NSWE, Z=WENS, N=SNWE, S=EWNS, X, R)
-    let ori_spec = lookup_ori(ori_name)
-        .ok_or_else(|| format!("Invalid orientation '{}'. Valid names: H, Z, N, S, X, R, _H, _N, _Z, _S", ori_name))?;
-
-    // Apply orientation change (O(1) operation, just changes view)
-    let result = tv.with_orientation(ori_spec.ori);
-    Ok(Value::TableView(Arc::new(result)))
 }
 
 #[cfg(test)]
