@@ -63,8 +63,19 @@ fn plan_expr(
     match expr {
         Expr::Sym(sym) => {
             // Variable reference
-            ctx.lookup(*sym)
-                .ok_or_else(|| format!("Undefined variable: {}", interner.resolve(*sym)))
+            // First check if it's bound in the plan context (from let)
+            if let Some(node_id) = ctx.lookup(*sym) {
+                return Ok(node_id);
+            }
+
+            // Otherwise, create a Variable source (runtime lookup)
+            let node_id = NodeId(plan.nodes.len());
+            let node = Node {
+                id: node_id,
+                op: Operation::Source(Source::Variable { name: *sym }),
+                schema: SchemaInfo::unknown(),
+            };
+            Ok(plan.add_node(node))
         }
 
         Expr::List(elements) if !elements.is_empty() => {

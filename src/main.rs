@@ -1,19 +1,7 @@
-mod ast;
-mod reader;
-mod value;
-mod env;
-mod runtime;
-mod eval;
-mod builtins;
-mod io;
-mod frame;
-mod normalize;
-mod ir;
-mod planner;
-mod exec;
-
-use runtime::Runtime;
-use reader::Reader;
+use blisp::runtime::Runtime;
+use blisp::reader::Reader;
+use blisp::value::{self, Value};
+use blisp::{eval, io, ast};
 use std::io::Write;
 
 fn main() {
