@@ -496,4 +496,164 @@ mod tests {
             _ => panic!("Expected F64 column"),
         }
     }
+
+    // ==================== PROPERTY TESTS (Semantic Tripwires) ====================
+    // These catch regressions in alignment semantics (per docs/contracts.md)
+
+    #[test]
+    fn property_mapr_idempotence() {
+        // Property: mapr(mapr(x,y), y) == mapr(x,y)
+        // Rationale: Reindexing twice onto same target is idempotent
+
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18002]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 102.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
+        let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
+        let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0]));
+        let y = Frame::new(y_tags, vec![y_col]);
+
+        // First application
+        let once = reindex_by(&x, &y.tags.index);
+        // Second application (should be identical)
+        let twice = reindex_by(&once, &y.tags.index);
+
+        // Numeric equality
+        assert_eq!(once.nrows(), twice.nrows(), "Idempotence: row count");
+        assert_eq!(once.ncols(), twice.ncols(), "Idempotence: col count");
+
+        for col_idx in 0..once.ncols() {
+            let once_col = once.get_col(col_idx).unwrap();
+            let twice_col = twice.get_col(col_idx).unwrap();
+            match (&**once_col, &**twice_col) {
+                (blawktrust::Column::F64(d1), blawktrust::Column::F64(d2)) => {
+                    for i in 0..d1.len() {
+                        let v1 = d1[i];
+                        let v2 = d2[i];
+                        if v1.is_nan() && v2.is_nan() {
+                            continue; // Both NA = equal
+                        }
+                        assert_eq!(v1, v2, "Idempotence: value at row {}", i);
+                    }
+                }
+                _ => panic!("Expected F64 columns"),
+            }
+        }
+
+        // Arc preservation (twice should still share y's colnames from once)
+        assert!(Arc::ptr_eq(&once.tags.colnames, &twice.tags.colnames),
+            "Idempotence: colnames Arc must be preserved");
+    }
+
+    #[test]
+    fn property_mapr_identity_when_indices_match() {
+        // Property: If x.index == y.index, then mapr(x,y) numerically equals x
+        // (Arcs may differ since we create new Tags, but values identical)
+
+        let index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
+        let x_tags = Tags::new("DATE".to_string(), index.clone(), vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 101.0, 102.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // y has SAME index values
+        let result = reindex_by(&x, &index);
+
+        // Numeric equality
+        assert_eq!(result.nrows(), x.nrows(), "Identity: row count");
+        let result_col = result.get_col(0).unwrap();
+        let x_col_ref = x.get_col(0).unwrap();
+        match (&**result_col, &**x_col_ref) {
+            (blawktrust::Column::F64(r), blawktrust::Column::F64(orig)) => {
+                for i in 0..r.len() {
+                    assert_eq!(r[i], orig[i], "Identity: value at row {}", i);
+                }
+            }
+            _ => panic!("Expected F64 columns"),
+        }
+    }
+
+    #[test]
+    fn property_mapr_monotonicity() {
+        // Property: mapr(x, y).nrows == y.nrows ALWAYS (regardless of x)
+        // This is the RIGHT OUTER JOIN guarantee
+
+        // Small x
+        let x_index = IndexColumn::Date(Arc::new(vec![18000]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        // Large y
+        let y_index = IndexColumn::Date(Arc::new(vec![17999, 18000, 18001, 18002, 18003]));
+
+        let result = reindex_by(&x, &y_index);
+
+        assert_eq!(result.nrows(), y_index.len(),
+            "Monotonicity: output rows must equal target rows");
+    }
+
+    #[test]
+    fn property_no_forward_looking_bias() {
+        // Property: mapr NEVER invents non-NA data
+        // All non-NA values in result exist in source
+
+        let x_index = IndexColumn::Date(Arc::new(vec![18000, 18002]));
+        let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 102.0]));
+        let x = Frame::new(x_tags, vec![x_col]);
+
+        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003]));
+        let result = reindex_by(&x, &y_index);
+
+        // Check: non-NA values must be from x
+        let result_col = result.get_col(0).unwrap();
+        match &**result_col {
+            blawktrust::Column::F64(data) => {
+                assert_eq!(data[0], 100.0, "Row 0: from x");
+                assert!(data[1].is_nan(), "Row 1: missing in x → NA");
+                assert_eq!(data[2], 102.0, "Row 2: from x");
+                assert!(data[3].is_nan(), "Row 3: missing in x → NA");
+
+                // NO invented data
+                for &val in data.iter() {
+                    if !val.is_nan() {
+                        assert!(val == 100.0 || val == 102.0,
+                            "Non-NA value {} not from source x", val);
+                    }
+                }
+            }
+            _ => panic!("Expected F64 column"),
+        }
+    }
+
+    #[test]
+    fn property_arc_preservation_numeric_ops() {
+        // Property: map_numeric_preserve_tags MUST preserve tag Arcs (I1-I2)
+
+        use blawktrust::builtins::ops::dlog_column;
+
+        let index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002]));
+        let tags = Tags::new("DATE".to_string(), index, vec!["price".to_string()]);
+        let col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 101.0, 102.0]));
+        let frame = Frame::new(tags, vec![col]);
+
+        // Apply various operations
+        let ops: Vec<Box<dyn Fn(&blawktrust::Column) -> blawktrust::Column>> = vec![
+            Box::new(|c| dlog_column(c, 1)),
+            Box::new(|c| c.clone()), // Identity
+        ];
+
+        for (i, op) in ops.iter().enumerate() {
+            let result = map_numeric_preserve_tags(&frame, op);
+
+            assert!(Arc::ptr_eq(&frame.tags.index, &result.tags.index),
+                "Op {}: I1 violated - index Arc not preserved", i);
+            assert!(Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
+                "Op {}: I2 violated - colnames Arc not preserved", i);
+            assert_eq!(frame.nrows(), result.nrows(),
+                "Op {}: I3 violated - row count changed", i);
+        }
+    }
 }
