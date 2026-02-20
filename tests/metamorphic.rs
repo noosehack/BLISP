@@ -1715,3 +1715,237 @@ fn meta_ft_std_derived_form_identity() {
     // Verify exact equivalence
     common::assert_frame_equiv(&lhs, &rhs);
 }
+
+// ============================================================================
+// Rolling Zscore Metamorphic Laws (derived form, no IR primitive)
+// ============================================================================
+
+#[test]
+fn meta_rolling_zscore_rewrite_identity() {
+    // rolling-zscore(w,x) == (x - rolling_mean(w,x)) / rolling_std(w,x)
+    // Validates planner rewrite is semantically correct
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 20, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rz_sym = rt.interner.intern("rolling-zscore");
+    let rm_sym = rt.interner.intern("rolling-mean");
+    let rs_sym = rt.interner.intern("rolling-std");
+    let sub_sym = rt.interner.intern("-");
+    let div_sym = rt.interner.intern("/");
+
+    // LHS: (rolling-zscore 4 x)
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    // RHS: (/ (- x (rolling-mean 4 x)) (rolling-std 4 x))
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(div_sym),
+        Expr::List(vec![
+            Expr::Sym(sub_sym),
+            Expr::Sym(x_sym),
+            Expr::List(vec![
+                Expr::Sym(rm_sym),
+                Expr::Int(4),
+                Expr::Sym(x_sym),
+            ]),
+        ]),
+        Expr::List(vec![
+            Expr::Sym(rs_sym),
+            Expr::Int(4),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify exact equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_ft_zscore_rewrite_identity() {
+    // ft-zscore(w,x) == (x - ft_mean(w,x)) / ft_std(w,x)
+    // Validates ft-zscore planner rewrite
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 20, 2, false, 0.1);
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let ftz_sym = rt.interner.intern("ft-zscore");
+    let ftm_sym = rt.interner.intern("ft-mean");
+    let fts_sym = rt.interner.intern("ft-std");
+    let sub_sym = rt.interner.intern("-");
+    let div_sym = rt.interner.intern("/");
+
+    // LHS: (ft-zscore 4 x)
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(ftz_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    // RHS: (/ (- x (ft-mean 4 x)) (ft-std 4 x))
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(div_sym),
+        Expr::List(vec![
+            Expr::Sym(sub_sym),
+            Expr::Sym(x_sym),
+            Expr::List(vec![
+                Expr::Sym(ftm_sym),
+                Expr::Int(4),
+                Expr::Sym(x_sym),
+            ]),
+        ]),
+        Expr::List(vec![
+            Expr::Sym(fts_sym),
+            Expr::Int(4),
+            Expr::Sym(x_sym),
+        ]),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify exact equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_rolling_zscore_scale_invariance() {
+    // rolling-zscore(w, x*c) == rolling-zscore(w, x) for c > 0 (where defined)
+    // Zscore is scale-invariant
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.0); // No NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rz_sym = rt.interner.intern("rolling-zscore");
+    let mul_sym = rt.interner.intern("*");
+
+    // LHS: (rolling-zscore 4 (* x 3.0))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(4),
+        Expr::List(vec![
+            Expr::Sym(mul_sym),
+            Expr::Sym(x_sym),
+            Expr::Float(3.0),
+        ]),
+    ]);
+
+    // RHS: (rolling-zscore 4 x)
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}
+
+#[test]
+fn meta_rolling_zscore_translation_invariance() {
+    // rolling-zscore(w, x+c) == rolling-zscore(w, x) for scalar c (where defined)
+    // Zscore is translation-invariant
+
+    let mut rt = Runtime::new();
+    let x = common::build_date_frame(42, "DATE", 15, 2, false, 0.0); // No NA
+    let x_sym = rt.interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::clone(&x)));
+
+    let rz_sym = rt.interner.intern("rolling-zscore");
+    let add_sym = rt.interner.intern("+");
+
+    // LHS: (rolling-zscore 4 (+ x 10.0))
+    let lhs_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(4),
+        Expr::List(vec![
+            Expr::Sym(add_sym),
+            Expr::Sym(x_sym),
+            Expr::Float(10.0),
+        ]),
+    ]);
+
+    // RHS: (rolling-zscore 4 x)
+    let rhs_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(4),
+        Expr::Sym(x_sym),
+    ]);
+
+    // Evaluate both
+    let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
+    let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
+    let lhs_val = execute(&lhs_plan, &mut rt).expect("LHS execute failed");
+    let lhs = match lhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
+    let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
+    let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
+    let rhs = match rhs_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Verify equivalence
+    common::assert_frame_equiv(&lhs, &rhs);
+}

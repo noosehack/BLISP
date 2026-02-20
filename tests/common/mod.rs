@@ -433,6 +433,109 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         Ok(Arc::new(result))
                     }
 
+                    "rolling-zscore" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-zscore expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-zscore w must be positive, got {}", i)),
+                            _ => return Err("rolling-zscore w must be positive integer".to_string()),
+                        };
+
+                        // rolling-zscore(w, x) = (x - rolling_mean(w,x)) / rolling_std(w,x)
+                        let input = direct_eval(&elements[2], env, interner)?;
+                        let mean_result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_mean_column(col, w)
+                        });
+                        let std_result = map_numeric_preserve_tags(&input, |col| {
+                            rolling_std_column(col, w)
+                        });
+
+                        // (x - mean) / std
+                        let result = map_numeric_preserve_tags(&input, |col| {
+                            match (col, mean_result.cols.iter().next(), std_result.cols.iter().next()) {
+                                (Column::F64(x_data), Some(blisp::frame::ColData::Mat(mean_col)), Some(blisp::frame::ColData::Mat(std_col))) => {
+                                    match (mean_col.as_ref(), std_col.as_ref()) {
+                                        (Column::F64(mean_data), Column::F64(std_data)) => {
+                                            let result: Vec<f64> = x_data.iter().zip(mean_data.iter()).zip(std_data.iter())
+                                                .map(|((&x, &mean), &std)| {
+                                                    if x.is_nan() || mean.is_nan() || std.is_nan() || std == 0.0 {
+                                                        f64::NAN
+                                                    } else {
+                                                        (x - mean) / std
+                                                    }
+                                                })
+                                                .collect();
+                                            Column::F64(result)
+                                        }
+                                        _ => col.clone(),
+                                    }
+                                }
+                                _ => col.clone(),
+                            }
+                        });
+                        Ok(Arc::new(result))
+                    }
+
+                    "ft-zscore" => {
+                        if elements.len() != 3 {
+                            return Err("ft-zscore expects 2 arguments".to_string());
+                        }
+
+                        // Parse w
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-zscore w must be positive, got {}", i)),
+                            _ => return Err("ft-zscore w must be positive integer".to_string()),
+                        };
+
+                        // ft-zscore(w, x) = (x - ft_mean(w,x)) / ft_std(w,x)
+                        // where ft_mean = shift(1, rolling_mean) and ft_std = shift(1, rolling_std)
+                        let input = direct_eval(&elements[2], env, interner)?;
+
+                        let rolling_mean = map_numeric_preserve_tags(&input, |col| {
+                            rolling_mean_column(col, w)
+                        });
+                        let ft_mean = map_numeric_preserve_tags(&rolling_mean, |col| {
+                            shift_column(col, 1)
+                        });
+
+                        let rolling_std = map_numeric_preserve_tags(&input, |col| {
+                            rolling_std_column(col, w)
+                        });
+                        let ft_std = map_numeric_preserve_tags(&rolling_std, |col| {
+                            shift_column(col, 1)
+                        });
+
+                        // (x - ft_mean) / ft_std
+                        let result = map_numeric_preserve_tags(&input, |col| {
+                            match (col, ft_mean.cols.iter().next(), ft_std.cols.iter().next()) {
+                                (Column::F64(x_data), Some(blisp::frame::ColData::Mat(mean_col)), Some(blisp::frame::ColData::Mat(std_col))) => {
+                                    match (mean_col.as_ref(), std_col.as_ref()) {
+                                        (Column::F64(mean_data), Column::F64(std_data)) => {
+                                            let result: Vec<f64> = x_data.iter().zip(mean_data.iter()).zip(std_data.iter())
+                                                .map(|((&x, &mean), &std)| {
+                                                    if x.is_nan() || mean.is_nan() || std.is_nan() || std == 0.0 {
+                                                        f64::NAN
+                                                    } else {
+                                                        (x - mean) / std
+                                                    }
+                                                })
+                                                .collect();
+                                            Column::F64(result)
+                                        }
+                                        _ => col.clone(),
+                                    }
+                                }
+                                _ => col.clone(),
+                            }
+                        });
+                        Ok(Arc::new(result))
+                    }
+
                     // Joins: reindex_by/asofr
                     "mapr" => {
                         if elements.len() != 3 {

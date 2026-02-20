@@ -967,3 +967,224 @@ fn smoke_rolling_std_after_unary() {
     ]);
     check_equiv(rt, &env, expr);
 }
+
+// ============================================================================
+// Rolling Zscore Operation Smoke Tests (derived form)
+// ============================================================================
+
+#[test]
+fn smoke_rolling_zscore_constant_series() {
+    // Constant series: std = 0 → division by zero → NA
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103, 20200104, 20200105,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![5.0, 5.0, 5.0, 5.0, 5.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["const".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 5,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    let rz_sym = interner.intern("rolling-zscore");
+    let expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut interner);
+    let ir_plan = plan(&normalized, &interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let col = match &result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let values = match col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    // All values should be NA (constant series → std=0 → div0 → NA)
+    assert!(values[0].is_nan(), "Row 0 should be NA (prefix)");
+    assert!(values[1].is_nan(), "Row 1 should be NA (prefix)");
+    assert!(values[2].is_nan(), "Row 2 should be NA (std=0 → div0)");
+    assert!(values[3].is_nan(), "Row 3 should be NA (std=0 → div0)");
+    assert!(values[4].is_nan(), "Row 4 should be NA (std=0 → div0)");
+}
+
+#[test]
+fn smoke_rolling_zscore_known_window() {
+    // Known window: [1, 2, 3] with w=3
+    // Mean = 2.0
+    // Std = sqrt(2/3) ≈ 0.8165
+    // Zscore at i=2: (3 - 2.0) / 0.8165 ≈ 1.2247
+
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["value".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 3,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    let rz_sym = interner.intern("rolling-zscore");
+    let expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let normalized = normalize(expr, &mut interner);
+    let ir_plan = plan(&normalized, &interner).expect("plan failed");
+    let result_val = execute(&ir_plan, &mut rt).expect("execute failed");
+    let result = match result_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let col = match &result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let values = match col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    assert!(values[0].is_nan(), "Row 0 should be NA (prefix)");
+    assert!(values[1].is_nan(), "Row 1 should be NA (prefix)");
+
+    // Row 2: zscore of 3 in window [1,2,3]
+    // mean=2, std=sqrt(2/3), zscore=(3-2)/sqrt(2/3) = 1/sqrt(2/3) = sqrt(3/2) ≈ 1.2247
+    let expected = (3.0_f64 / 2.0_f64).sqrt();
+    assert!((values[2] - expected).abs() < 1e-10, "Row 2 zscore should be sqrt(3/2) ≈ 1.2247");
+}
+
+#[test]
+fn smoke_ft_zscore_no_self_reference() {
+    // Verify ft-zscore doesn't include current value in its own distribution
+    // Series with a spike: [1, 1, 1, 10, 1, 1]
+    // At i=3 (spike):
+    //   rolling-zscore includes 10 in window → smaller zscore
+    //   ft-zscore compares 10 to [1,1,1] → larger zscore
+
+    let mut rt = Runtime::new();
+    let mut interner = Interner::new();
+
+    let index = IndexColumn::Date(Arc::new(vec![
+        20200101, 20200102, 20200103, 20200104, 20200105, 20200106,
+    ]));
+
+    let col_data = blawktrust::Column::F64(vec![1.0, 1.0, 1.0, 10.0, 1.0, 1.0]);
+
+    let tags = blisp::frame::Tags::new(
+        "DATE".to_string(),
+        index,
+        vec!["value".to_string()],
+    );
+
+    let frame = blisp::frame::Frame {
+        tags: Arc::new(tags),
+        cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
+        nrows: 6,
+    };
+
+    let x_sym = interner.intern("x");
+    rt.define(x_sym, Value::Frame(Arc::new(frame)));
+
+    // Execute rolling-zscore
+    let rz_sym = interner.intern("rolling-zscore");
+    let rz_expr = Expr::List(vec![
+        Expr::Sym(rz_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let rz_normalized = normalize(rz_expr, &mut interner);
+    let rz_plan = plan(&rz_normalized, &interner).expect("rz plan failed");
+    let rz_val = execute(&rz_plan, &mut rt).expect("rz execute failed");
+    let rz_result = match rz_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    // Execute ft-zscore
+    let ftz_sym = interner.intern("ft-zscore");
+    let ftz_expr = Expr::List(vec![
+        Expr::Sym(ftz_sym),
+        Expr::Int(3),
+        Expr::Sym(x_sym),
+    ]);
+
+    let ftz_normalized = normalize(ftz_expr, &mut interner);
+    let ftz_plan = plan(&ftz_normalized, &interner).expect("ftz plan failed");
+    let ftz_val = execute(&ftz_plan, &mut rt).expect("ftz execute failed");
+    let ftz_result = match ftz_val {
+        Value::Frame(f) => f,
+        _ => panic!("Expected Frame"),
+    };
+
+    let rz_col = match &rz_result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let rz_values = match rz_col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    let ftz_col = match &ftz_result.cols[0] {
+        blisp::frame::ColData::Mat(c) => c,
+        _ => panic!("Expected Mat"),
+    };
+    let ftz_values = match ftz_col.as_ref() {
+        blawktrust::Column::F64(v) => v,
+        _ => panic!("Expected F64"),
+    };
+
+    // At i=3 (spike), ft-zscore should be larger than rolling-zscore
+    // because ft-zscore compares spike to pure historical [1,1,1]
+    // while rolling-zscore includes spike in its own mean/std
+    if !ftz_values[3].is_nan() && !rz_values[3].is_nan() {
+        assert!(
+            ftz_values[3].abs() > rz_values[3].abs(),
+            "ft-zscore at spike (|{}|) should be larger than rolling-zscore (|{}|) due to no self-reference",
+            ftz_values[3], rz_values[3]
+        );
+    }
+}

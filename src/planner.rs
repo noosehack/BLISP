@@ -230,6 +230,132 @@ fn plan_expr(
                         Ok(plan.add_node(shift_node))
                     }
 
+                    // Rolling zscore: (rolling-zscore w x) → (/ (- x (rolling-mean w x)) (rolling-std w x))
+                    // Derived form: no IR primitive, rewrite into existing ops
+                    "rolling-zscore" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-zscore expects 2 arguments: (rolling-zscore w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-zscore w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-zscore w must be integer, not float".to_string()),
+                            _ => return Err("rolling-zscore w must be integer literal".to_string()),
+                        };
+
+                        // Plan input x
+                        let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
+
+                        // Plan (rolling-mean w x)
+                        let mean_node = plan_unary(NumericFunc::RollMean { w }, &[elements[2].clone()], plan, ctx, interner)?;
+
+                        // Plan (rolling-std w x)
+                        let std_node = plan_unary(NumericFunc::RollStd { w }, &[elements[2].clone()], plan, ctx, interner)?;
+
+                        // Plan (- x mean)
+                        let sub_node_id = NodeId(plan.nodes.len());
+                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let sub_node = Node {
+                            id: sub_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: x_node,
+                                rhs: ValueRef::Frame(mean_node),
+                                func: BinaryFunc::Sub,
+                            }),
+                            schema: x_schema.clone(), // Binary preserves LHS schema
+                        };
+                        let sub_node_id = plan.add_node(sub_node);
+
+                        // Plan (/ (- x mean) std)
+                        let div_node_id = NodeId(plan.nodes.len());
+                        let div_node = Node {
+                            id: div_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: sub_node_id,
+                                rhs: ValueRef::Frame(std_node),
+                                func: BinaryFunc::Div,
+                            }),
+                            schema: x_schema, // Binary preserves LHS schema
+                        };
+                        Ok(plan.add_node(div_node))
+                    }
+
+                    // Feature zscore: (ft-zscore w x) → (/ (- x (ft-mean w x)) (ft-std w x))
+                    // No self-reference: compares x[i] to yesterday's distribution
+                    "ft-zscore" => {
+                        if elements.len() != 3 {
+                            return Err("ft-zscore expects 2 arguments: (ft-zscore w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ft-zscore w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("ft-zscore w must be integer, not float".to_string()),
+                            _ => return Err("ft-zscore w must be integer literal".to_string()),
+                        };
+
+                        // Plan input x
+                        let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
+
+                        // Plan (ft-mean w x) = shift(1, rolling-mean(w, x))
+                        let mean_rolling_node = plan_unary(NumericFunc::RollMean { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let mean_node_id = NodeId(plan.nodes.len());
+                        let mean_schema = plan.get_node(mean_rolling_node).ok_or("Invalid mean node")?.schema.clone();
+                        let ft_mean_node = Node {
+                            id: mean_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: mean_rolling_node,
+                                func: NumericFunc::Shift { k: 1 },
+                            }),
+                            schema: mean_schema,
+                        };
+                        let ft_mean_node_id = plan.add_node(ft_mean_node);
+
+                        // Plan (ft-std w x) = shift(1, rolling-std(w, x))
+                        let std_rolling_node = plan_unary(NumericFunc::RollStd { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let std_node_id = NodeId(plan.nodes.len());
+                        let std_schema = plan.get_node(std_rolling_node).ok_or("Invalid std node")?.schema.clone();
+                        let ft_std_node = Node {
+                            id: std_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: std_rolling_node,
+                                func: NumericFunc::Shift { k: 1 },
+                            }),
+                            schema: std_schema,
+                        };
+                        let ft_std_node_id = plan.add_node(ft_std_node);
+
+                        // Plan (- x ft-mean)
+                        let sub_node_id = NodeId(plan.nodes.len());
+                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let sub_node = Node {
+                            id: sub_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: x_node,
+                                rhs: ValueRef::Frame(ft_mean_node_id),
+                                func: BinaryFunc::Sub,
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let sub_node_id = plan.add_node(sub_node);
+
+                        // Plan (/ (- x ft-mean) ft-std)
+                        let div_node_id = NodeId(plan.nodes.len());
+                        let div_node = Node {
+                            id: div_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: sub_node_id,
+                                rhs: ValueRef::Frame(ft_std_node_id),
+                                func: BinaryFunc::Div,
+                            }),
+                            schema: x_schema,
+                        };
+                        Ok(plan.add_node(div_node))
+                    }
+
                     // Binary numeric operations
                     "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
                     "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),
