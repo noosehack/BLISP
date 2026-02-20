@@ -113,6 +113,23 @@ fn plan_expr(
                     "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
 
+                    // Shift operation: (shift k x) where k is non-negative integer
+                    "shift" => {
+                        if elements.len() != 3 {
+                            return Err("shift expects 2 arguments: (shift k x)".to_string());
+                        }
+
+                        // Parse k as non-negative integer
+                        let k = match &elements[1] {
+                            Expr::Int(i) if *i >= 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("shift k must be non-negative, got {}", i)),
+                            Expr::Float(_) => return Err("shift k must be integer, not float".to_string()),
+                            _ => return Err("shift k must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::Shift { k }, &elements[2..], plan, ctx, interner)
+                    }
+
                     // Binary numeric operations
                     "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
                     "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),

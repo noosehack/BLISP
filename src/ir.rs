@@ -167,6 +167,14 @@ pub enum NumericFunc {
     Abs,
     /// Inverse: 1/x
     Inv,
+    /// Shift (lag): shift k rows down
+    ///
+    /// Contract:
+    /// - k ≥ 0 only (v1: no forward-looking)
+    /// - Output[i] = Input[i-k] for i >= k, NA for i < k
+    /// - Shape preserved (I1-I3)
+    /// - NA mask monotone (only grows)
+    Shift { k: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)

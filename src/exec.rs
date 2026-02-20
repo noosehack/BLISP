@@ -113,6 +113,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Sqrt => sqrt_column(col),
                     NumericFunc::Abs => abs_column(col),
                     NumericFunc::Inv => inv_column(col),
+                    NumericFunc::Shift { k } => shift_column(col, *k),
                 }
             });
 
@@ -355,6 +356,26 @@ fn inv_column(col: &Column) -> Column {
                     f64::NAN
                 }
             }).collect();
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+fn shift_column(col: &Column, k: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            // Contract: output[i] = input[i-k] for i >= k, NA for i < k
+            // First k rows are NA (already initialized)
+            // Copy input[0..nrows-k] to output[k..nrows]
+            if k < nrows {
+                result[k..].copy_from_slice(&data[0..nrows - k]);
+            }
+            // If k >= nrows, all rows are NA (already initialized)
+
             Column::F64(result)
         }
         _ => col.clone(),
