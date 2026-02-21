@@ -42,21 +42,26 @@ impl IndexColumn {
     }
 }
 
-/// Tags: metadata carried by Arc (P2 policy: index + colnames only)
+/// Tags: metadata carried by Arc (P2 policy: index + colnames + masks)
 #[derive(Debug, Clone)]
 pub struct Tags {
     pub index_name: String,              // e.g., "DATE", "TIMESTAMP"
     pub index: Arc<IndexColumn>,         // Row identifiers
     pub colnames: Arc<Vec<String>>,      // Numeric column names (in order)
+    pub masks: crate::mask::MaskSet,     // Named row masks (weekend, holiday, etc.)
+    pub active_mask: crate::mask::ActiveMask, // Currently active mask (compiled)
 }
 
 impl Tags {
     /// Create new tags
     pub fn new(index_name: String, index: IndexColumn, colnames: Vec<String>) -> Self {
+        let nrows = index.len();
         Self {
             index_name,
             index: Arc::new(index),
             colnames: Arc::new(colnames),
+            masks: crate::mask::MaskSet::new(),
+            active_mask: crate::mask::ActiveMask::empty(nrows),
         }
     }
 
@@ -67,6 +72,8 @@ impl Tags {
             index_name: self.index_name.clone(),
             index: Arc::clone(&self.index),
             colnames: Arc::clone(&self.colnames),
+            masks: self.masks.clone(),
+            active_mask: self.active_mask.clone(),
         }
     }
 
@@ -259,10 +266,14 @@ pub fn reindex_by(source: &Frame, target_index: Arc<IndexColumn>) -> Frame {
         .collect();
 
     // Create new Tags with target_index and source colnames (both Arc-reused)
+    // Phase D: For reindex/join operations, inherit masks from target (since result has target's index)
+    let nrows = target_index.len();
     let out_tags = Tags {
         index_name: source.tags.index_name.clone(), // Could be improved: take from target
         index: target_index,                         // Arc reused!
         colnames: Arc::clone(&source.tags.colnames), // Arc reused!
+        masks: crate::mask::MaskSet::new(),          // TODO: Should inherit from target frame when available
+        active_mask: crate::mask::ActiveMask::empty(nrows),  // TODO: Should inherit from target frame when available
     };
 
     Frame::new(out_tags, out_numeric)
@@ -393,10 +404,13 @@ fn asofr_sorted(x: &Frame, y: &Frame) -> Frame {
         .map(|vec| Arc::new(blawktrust::Column::new_f64(vec)))
         .collect();
 
+    // Phase D: For asofr, result has Y's index, so inherit Y's masks
     let out_tags = Tags {
         index_name: y.tags.index_name.clone(),
         index: Arc::clone(&y.tags.index),        // Arc reused!
         colnames: Arc::clone(&x.tags.colnames),  // Arc reused!
+        masks: y.tags.masks.clone(),             // Inherit Y's masks (result has Y's index)
+        active_mask: y.tags.active_mask.clone(), // Inherit Y's active mask
     };
 
     Frame::new(out_tags, out_numeric)
@@ -479,10 +493,13 @@ fn asofr_fallback(x: &Frame, y: &Frame) -> Frame {
         .map(|vec| Arc::new(blawktrust::Column::new_f64(vec)))
         .collect();
 
+    // Phase D: For asofr_fallback, result has Y's index, so inherit Y's masks
     let out_tags = Tags {
         index_name: y.tags.index_name.clone(),
         index: Arc::clone(&y.tags.index),
         colnames: Arc::clone(&x.tags.colnames),
+        masks: y.tags.masks.clone(),             // Inherit Y's masks (result has Y's index)
+        active_mask: y.tags.active_mask.clone(), // Inherit Y's active mask
     };
 
     Frame::new(out_tags, out_numeric)

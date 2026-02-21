@@ -446,7 +446,8 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
 
                         // Plan (ft-mean w x) = shift(1, rolling-mean(w, x))
-                        let mean_rolling_node = plan_unary(NumericFunc::RollMean { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        // Use RollMeanPartial for masked calendar compatibility (w5)
+                        let mean_rolling_node = plan_unary(NumericFunc::RollMeanPartial { w }, &[elements[2].clone()], plan, ctx, interner)?;
                         let mean_node_id = NodeId(plan.nodes.len());
                         let mean_schema = plan.get_node(mean_rolling_node).ok_or("Invalid mean node")?.schema.clone();
                         let ft_mean_node = Node {
@@ -460,7 +461,8 @@ fn plan_expr(
                         let ft_mean_node_id = plan.add_node(ft_mean_node);
 
                         // Plan (ft-std w x) = shift(1, rolling-std(w, x))
-                        let std_rolling_node = plan_unary(NumericFunc::RollStd { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        // Use RollStdPartial for masked calendar compatibility (w5)
+                        let std_rolling_node = plan_unary(NumericFunc::RollStdPartial { w }, &[elements[2].clone()], plan, ctx, interner)?;
                         let std_node_id = NodeId(plan.nodes.len());
                         let std_schema = plan.get_node(std_rolling_node).ok_or("Invalid std node")?.schema.clone();
                         let ft_std_node = Node {

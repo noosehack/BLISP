@@ -15,6 +15,7 @@ path = "src/main.rs"
 blawktrust = { path = "../blawktrust" }
 rustyline = "12.0"
 csv = "1.3"
+bitvec = "1.0"
 
 [dev-dependencies]
 criterion = "0.5"

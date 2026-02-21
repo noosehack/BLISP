@@ -134,26 +134,35 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                 return w5_mask_weekends(&input_frame);
             }
 
-            // Execute using ONLY the frozen primitive
-            let result = map_numeric_preserve_tags(&input_frame, |col| {
-                match func {
-                    NumericFunc::Dlog => dlog_column(col, 1),
-                    NumericFunc::Ret => ret_column(col, 1),
-                    NumericFunc::Log => log_column(col),
-                    NumericFunc::Exp => exp_column(col),
-                    NumericFunc::Sqrt => sqrt_column(col),
-                    NumericFunc::Abs => abs_column(col),
-                    NumericFunc::Inv => inv_column(col),
-                    NumericFunc::Locf => locf_column(col),
-                    NumericFunc::CumSum => cumsum_column(col),
-                    NumericFunc::Shift { k } => shift_column(col, *k),
-                    NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
-                    NumericFunc::RollStd { w } => rolling_std_column(col, *w),
-                    NumericFunc::RollMeanPartial { w } => rolling_mean_partial(col, *w),
-                    NumericFunc::RollStdPartial { w } => rolling_std_partial(col, *w),
-                    NumericFunc::W5 => unreachable!("W5 handled above"),
+            // Phase E: Special handling for rolling operations (mask-aware)
+            let result = match func {
+                NumericFunc::RollMean { w } |
+                NumericFunc::RollStd { w } |
+                NumericFunc::RollMeanPartial { w } |
+                NumericFunc::RollStdPartial { w } => {
+                    // Rolling operations need access to active_mask to count only eligible observations
+                    apply_rolling_mask_aware(&input_frame, *func)?
                 }
-            });
+                _ => {
+                    // Non-rolling operations: use standard map_numeric_preserve_tags
+                    map_numeric_preserve_tags(&input_frame, |col| {
+                        match func {
+                            NumericFunc::Dlog => dlog_column(col, 1),
+                            NumericFunc::Ret => ret_column(col, 1),
+                            NumericFunc::Log => log_column(col),
+                            NumericFunc::Exp => exp_column(col),
+                            NumericFunc::Sqrt => sqrt_column(col),
+                            NumericFunc::Abs => abs_column(col),
+                            NumericFunc::Inv => inv_column(col),
+                            NumericFunc::Locf => locf_column(col),
+                            NumericFunc::CumSum => cumsum_column(col),
+                            NumericFunc::Shift { k } => shift_column(col, *k),
+                            NumericFunc::W5 => unreachable!("W5 handled above"),
+                            _ => unreachable!("Rolling ops handled separately"),
+                        }
+                    })
+                }
+            };
 
             // Verify Arc preservation (I1-I2)
             debug_assert!(
@@ -369,10 +378,13 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
             }
 
             // Create new Tags with rebuilt colnames (I2_schema)
+            // Phase D: Schema ops inherit masks from input (unary operation)
             let new_tags = Tags {
                 index_name: input_frame.tags.index_name.clone(),  // Preserve index name
                 index: Arc::clone(&input_frame.tags.index),        // I1: preserved
                 colnames: Arc::new(output_colnames),                // I2_schema: rebuilt
+                masks: input_frame.tags.masks.clone(),              // Inherit input masks
+                active_mask: input_frame.tags.active_mask.clone(), // Inherit input active_mask
             };
 
             // Build output frame using Frame::new
@@ -490,11 +502,433 @@ pub fn inv_column(col: &Column) -> Column {
 /// - If no prior valid value → output NA
 /// - Compatible with weekend masking
 ///
+/// Phase E: Apply rolling operation with mask-aware observation counting
+///
+/// For each row i, the rolling window includes the LAST w ELIGIBLE observations,
+/// where eligible = !masked && valid (not NA).
+///
+/// This matches CLISPI's observation-based rolling semantics while maintaining
+/// BLISP's calendar-indexed architecture with masks.
+fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, String> {
+    let active_mask = &frame.tags.active_mask;
+    let nrows = frame.nrows();
+
+    // Transform each column with mask-aware rolling
+    let cols_out: Vec<ColData> = frame.cols.iter()
+        .map(|col_data| match col_data {
+            ColData::Mat(col) => {
+                let result_col = match &func {
+                    NumericFunc::RollMean { w } => rolling_mean_mask_aware(col, *w, active_mask, nrows),
+                    NumericFunc::RollStd { w } => rolling_std_mask_aware(col, *w, active_mask, nrows),
+                    NumericFunc::RollMeanPartial { w } => rolling_mean_partial_mask_aware(col, *w, active_mask, nrows),
+                    NumericFunc::RollStdPartial { w } => rolling_std_partial_mask_aware(col, *w, active_mask, nrows),
+                    _ => unreachable!("Non-rolling op passed to apply_rolling_mask_aware"),
+                };
+                ColData::Mat(Arc::new(result_col))
+            }
+        })
+        .collect();
+
+    Ok(Frame {
+        tags: Arc::clone(&frame.tags),  // Preserve tags (I1-I3)
+        cols: cols_out,
+        nrows: frame.nrows,
+    })
+}
+
+/// Rolling mean with mask-aware observation counting - O(n) streaming version
+///
+/// Maintains a queue of the last w eligible observations.
+/// Amortized O(n): each eligible observation enters/exits queue exactly once.
+fn rolling_mean_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            use std::collections::VecDeque;
+
+            let mut result = Vec::with_capacity(nrows);
+            let mut window: VecDeque<f64> = VecDeque::with_capacity(w);
+            let mut running_sum: f64 = 0.0;
+
+            for i in 0..nrows {
+                // Masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                // Check if current row has valid data
+                let current_value = if i < data.len() { data[i] } else { f64::NAN };
+
+                if current_value.is_nan() {
+                    // Invalid data on unmasked row: output NA (can't add to window)
+                    result.push(f64::NAN);
+                } else {
+                    // Valid eligible observation: add to window
+                    window.push_back(current_value);
+                    running_sum += current_value;
+
+                    // Maintain window size <= w
+                    if window.len() > w {
+                        let removed = window.pop_front().unwrap();
+                        running_sum -= removed;
+                    }
+
+                    // Strict: emit only if we have exactly w observations
+                    if window.len() == w {
+                        result.push(running_sum / (w as f64));
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling mean with mask-aware observation counting (strict) - LEGACY O(n·w) version
+///
+/// Kept for comparison testing. Use `rolling_mean_mask_aware_legacy` for verification.
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_mean_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(nrows);
+
+            for i in 0..nrows {
+                // Skip masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                // Find last w eligible observations (not masked, not NA) ending at or before position i
+                let mut eligible: Vec<f64> = Vec::new();
+                let mut j = i as isize;  // Start from current position, go backward
+
+                while eligible.len() < w && j >= 0 {
+                    let idx = j as usize;
+                    // Check if this observation is eligible (!masked && valid)
+                    if !mask.is_masked(idx) && idx < data.len() && !data[idx].is_nan() {
+                        eligible.push(data[idx]);
+                    }
+                    j -= 1;
+                }
+
+                // Strict: need exactly w eligible observations
+                if eligible.len() == w {
+                    let sum: f64 = eligible.iter().sum();
+                    result.push(sum / (w as f64));
+                } else {
+                    result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling std with mask-aware observation counting - O(n) streaming version
+///
+/// Maintains running sum and sum-of-squares for incremental variance.
+/// Uses population variance: var = E[X²] - E[X]² = (sumsq/w) - (sum/w)²
+fn rolling_std_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            use std::collections::VecDeque;
+
+            let mut result = Vec::with_capacity(nrows);
+            let mut window: VecDeque<f64> = VecDeque::with_capacity(w);
+            let mut running_sum: f64 = 0.0;
+            let mut running_sumsq: f64 = 0.0;
+
+            for i in 0..nrows {
+                // Masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                let current_value = if i < data.len() { data[i] } else { f64::NAN };
+
+                if current_value.is_nan() {
+                    result.push(f64::NAN);
+                } else {
+                    // Add to window
+                    window.push_back(current_value);
+                    running_sum += current_value;
+                    running_sumsq += current_value * current_value;
+
+                    // Maintain window size <= w
+                    if window.len() > w {
+                        let removed = window.pop_front().unwrap();
+                        running_sum -= removed;
+                        running_sumsq -= removed * removed;
+                    }
+
+                    // Strict: emit only if we have exactly w observations
+                    if window.len() == w {
+                        let mean = running_sum / (w as f64);
+                        let variance = (running_sumsq / (w as f64)) - (mean * mean);
+                        result.push(variance.max(0.0).sqrt());  // max(0) for numerical stability
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling std with mask-aware observation counting (strict) - LEGACY O(n·w) version
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_std_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(nrows);
+
+            for i in 0..nrows {
+                // Skip masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                // Find last w eligible observations
+                let mut eligible: Vec<f64> = Vec::new();
+                let mut j = i as isize;
+
+                while eligible.len() < w && j >= 0 {
+                    let idx = j as usize;
+                    if !mask.is_masked(idx) && idx < data.len() && !data[idx].is_nan() {
+                        eligible.push(data[idx]);
+                    }
+                    j -= 1;
+                }
+
+                // Strict: need exactly w eligible observations
+                if eligible.len() == w {
+                    let mean: f64 = eligible.iter().sum::<f64>() / (w as f64);
+                    let variance: f64 = eligible.iter()
+                        .map(|&x| (x - mean).powi(2))
+                        .sum::<f64>() / (w as f64);
+                    result.push(variance.sqrt());
+                } else {
+                    result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling mean partial with mask-aware observation counting - O(n) streaming version
+///
+/// Partial: emits if window has >= 2 observations (relaxed min_periods)
+fn rolling_mean_partial_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            use std::collections::VecDeque;
+
+            let mut result = Vec::with_capacity(nrows);
+            let mut window: VecDeque<f64> = VecDeque::with_capacity(w);
+            let mut running_sum: f64 = 0.0;
+
+            for i in 0..nrows {
+                // Masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                let current_value = if i < data.len() { data[i] } else { f64::NAN };
+
+                if current_value.is_nan() {
+                    result.push(f64::NAN);
+                } else {
+                    // Add to window
+                    window.push_back(current_value);
+                    running_sum += current_value;
+
+                    // Maintain window size <= w
+                    if window.len() > w {
+                        let removed = window.pop_front().unwrap();
+                        running_sum -= removed;
+                    }
+
+                    // Partial: emit if we have >= 2 observations
+                    if window.len() >= 2 {
+                        result.push(running_sum / (window.len() as f64));
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling mean partial with mask-aware observation counting - LEGACY O(n·w) version
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_mean_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(nrows);
+
+            for i in 0..nrows {
+                // Skip masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                // Find up to w eligible observations
+                let mut eligible: Vec<f64> = Vec::new();
+                let mut j = i as isize;
+
+                while eligible.len() < w && j >= 0 {
+                    let idx = j as usize;
+                    if !mask.is_masked(idx) && idx < data.len() && !data[idx].is_nan() {
+                        eligible.push(data[idx]);
+                    }
+                    j -= 1;
+                }
+
+                // Partial: allow if we have at least 2 observations
+                if eligible.len() >= 2 {
+                    let sum: f64 = eligible.iter().sum();
+                    result.push(sum / (eligible.len() as f64));
+                } else {
+                    result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling std partial with mask-aware observation counting - O(n) streaming version
+///
+/// Partial: emits if window has >= 2 observations (relaxed min_periods)
+fn rolling_std_partial_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            use std::collections::VecDeque;
+
+            let mut result = Vec::with_capacity(nrows);
+            let mut window: VecDeque<f64> = VecDeque::with_capacity(w);
+            let mut running_sum: f64 = 0.0;
+            let mut running_sumsq: f64 = 0.0;
+
+            for i in 0..nrows {
+                // Masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                let current_value = if i < data.len() { data[i] } else { f64::NAN };
+
+                if current_value.is_nan() {
+                    result.push(f64::NAN);
+                } else {
+                    // Add to window
+                    window.push_back(current_value);
+                    running_sum += current_value;
+                    running_sumsq += current_value * current_value;
+
+                    // Maintain window size <= w
+                    if window.len() > w {
+                        let removed = window.pop_front().unwrap();
+                        running_sum -= removed;
+                        running_sumsq -= removed * removed;
+                    }
+
+                    // Partial: emit if we have >= 2 observations
+                    if window.len() >= 2 {
+                        let n = window.len() as f64;
+                        let mean = running_sum / n;
+                        let variance = (running_sumsq / n) - (mean * mean);
+                        result.push(variance.max(0.0).sqrt());
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling std partial with mask-aware observation counting - LEGACY O(n·w) version
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_std_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(nrows);
+
+            for i in 0..nrows {
+                // Skip masked rows: output NA
+                if mask.is_masked(i) {
+                    result.push(f64::NAN);
+                    continue;
+                }
+
+                // Find up to w eligible observations
+                let mut eligible: Vec<f64> = Vec::new();
+                let mut j = i as isize;
+
+                while eligible.len() < w && j >= 0 {
+                    let idx = j as usize;
+                    if !mask.is_masked(idx) && idx < data.len() && !data[idx].is_nan() {
+                        eligible.push(data[idx]);
+                    }
+                    j -= 1;
+                }
+
+                // Partial: allow if we have at least 2 observations
+                if eligible.len() >= 2 {
+                    let mean: f64 = eligible.iter().sum::<f64>() / (eligible.len() as f64);
+                    let variance: f64 = eligible.iter()
+                        .map(|&x| (x - mean).powi(2))
+                        .sum::<f64>() / (eligible.len() as f64);
+                    result.push(variance.sqrt());
+                } else {
+                    result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
 /// Why NA-skipping lag:
 /// - Monday after weekend: uses Friday's value (not Sunday NA)
-/// - Preserves time-series semantics with masked data
-/// - CLISPI equivalent: row-elimination makes Monday follow Friday
-/// - BLISP: shape-preserving makes Monday skip weekend NAs
+/// - Gap-filling semantics: skips NA to find last valid price
+/// - CLISPI equivalent: LOCF→w5→dlog creates zeros, BLISP w5→dlog creates multi-day returns
+/// - Both approaches yield identical non-NA, non-zero cumsum results
 fn dlog_column(col: &Column, _lag: usize) -> Column {
     match col {
         Column::F64(data) => {
@@ -503,7 +937,7 @@ fn dlog_column(col: &Column, _lag: usize) -> Column {
 
             for &x in data.iter() {
                 if x.is_nan() {
-                    // Current NA → output NA
+                    // Current NA → output NA, but keep last_valid for next valid value
                     result.push(f64::NAN);
                 } else if let Some(prev) = last_valid {
                     // Valid current, valid previous → compute dlog
@@ -1077,8 +1511,25 @@ fn binary_frame_frame(lhs: &Frame, rhs: &Frame, func: BinaryFunc) -> Result<Fram
         result_cols.push(ColData::Mat(Arc::new(result_col)));
     }
 
+    // Phase D: Propagate masks through binary operations
+    // - Merge mask sets (error on collision with different bitsets)
+    // - OR active masks (union of excluded rows)
+    let mut merged_masks = lhs.tags.masks.clone();
+    merged_masks.merge(&rhs.tags.masks)
+        .map_err(|e| format!("Binary op mask merge failed: {}", e))?;
+
+    let merged_active_mask = crate::mask::or_active_masks(&lhs.tags.active_mask, &rhs.tags.active_mask);
+
+    let result_tags = Tags {
+        index_name: lhs.tags.index_name.clone(),
+        index: Arc::clone(&lhs.tags.index),
+        colnames: Arc::clone(&lhs.tags.colnames),
+        masks: merged_masks,
+        active_mask: merged_active_mask,
+    };
+
     Ok(Frame {
-        tags: lhs.tags.clone(), // I1-I3: preserve LHS tags
+        tags: Arc::new(result_tags),
         cols: result_cols,
         nrows: lhs.nrows,
     })

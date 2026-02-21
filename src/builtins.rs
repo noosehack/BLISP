@@ -127,6 +127,8 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // GLD_NUM Tier 3: Table Transforms
     rt.register_builtin("w5", builtin_w5);
+    rt.register_builtin("mask-weekend", builtin_mask_weekend);
+    rt.register_builtin("with-mask", builtin_with_mask);
     rt.register_builtin("xminus", builtin_xminus);
     rt.register_builtin("cs1", builtin_cs1_cols);      // Surface name → table version
     rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
@@ -858,6 +860,208 @@ fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     let new_table = blawktrust::Table::new(new_names, new_columns);
     Ok(Value::tableview(blawktrust::TableView::new(new_table)))
+}
+
+/// (mask-weekend frame [:name "weekend"]) - Define weekend mask
+///
+/// Creates a named row mask that marks Saturday and Sunday as masked (true).
+/// The mask is stored in frame.tags.masks but does NOT activate it.
+/// Use (with-mask ...) to activate.
+///
+/// Arguments:
+///   frame: Frame with Date or Timestamp index
+///   name (optional): Name for the mask (default: "weekend")
+///
+/// Returns: Frame with mask added to tags.masks
+fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    use bitvec::prelude::*;
+    use std::sync::Arc;
+
+    if args.is_empty() || args.len() > 2 {
+        return Err(format!("mask-weekend expects 1-2 arguments (frame [name]), got {}", args.len()));
+    }
+
+    // Extract Frame using as_frame()
+    let frame = args[0].as_frame()?;
+
+    // Extract mask name (default: "weekend")
+    let mask_name = if args.len() == 2 {
+        match &args[1] {
+            Value::Sym(id) => rt.interner.resolve(*id).to_string(),
+            Value::Str(s) => s.to_string(),
+            _ => return Err(format!("mask-weekend expects symbol or string name, got {}", args[1].type_name())),
+        }
+    } else {
+        "weekend".to_string()
+    };
+
+    // Compute weekend bitmask from index
+    let weekend_bitvec: BitVec = match &*frame.tags.index {
+        crate::frame::IndexColumn::Date(dates) => {
+            dates.iter().map(|&date| {
+                // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
+                // day_of_week = (4 + days_since_epoch) % 7
+                // 0=Sunday, 1=Monday, ..., 6=Saturday
+                let day_of_week = (4 + date).rem_euclid(7);
+                // Weekend: Sunday (0) or Saturday (6)
+                day_of_week == 0 || day_of_week == 6
+            }).collect()
+        }
+        crate::frame::IndexColumn::Timestamp(timestamps) => {
+            timestamps.iter().map(|&ts| {
+                // Timestamp is i64 milliseconds since Unix epoch
+                // Convert to days and use same logic
+                let days = (ts / 86400000) as i32;  // 86400000 ms per day
+                let day_of_week = (4 + days).rem_euclid(7);
+                day_of_week == 0 || day_of_week == 6
+            }).collect()
+        }
+        crate::frame::IndexColumn::String(_) => {
+            return Err("mask-weekend requires Date or Timestamp index, got String".to_string());
+        }
+    };
+
+    // Verify length matches
+    let nrows = frame.tags.index.len();
+    if weekend_bitvec.len() != nrows {
+        return Err(format!(
+            "mask-weekend: bitvec length {} doesn't match index length {}",
+            weekend_bitvec.len(),
+            nrows
+        ));
+    }
+
+    // Clone tags and add mask
+    let mut new_masks = frame.tags.masks.clone();
+    new_masks.insert(
+        mask_name.clone(),
+        Arc::new(weekend_bitvec),
+        nrows
+    ).map_err(|e| format!("mask-weekend: {}", e))?;
+
+    let new_tags = crate::frame::Tags {
+        index_name: frame.tags.index_name.clone(),
+        index: Arc::clone(&frame.tags.index),
+        colnames: Arc::clone(&frame.tags.colnames),
+        masks: new_masks,
+        active_mask: frame.tags.active_mask.clone(),  // Keep existing active mask
+    };
+
+    // Build new frame with updated tags
+    let new_frame = crate::frame::Frame::with_tags(
+        Arc::new(new_tags),
+        frame.cols.iter().filter_map(|cd| {
+            if let crate::frame::ColData::Mat(col) = cd {
+                Some(Arc::clone(col))
+            } else {
+                None
+            }
+        }).collect()
+    );
+
+    Ok(Value::Frame(Arc::new(new_frame)))
+}
+
+/// (with-mask frame mask-expr) - Activate a mask expression
+///
+/// Compiles mask-expr using frame.tags.masks and sets it as active_mask.
+/// Mask expressions:
+///   - Symbol: 'weekend → use named mask "weekend"
+///   - (not expr): Logical NOT
+///   - (and expr1 expr2 ...): Logical AND
+///   - (or expr1 expr2 ...): Logical OR
+///
+/// Arguments:
+///   frame: Frame with named masks in tags.masks
+///   mask-expr: Mask expression (symbol, keyword, or list)
+///
+/// Returns: Frame with active_mask set to compiled expression
+fn builtin_with_mask(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("with-mask expects 2 arguments (frame mask-expr), got {}", args.len()));
+    }
+
+    let frame = args[0].as_frame()?;
+    let mask_expr = parse_mask_expr(&args[1], rt)?;
+
+    // Compile mask expression
+    let nrows = frame.nrows();
+    let compiled = crate::mask::compile_mask_expr(&mask_expr, &frame.tags.masks, nrows)?;
+
+    let new_active_mask = crate::mask::ActiveMask::from_bitvec(compiled, Some(mask_expr));
+
+    // Build new tags with updated active mask
+    let new_tags = crate::frame::Tags {
+        index_name: frame.tags.index_name.clone(),
+        index: Arc::clone(&frame.tags.index),
+        colnames: Arc::clone(&frame.tags.colnames),
+        masks: frame.tags.masks.clone(),
+        active_mask: new_active_mask,
+    };
+
+    // Build new frame with updated tags
+    let new_frame = crate::frame::Frame::with_tags(
+        Arc::new(new_tags),
+        frame.cols.iter().filter_map(|cd| {
+            if let crate::frame::ColData::Mat(col) = cd {
+                Some(Arc::clone(col))
+            } else {
+                None
+            }
+        }).collect()
+    );
+
+    Ok(Value::Frame(Arc::new(new_frame)))
+}
+
+/// Parse mask expression from Value
+fn parse_mask_expr(val: &Value, rt: &Runtime) -> Result<crate::mask::MaskExpr, String> {
+    use crate::mask::MaskExpr;
+
+    match val {
+        // Symbol or string → Name
+        Value::Sym(id) => {
+            let name = rt.interner.resolve(*id).to_string();
+            Ok(MaskExpr::Name(name))
+        }
+        Value::Str(s) => Ok(MaskExpr::Name(s.to_string())),
+
+        // List → Operator (not, and, or)
+        Value::List(items) if !items.is_empty() => {
+            match &items[0] {
+                Value::Sym(op_id) => {
+                    let op_name = rt.interner.resolve(*op_id);
+                    match op_name {
+                        "not" => {
+                            if items.len() != 2 {
+                                return Err(format!("not expects 1 argument, got {}", items.len() - 1));
+                            }
+                            let inner = parse_mask_expr(&items[1], rt)?;
+                            Ok(MaskExpr::Not(Box::new(inner)))
+                        }
+                        "and" => {
+                            let exprs: Result<Vec<_>, _> = items[1..]
+                                .iter()
+                                .map(|v| parse_mask_expr(v, rt))
+                                .collect();
+                            Ok(MaskExpr::And(exprs?))
+                        }
+                        "or" => {
+                            let exprs: Result<Vec<_>, _> = items[1..]
+                                .iter()
+                                .map(|v| parse_mask_expr(v, rt))
+                                .collect();
+                            Ok(MaskExpr::Or(exprs?))
+                        }
+                        _ => Err(format!("Unknown mask operator: {}", op_name)),
+                    }
+                }
+                _ => Err("Mask expression list must start with operator symbol".to_string()),
+            }
+        }
+
+        _ => Err(format!("Invalid mask expression: expected symbol, string, or list, got {}", val.type_name())),
+    }
 }
 
 /// (xminus table half) - Pairwise spreads (A - B for all pairs of numeric columns)

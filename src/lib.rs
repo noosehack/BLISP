@@ -11,6 +11,7 @@ pub mod eval;
 pub mod builtins;
 pub mod io;
 pub mod frame;
+pub mod mask;
 pub mod normalize;
 pub mod ir;
 pub mod planner;
