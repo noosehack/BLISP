@@ -402,6 +402,105 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
 
             Ok(Arc::new(result))
         }
+
+        SchemaOp::MaskWeekend { input, name } => {
+            use bitvec::prelude::*;
+            use std::sync::Arc;
+
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            // Determine mask name
+            let mask_name = name.clone().unwrap_or_else(|| "weekend".to_string());
+
+            // Compute weekend bitmask from index
+            let weekend_bitvec: BitVec = match &*input_frame.tags.index {
+                crate::frame::IndexColumn::Date(dates) => {
+                    dates.iter().map(|&date| {
+                        let day_of_week = (4 + date).rem_euclid(7);
+                        day_of_week == 0 || day_of_week == 6
+                    }).collect()
+                }
+                crate::frame::IndexColumn::Timestamp(timestamps) => {
+                    timestamps.iter().map(|&ts| {
+                        let days = (ts / 86400000) as i32;
+                        let day_of_week = (4 + days).rem_euclid(7);
+                        day_of_week == 0 || day_of_week == 6
+                    }).collect()
+                }
+                crate::frame::IndexColumn::String(_) => {
+                    return Err("mask-weekend requires Date or Timestamp index, got String".to_string());
+                }
+            };
+
+            // Add mask to MaskSet
+            let nrows = input_frame.nrows();
+            let mut new_masks = input_frame.tags.masks.clone();
+            new_masks.insert(
+                mask_name.clone(),
+                Arc::new(weekend_bitvec),
+                nrows
+            ).map_err(|e| format!("mask-weekend: {}", e))?;
+
+            // Build new tags with updated masks
+            let new_tags = Tags {
+                index_name: input_frame.tags.index_name.clone(),
+                index: Arc::clone(&input_frame.tags.index),
+                colnames: Arc::clone(&input_frame.tags.colnames),
+                masks: new_masks,
+                active_mask: input_frame.tags.active_mask.clone(),
+            };
+
+            // Build new frame preserving columns
+            let result = Frame::with_tags(
+                Arc::new(new_tags),
+                input_frame.cols.iter().filter_map(|cd| {
+                    if let ColData::Mat(col) = cd {
+                        Some(Arc::clone(col))
+                    } else {
+                        None
+                    }
+                }).collect()
+            );
+
+            Ok(Arc::new(result))
+        }
+
+        SchemaOp::WithMask { input, mask_expr } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let nrows = input_frame.nrows();
+
+            // Compile mask expression
+            let compiled = crate::mask::compile_mask_expr(mask_expr, &input_frame.tags.masks, nrows)?;
+
+            // Create new active mask
+            let new_active_mask = crate::mask::ActiveMask::from_bitvec(compiled, Some(mask_expr.clone()));
+
+            // Build new tags with updated active mask
+            let new_tags = Tags {
+                index_name: input_frame.tags.index_name.clone(),
+                index: Arc::clone(&input_frame.tags.index),
+                colnames: Arc::clone(&input_frame.tags.colnames),
+                masks: input_frame.tags.masks.clone(),
+                active_mask: new_active_mask,
+            };
+
+            // Build new frame preserving columns
+            let result = Frame::with_tags(
+                Arc::new(new_tags),
+                input_frame.cols.iter().filter_map(|cd| {
+                    if let ColData::Mat(col) = cd {
+                        Some(Arc::clone(col))
+                    } else {
+                        None
+                    }
+                }).collect()
+            );
+
+            Ok(Arc::new(result))
+        }
     }
 }
 

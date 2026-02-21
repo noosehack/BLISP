@@ -369,6 +369,43 @@ pub enum SchemaOp {
         input: NodeId,
         half: bool,  // false = all pairs, true = upper triangle only
     },
+
+    /// Create weekend mask: (mask-weekend frame [name])
+    ///
+    /// Contract:
+    /// - I1 preserved: index Arc ptr_eq
+    /// - I2 preserved: colnames Arc ptr_eq
+    /// - I3 preserved: nrows unchanged
+    /// - Tags modified: adds named mask to masks, active_mask unchanged
+    /// - Data columns unchanged (Arc ptr_eq)
+    ///
+    /// Semantics:
+    /// - Computes weekend bitvec from index (Saturday=true, Sunday=true)
+    /// - Stores in frame.tags.masks[name]
+    /// - Does NOT activate the mask
+    MaskWeekend {
+        input: NodeId,
+        name: Option<String>,  // default: "weekend"
+    },
+
+    /// Activate mask: (with-mask frame mask-expr)
+    ///
+    /// Contract:
+    /// - I1 preserved: index Arc ptr_eq
+    /// - I2 preserved: colnames Arc ptr_eq
+    /// - I3 preserved: nrows unchanged
+    /// - Tags modified: active_mask set to compiled expression
+    /// - Masks unchanged: does not add/remove named masks
+    /// - Data columns unchanged (Arc ptr_eq)
+    ///
+    /// Semantics:
+    /// - Compiles mask_expr using frame.tags.masks
+    /// - Sets frame.tags.active_mask to result
+    /// - All subsequent operations respect active_mask
+    WithMask {
+        input: NodeId,
+        mask_expr: crate::mask::MaskExpr,
+    },
 }
 
 impl Plan {
@@ -485,6 +522,32 @@ impl Plan {
                         return Err("Schema op must preserve nrows (I3)".to_string());
                     }
                     // Note: colnames (I2) are intentionally rebuilt for schema ops
+                }
+
+                Operation::Schema(SchemaOp::MaskWeekend { input, .. }) => {
+                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+
+                    // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
+                    if node.schema.index_type != input_node.schema.index_type {
+                        return Err("mask-weekend must preserve index type (I1)".to_string());
+                    }
+                    if node.schema.nrows != input_node.schema.nrows {
+                        return Err("mask-weekend must preserve nrows (I3)".to_string());
+                    }
+                    // I2 (colnames) also preserved for mask ops
+                }
+
+                Operation::Schema(SchemaOp::WithMask { input, .. }) => {
+                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+
+                    // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
+                    if node.schema.index_type != input_node.schema.index_type {
+                        return Err("with-mask must preserve index type (I1)".to_string());
+                    }
+                    if node.schema.nrows != input_node.schema.nrows {
+                        return Err("with-mask must preserve nrows (I3)".to_string());
+                    }
+                    // I2 (colnames) also preserved for mask ops
                 }
             }
         }

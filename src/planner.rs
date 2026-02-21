@@ -165,6 +165,23 @@ fn plan_expr(
                         plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)
                     }
 
+                    // Rolling mean partial: (rolling-mean-partial w x) where w is positive integer
+                    "rolling-mean-partial" => {
+                        if elements.len() != 3 {
+                            return Err("rolling-mean-partial expects 2 arguments: (rolling-mean-partial w x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("rolling-mean-partial w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-mean-partial w must be integer, not float".to_string()),
+                            _ => return Err("rolling-mean-partial w must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::RollMeanPartial { w }, &elements[2..], plan, ctx, interner)
+                    }
+
                     // Feature engineering: ft-mean as planner rewrite
                     // (ft-mean w x) → (shift 1 (rolling-mean w x))
                     // Semantics: "yesterday's distribution" (no self-reference)
@@ -541,6 +558,57 @@ fn plan_expr(
                         Ok(plan.add_node(node))
                     }
 
+                    // Mask operations
+                    "mask-weekend" => {
+                        if elements.len() < 2 || elements.len() > 3 {
+                            return Err("mask-weekend expects 1-2 arguments: (mask-weekend frame [name])".to_string());
+                        }
+
+                        // Parse optional name
+                        let name = if elements.len() == 3 {
+                            match &elements[2] {
+                                Expr::Str(s) => Some(s.clone()),
+                                Expr::Sym(s) => Some(interner.resolve(*s).to_string()),
+                                _ => return Err("mask-weekend name must be string or symbol".to_string()),
+                            }
+                        } else {
+                            None  // default: "weekend"
+                        };
+
+                        // Plan input
+                        let input = plan_expr(&elements[1], plan, ctx, interner)?;
+
+                        // Create mask-weekend node
+                        let node_id = NodeId(plan.nodes.len());
+                        let node = Node {
+                            id: node_id,
+                            op: Operation::Schema(SchemaOp::MaskWeekend { input, name }),
+                            schema: SchemaInfo::unknown(),
+                        };
+                        Ok(plan.add_node(node))
+                    }
+
+                    "with-mask" => {
+                        if elements.len() != 3 {
+                            return Err("with-mask expects 2 arguments: (with-mask frame mask-expr)".to_string());
+                        }
+
+                        // Plan input
+                        let input = plan_expr(&elements[1], plan, ctx, interner)?;
+
+                        // Parse mask expression
+                        let mask_expr = parse_mask_expr_from_ast(&elements[2], interner)?;
+
+                        // Create with-mask node
+                        let node_id = NodeId(plan.nodes.len());
+                        let node = Node {
+                            id: node_id,
+                            op: Operation::Schema(SchemaOp::WithMask { input, mask_expr }),
+                            schema: SchemaInfo::unknown(),
+                        };
+                        Ok(plan.add_node(node))
+                    }
+
                     // Let bindings: (let ((name1 expr1) (name2 expr2) ...) body)
                     "let" => {
                         if elements.len() != 3 {
@@ -700,6 +768,76 @@ fn plan_binary(
     };
 
     Ok(plan.add_node(node))
+}
+
+/// Parse a mask expression from AST
+fn parse_mask_expr_from_ast(expr: &Expr, interner: &Interner) -> Result<crate::mask::MaskExpr, String> {
+    use crate::mask::MaskExpr;
+
+    match expr {
+        // Symbol: 'weekend → Name("weekend")
+        Expr::Sym(s) => {
+            let name = interner.resolve(*s).to_string();
+            Ok(MaskExpr::Name(name))
+        }
+
+        // Quote: (quote weekend) → Name("weekend")
+        Expr::Quote(inner) => {
+            match **inner {
+                Expr::Sym(s) => {
+                    let name = interner.resolve(s).to_string();
+                    Ok(MaskExpr::Name(name))
+                }
+                _ => Err("Quoted mask name must be a symbol".to_string()),
+            }
+        }
+
+        // List: (not expr) or (and ...) or (or ...)
+        Expr::List(elements) if !elements.is_empty() => {
+            match &elements[0] {
+                Expr::Sym(op_sym) => {
+                    let op_name = interner.resolve(*op_sym);
+
+                    match op_name {
+                        "not" => {
+                            if elements.len() != 2 {
+                                return Err("mask expr 'not' expects 1 argument".to_string());
+                            }
+                            let inner = parse_mask_expr_from_ast(&elements[1], interner)?;
+                            Ok(MaskExpr::Not(Box::new(inner)))
+                        }
+
+                        "and" => {
+                            if elements.len() < 2 {
+                                return Err("mask expr 'and' expects at least 1 argument".to_string());
+                            }
+                            let mut sub_exprs = Vec::new();
+                            for arg in &elements[1..] {
+                                sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
+                            }
+                            Ok(MaskExpr::And(sub_exprs))
+                        }
+
+                        "or" => {
+                            if elements.len() < 2 {
+                                return Err("mask expr 'or' expects at least 1 argument".to_string());
+                            }
+                            let mut sub_exprs = Vec::new();
+                            for arg in &elements[1..] {
+                                sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
+                            }
+                            Ok(MaskExpr::Or(sub_exprs))
+                        }
+
+                        _ => Err(format!("Unknown mask operator: {}", op_name)),
+                    }
+                }
+                _ => Err("Mask expression list must start with operator symbol".to_string()),
+            }
+        }
+
+        _ => Err(format!("Invalid mask expression: {:?}", expr)),
+    }
 }
 
 #[cfg(test)]
