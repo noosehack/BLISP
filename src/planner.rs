@@ -310,25 +310,27 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
                         let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
 
-                        // Create rolling-mean node using already-planned x_node
+                        // Create rolling-mean (partial) node using already-planned x_node
+                        // Use partial for CLISPI compatibility with masked calendars
                         let mean_node_id = NodeId(plan.nodes.len());
                         let mean_node = Node {
                             id: mean_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollMean { w },
+                                func: NumericFunc::RollMeanPartial { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
                         let mean_node_id = plan.add_node(mean_node);
 
-                        // Create rolling-std node using already-planned x_node
+                        // Create rolling-std (partial) node using already-planned x_node
+                        // Use partial for CLISPI compatibility with masked calendars
                         let std_node_id = NodeId(plan.nodes.len());
                         let std_node = Node {
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollStd { w },
+                                func: NumericFunc::RollStdPartial { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
