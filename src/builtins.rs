@@ -1396,88 +1396,90 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 }
 
-/// (ur-cols table window [step]) - Apply ur to all numeric columns (step default=1)
+/// (ur window step table) - Apply ur to all numeric columns
+/// Matches CLISPI argument order: (ur w step x)
 ///
 /// Table-level wrapper: TableView -> TableView
 fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(format!("ur-cols expects 2-3 arguments (table window [step]), got {}", args.len()));
+    if args.len() != 3 {
+        return Err(format!("ur expects 3 arguments (window step table), got {}", args.len()));
     }
 
-    let window = args[1].as_int()? as usize;
-    let step = if args.len() == 3 {
-        args[2].as_int()? as usize
-    } else {
-        1
-    };
+    let window = args[0].as_int()? as usize;
+    let step = args[1].as_int()? as usize;
 
     if window == 0 {
-        return Err("ur-cols: window must be > 0".to_string());
+        return Err("ur: window must be > 0".to_string());
     }
 
     if step == 0 {
-        return Err("ur-cols: step must be > 0".to_string());
+        return Err("ur: step must be > 0".to_string());
     }
 
-    match &args[0] {
+    // Common UR implementation for both TableView and Frame
+    let apply_ur_to_col = |data: &[f64]| -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let scale = 100.0 * (252.0_f64).sqrt();
+
+        // Step parameter: recalculate volatility every 'step' rows, but output every row
+        let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
+
+        for i in 0..n {
+            // Rolling window philosophy: require full window before computing
+            if i < window {
+                result[i] = f64::NAN;
+                continue;
+            }
+
+            // Recalculate volatility every 'step' rows
+            if i % step == 0 || current_inv_vol.is_nan() {
+                let start = i - window;
+                let end = i;
+
+                let mut sum = 0.0;
+                let mut sum_sq = 0.0;
+                let mut count = 0;
+
+                for j in start..end {
+                    let val = data[j];
+                    if !val.is_nan() && val != 0.0 {
+                        sum += val;
+                        sum_sq += val * val;
+                        count += 1;
+                    }
+                }
+
+                if count > 1 {
+                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                    if variance > 0.0 {
+                        let stddev = variance.sqrt();
+                        current_inv_vol = 1.0 / (scale * stddev);
+                    } else {
+                        current_inv_vol = f64::NAN;
+                    }
+                } else {
+                    current_inv_vol = f64::NAN;
+                }
+            }
+
+            // Apply current volatility coefficient to every row
+            if !data[i].is_nan() && !current_inv_vol.is_nan() {
+                result[i] = data[i] * current_inv_vol;
+            } else {
+                result[i] = f64::NAN;
+            }
+        }
+
+        result
+    };
+
+    match &args[2] {
         Value::TableView(tv) => {
             let result = map_numeric_cols(tv.as_ref(), |col| {
                 match col {
                     blawktrust::Column::F64(data) => {
-                        let n = data.len();
-                        let mut result = vec![f64::NAN; n];
-                        let scale = 100.0 * (252.0_f64).sqrt();
-
-                        // Step parameter: recalculate volatility every 'step' rows, but output every row
-                        let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
-
-                        for i in 0..n {
-                            // Rolling window philosophy: require full window before computing
-                            if i < window {
-                                result[i] = f64::NAN;
-                                continue;
-                            }
-
-                            // Recalculate volatility every 'step' rows
-                            if i % step == 0 || current_inv_vol.is_nan() {
-                                let start = i - window;
-                                let end = i;
-
-                                let mut sum = 0.0;
-                                let mut sum_sq = 0.0;
-                                let mut count = 0;
-
-                                for j in start..end {
-                                    let val = data[j];
-                                    if !val.is_nan() && val != 0.0 {
-                                        sum += val;
-                                        sum_sq += val * val;
-                                        count += 1;
-                                    }
-                                }
-
-                                if count > 1 {
-                                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
-                                    if variance > 0.0 {
-                                        let stddev = variance.sqrt();
-                                        current_inv_vol = 1.0 / (scale * stddev);
-                                    } else {
-                                        current_inv_vol = f64::NAN;
-                                    }
-                                } else {
-                                    current_inv_vol = f64::NAN;
-                                }
-                            }
-
-                            // Apply current volatility coefficient to every row
-                            if !data[i].is_nan() && !current_inv_vol.is_nan() {
-                                result[i] = data[i] * current_inv_vol;
-                            } else {
-                                result[i] = f64::NAN;
-                            }
-                        }
-
-                        Ok(blawktrust::Column::new_f64(result))
+                        Ok(blawktrust::Column::new_f64(apply_ur_to_col(data)))
                     }
                     _ => unreachable!("map_numeric_cols only passes F64"),
                 }
@@ -1485,7 +1487,22 @@ fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("ur-cols expects TableView, got {}", args[0].type_name())),
+        Value::Frame(frame) => {
+            // Apply UR to Frame columns
+            use crate::frame::map_numeric_preserve_tags;
+
+            let result = map_numeric_preserve_tags(frame.as_ref(), |col| {
+                match col {
+                    blawktrust::Column::F64(data) => {
+                        blawktrust::Column::new_f64(apply_ur_to_col(data))
+                    }
+                    _ => col.clone(),
+                }
+            });
+
+            Ok(Value::Frame(Arc::new(result)))
+        }
+        _ => Err(format!("ur expects TableView/Frame, got {}", args[2].type_name())),
     }
 }
 

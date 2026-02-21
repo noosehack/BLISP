@@ -85,7 +85,7 @@ fn plan_expr(
 
                 match func_name {
                     // File loading
-                    "load" | "read-csv" => {
+                    "load" | "read-csv" | "file" => {
                         if elements.len() != 2 {
                             return Err(format!("{} expects 1 argument", func_name));
                         }
@@ -323,6 +323,69 @@ fn plan_expr(
                                 func: BinaryFunc::Div,
                             }),
                             schema: x_schema, // Binary preserves LHS schema
+                        };
+                        Ok(plan.add_node(div_node))
+                    }
+
+                    // Unit ratio (ur): Risk-adjusted returns
+                    // Canonical: (ur w step x) → (/ x (* 1587.4507866 (rolling-std w x)))
+                    // Where: 1587.45... = 100 * sqrt(252) = percentage scale * annualization
+                    // step param ignored (compatibility)
+                    // Used for: normalizing log returns by rolling volatility
+                    "ur" => {
+                        if elements.len() != 4 {
+                            return Err("ur expects 3 arguments: (ur w step x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ur w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("ur w must be integer, not float".to_string()),
+                            _ => return Err("ur w must be integer literal".to_string()),
+                        };
+
+                        // step param (elements[2]) is ignored for compatibility
+
+                        // Plan input x ONCE
+                        let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
+                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+
+                        // Create rolling-std node
+                        let std_node_id = NodeId(plan.nodes.len());
+                        let std_node = Node {
+                            id: std_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::RollStd { w },
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let std_node_id = plan.add_node(std_node);
+
+                        // Create scalar node for 1587.4507866
+                        let scalar_node_id = NodeId(plan.nodes.len());
+                        let scalar_node = Node {
+                            id: scalar_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: std_node_id,
+                                rhs: ValueRef::Scalar(1587.4507866),
+                                func: BinaryFunc::Mul,
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let scalar_node_id = plan.add_node(scalar_node);
+
+                        // Create division node: x / (1587.45... * rolling-std)
+                        let div_node_id = NodeId(plan.nodes.len());
+                        let div_node = Node {
+                            id: div_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: x_node,
+                                rhs: ValueRef::Frame(scalar_node_id),
+                                func: BinaryFunc::Div,
+                            }),
+                            schema: x_schema,
                         };
                         Ok(plan.add_node(div_node))
                     }
