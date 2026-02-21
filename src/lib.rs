@@ -15,3 +15,4 @@ pub mod normalize;
 pub mod ir;
 pub mod planner;
 pub mod exec;
+pub mod ir_fusion;

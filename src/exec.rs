@@ -284,7 +284,7 @@ fn ret_column(col: &Column, lag: usize) -> Column {
     }
 }
 
-fn log_column(col: &Column) -> Column {
+pub fn log_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let result = data.iter().map(|&x| {
@@ -300,7 +300,7 @@ fn log_column(col: &Column) -> Column {
     }
 }
 
-fn exp_column(col: &Column) -> Column {
+pub fn exp_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let result = data.iter().map(|&x| {
@@ -316,7 +316,7 @@ fn exp_column(col: &Column) -> Column {
     }
 }
 
-fn sqrt_column(col: &Column) -> Column {
+pub fn sqrt_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let result = data.iter().map(|&x| {
@@ -332,7 +332,7 @@ fn sqrt_column(col: &Column) -> Column {
     }
 }
 
-fn abs_column(col: &Column) -> Column {
+pub fn abs_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let result = data.iter().map(|&x| {
@@ -348,7 +348,7 @@ fn abs_column(col: &Column) -> Column {
     }
 }
 
-fn inv_column(col: &Column) -> Column {
+pub fn inv_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let result = data.iter().map(|&x| {
