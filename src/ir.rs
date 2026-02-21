@@ -212,12 +212,14 @@ pub enum NumericFunc {
 
     /// Cumulative sum starting at 1.0
     ///
-    /// Contract:
+    /// Contract (updated for shape-preserving w5):
     /// - Starts at 1.0 (not 0.0!)
-    /// - cs1[0] = 1.0 + (x[0] if valid else 0)
-    /// - cs1[i] = cs1[i-1] + (x[i] if valid else 0)
-    /// - NA policy: "skip" - NA treated as +0 (no update to running sum)
-    /// - NA ELIMINATION: output is NEVER NA (always outputs current cumsum)
+    /// - For valid values: cs1[i] = cs1[i-1] + x[i]
+    /// - For NA values: cs1[i] = NA (preserves input NA)
+    /// - NA policy: "skip and preserve"
+    ///   - NA input → NA output (preserves weekend masks from w5)
+    ///   - Running sum continues across NA positions
+    /// - Compatible with masked time series operations
     /// - Shape preserved (I1-I3)
     /// - Used for index reconstruction from differences
     /// - NOT idempotent (cs1(cs1(x)) != cs1(x))

@@ -17,7 +17,8 @@ use crate::runtime::Runtime;
 use crate::io;
 use std::sync::Arc;
 use std::collections::HashMap;
-use blawktrust::builtins::ops::{dlog_column};
+// dlog_column replaced with mask-aware version below
+// use blawktrust::builtins::ops::{dlog_column};
 
 /// Execution context - holds intermediate values during execution
 pub struct ExecContext {
@@ -396,24 +397,7 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
 
 use blawktrust::Column;
 
-fn ret_column(col: &Column, lag: usize) -> Column {
-    match col {
-        Column::F64(data) => {
-            let mut result = vec![f64::NAN; data.len()];
-            for i in lag..data.len() {
-                let curr = data[i];
-                let prev = data[i - lag];
-                if !curr.is_nan() && !prev.is_nan() && prev != 0.0 {
-                    result[i] = curr / prev - 1.0;
-                } else {
-                    result[i] = f64::NAN;
-                }
-            }
-            Column::F64(result)
-        }
-        _ => col.clone(),
-    }
-}
+// OLD ret_column removed - replaced with mask-aware version below
 
 pub fn log_column(col: &Column) -> Column {
     match col {
@@ -495,6 +479,90 @@ pub fn inv_column(col: &Column) -> Column {
     }
 }
 
+/// Mask-aware dlog: log returns with NA-skipping lag
+///
+/// Contract (updated for shape-preserving w5):
+/// - dlog[i] = log(x[i]) - log(x[last_valid before i])
+/// - Skips NAs in lag: looks back for last valid value
+/// - If current value NA → output NA
+/// - If no prior valid value → output NA
+/// - Compatible with weekend masking
+///
+/// Why NA-skipping lag:
+/// - Monday after weekend: uses Friday's value (not Sunday NA)
+/// - Preserves time-series semantics with masked data
+/// - CLISPI equivalent: row-elimination makes Monday follow Friday
+/// - BLISP: shape-preserving makes Monday skip weekend NAs
+fn dlog_column(col: &Column, _lag: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid: Option<f64> = None;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // Current NA → output NA
+                    result.push(f64::NAN);
+                } else if let Some(prev) = last_valid {
+                    // Valid current, valid previous → compute dlog
+                    if prev > 0.0 && x > 0.0 {
+                        result.push(x.ln() - prev.ln());
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                    last_valid = Some(x);
+                } else {
+                    // Valid current, no previous → output NA (first valid)
+                    result.push(f64::NAN);
+                    last_valid = Some(x);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Mask-aware ret: arithmetic returns with NA-skipping lag
+///
+/// Contract (updated for shape-preserving w5):
+/// - ret[i] = (x[i] - x[last_valid before i]) / x[last_valid before i]
+/// - Skips NAs in lag: looks back for last valid value
+/// - If current value NA → output NA
+/// - If no prior valid value → output NA
+/// - Compatible with weekend masking
+fn ret_column(col: &Column, _lag: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid: Option<f64> = None;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // Current NA → output NA
+                    result.push(f64::NAN);
+                } else if let Some(prev) = last_valid {
+                    // Valid current, valid previous → compute ret
+                    if prev != 0.0 {
+                        result.push((x - prev) / prev);
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                    last_valid = Some(x);
+                } else {
+                    // Valid current, no previous → output NA (first valid)
+                    result.push(f64::NAN);
+                    last_valid = Some(x);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
 /// Last observation carried forward (fill NA with last valid value)
 ///
 /// Contract:
@@ -528,10 +596,13 @@ fn locf_column(col: &Column) -> Column {
 
 /// Cumulative sum starting at 1.0 (cs1)
 ///
-/// Contract:
+/// Contract (updated for shape-preserving w5):
 /// - Starts at 1.0 (not 0.0!)
-/// - NA policy: "skip" - NA treated as +0 (no update)
-/// - NA ELIMINATION: output never NA (always outputs running sum)
+/// - NA policy: "skip and preserve"
+///   - NA input → NA output (preserves weekend masks)
+///   - Valid values: cumsum updates and outputs
+///   - Running sum maintained across NA positions
+/// - Compatible with masked time series (w5/wkd)
 /// - O(n) single pass
 fn cumsum_column(col: &Column) -> Column {
     match col {
@@ -540,11 +611,14 @@ fn cumsum_column(col: &Column) -> Column {
             let mut cumsum = 1.0;
 
             for &x in data.iter() {
-                if !x.is_nan() {
+                if x.is_nan() {
+                    // NA input → NA output (preserves masks from w5)
+                    result.push(f64::NAN);
+                } else {
+                    // Valid input: update cumsum and output
                     cumsum += x;
+                    result.push(cumsum);
                 }
-                // Always output cumsum (never NA, even if input is NA)
-                result.push(cumsum);
             }
 
             Column::F64(result)
@@ -721,11 +795,12 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
                     }
                 }
 
-                // Emit result if window is full (i >= w-1) and has w valid values
-                if i >= w - 1 && valid_count >= w {
-                    result[i] = running_sum / (w as f64);
+                // Emit result if window is full (i >= w-1) and has at least 1 valid value
+                // Updated for masked time series: use available valid values, not strict w
+                if i >= w - 1 && valid_count >= 1 {
+                    result[i] = running_sum / (valid_count as f64);
                 }
-                // Else: result[i] remains NA (prefix or insufficient valid values)
+                // Else: result[i] remains NA (prefix or no valid values)
             }
 
             Column::F64(result)
@@ -785,10 +860,11 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                     }
                 }
 
-                // Emit result if window is full (i >= w-1) and has w valid values
-                if i >= w - 1 && valid_count >= w {
-                    let mean = running_sum / (w as f64);
-                    let variance = (running_sumsq / (w as f64)) - (mean * mean);
+                // Emit result if window is full (i >= w-1) and has at least 2 valid values
+                // Updated for masked time series: use available valid values, not strict w
+                if i >= w - 1 && valid_count >= 2 {
+                    let mean = running_sum / (valid_count as f64);
+                    let variance = (running_sumsq / (valid_count as f64)) - (mean * mean);
 
                     // Guard against numerical error producing negative/tiny variance
                     // Window=1 or constant series should have exactly 0 variance
