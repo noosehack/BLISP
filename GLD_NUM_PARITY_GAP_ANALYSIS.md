@@ -36,7 +36,7 @@
 | `ecs1` | builtin | Exponential CS (with decay) | MEDIUM |
 | `wzs 25 1` | macro → `wzscore` | Windowed z-score (exists but name mismatch) | MEDIUM |
 | `> -1` | builtin | Filter/threshold | **HIGH** |
-| `ur 250 5` | builtin | Rolling regression/beta | MEDIUM |
+| `ur 250 5` | builtin | Unit ratio (return/vol, annualized) | MEDIUM |
 
 ---
 
@@ -234,13 +234,28 @@ pub enum FilterCondition {
 
 ---
 
-### 6. **Rolling Regression** (`ur 250 5`)
+### 6. **Unit Ratio** (`ur 250 5`)
 
-**Purpose**: Rolling linear regression (probably rolling beta or rolling correlation)
+**Purpose**: Risk-adjusted returns (Sharpe-like ratio)
+
+**Formula**: `ur = value / (100 * rolling_volatility)`
 
 **Example**: `(ur x 250 5)` → window=250, step=5
 
-**Implementation**: Complex (requires OLS, multiple passes). Lower priority.
+**Implementation**:
+```rust
+// Simple: divide by rolling std
+pub enum NumericFunc {
+    // ... existing ...
+    UnitRatio { w: usize, step: usize },  // NEW: value / (100 * rolling_std)
+}
+
+// Can be implemented as derived form:
+// ur(w, step, x) = x / (100 * rolling_std(w, x))
+// But step parameter requires keep-shape logic
+```
+
+**Priority**: MEDIUM (can be derived from existing rolling-std)
 
 ---
 
