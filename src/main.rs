@@ -99,8 +99,12 @@ fn main() {
                         // Stream table output directly (no row limit when not interactive)
                         value::write_table_to(&mut writer, table, &rt.interner, None)
                     }
+                    value::Value::Frame(frame) => {
+                        // Stream frame output directly (no row limit when not interactive)
+                        value::write_frame_to(&mut writer, frame, &rt.interner, None)
+                    }
                     _ => {
-                        // For non-tables, use display()
+                        // For non-tables/frames, use display()
                         writeln!(writer, "{}", val.display(&rt.interner))
                     }
                 };
@@ -133,8 +137,12 @@ fn main() {
                                 // Stream table output directly (no row limit when not interactive)
                                 value::write_table_to(&mut writer, table, &rt.interner, None)
                             }
+                            value::Value::Frame(frame) => {
+                                // Stream frame output directly (no row limit when not interactive)
+                                value::write_frame_to(&mut writer, frame, &rt.interner, None)
+                            }
                             _ => {
-                                // For non-tables, use display()
+                                // For non-tables/frames, use display()
                                 writeln!(writer, "{}", val.display(&rt.interner))
                             }
                         };

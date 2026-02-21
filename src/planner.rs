@@ -271,23 +271,41 @@ fn plan_expr(
                             _ => return Err(format!("{} w must be integer literal", func_name)),
                         };
 
-                        // Plan input x
+                        // Plan input x ONCE (critical: don't re-plan stdin multiple times!)
                         let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
+                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
 
-                        // Plan (rolling-mean w x)
-                        let mean_node = plan_unary(NumericFunc::RollMean { w }, &[elements[x_index].clone()], plan, ctx, interner)?;
+                        // Create rolling-mean node using already-planned x_node
+                        let mean_node_id = NodeId(plan.nodes.len());
+                        let mean_node = Node {
+                            id: mean_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::RollMean { w },
+                            }),
+                            schema: x_schema.clone(), // Unary preserves schema (I1-I3)
+                        };
+                        let mean_node_id = plan.add_node(mean_node);
 
-                        // Plan (rolling-std w x)
-                        let std_node = plan_unary(NumericFunc::RollStd { w }, &[elements[x_index].clone()], plan, ctx, interner)?;
+                        // Create rolling-std node using already-planned x_node
+                        let std_node_id = NodeId(plan.nodes.len());
+                        let std_node = Node {
+                            id: std_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::RollStd { w },
+                            }),
+                            schema: x_schema.clone(), // Unary preserves schema (I1-I3)
+                        };
+                        let std_node_id = plan.add_node(std_node);
 
                         // Plan (- x mean)
                         let sub_node_id = NodeId(plan.nodes.len());
-                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
                         let sub_node = Node {
                             id: sub_node_id,
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: x_node,
-                                rhs: ValueRef::Frame(mean_node),
+                                rhs: ValueRef::Frame(mean_node_id),
                                 func: BinaryFunc::Sub,
                             }),
                             schema: x_schema.clone(), // Binary preserves LHS schema
@@ -300,7 +318,7 @@ fn plan_expr(
                             id: div_node_id,
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: sub_node_id,
-                                rhs: ValueRef::Frame(std_node),
+                                rhs: ValueRef::Frame(std_node_id),
                                 func: BinaryFunc::Div,
                             }),
                             schema: x_schema, // Binary preserves LHS schema
