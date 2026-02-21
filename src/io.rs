@@ -253,7 +253,7 @@ fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -
 ///
 /// Remaining columns must be F64 (P2 policy: numeric only).
 /// Returns Frame with Tags (index + colnames).
-fn parse_csv_to_frame<R: std::io::Read>(
+pub fn parse_csv_to_frame<R: std::io::Read>(
     reader: &mut csv::Reader<R>,
     _interner: &mut Interner,
     row_limit: Option<usize>

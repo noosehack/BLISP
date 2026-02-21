@@ -104,6 +104,21 @@ fn plan_expr(
                         Ok(plan.add_node(node))
                     }
 
+                    // Read from stdin
+                    "stdin" => {
+                        if elements.len() != 1 {
+                            return Err("stdin expects no arguments".to_string());
+                        }
+
+                        let node_id = NodeId(plan.nodes.len());
+                        let node = Node {
+                            id: node_id,
+                            op: Operation::Source(Source::Stdin),
+                            schema: SchemaInfo::unknown(),
+                        };
+                        Ok(plan.add_node(node))
+                    }
+
                     // Unary numeric operations
                     "dlog" => plan_unary(NumericFunc::Dlog, &elements[1..], plan, ctx, interner),
                     "ret" => plan_unary(NumericFunc::Ret, &elements[1..], plan, ctx, interner),

@@ -85,6 +85,30 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
                 _ => Err(format!("CSV loader returned non-Frame: {}", value.type_name())),
             }
         }
+        Source::Stdin => {
+            // Read CSV from stdin
+            // Note: load_stdin returns old Table/TableView, need to handle conversion
+            let mut buffer = String::new();
+            {
+                use std::io::Read;
+                std::io::stdin()
+                    .read_to_string(&mut buffer)
+                    .map_err(|e| format!("Error reading stdin: {}", e))?;
+            }
+
+            // Parse CSV using same logic as load_csv
+            let mut csv_reader = csv::ReaderBuilder::new()
+                .has_headers(true)
+                .delimiter(b';')
+                .from_reader(buffer.as_bytes());
+
+            let value = io::parse_csv_to_frame(&mut csv_reader, &mut rt.interner, None)?;
+
+            match value {
+                Value::Frame(f) => Ok(f),
+                _ => Err(format!("stdin parsing returned non-Frame: {}", value.type_name())),
+            }
+        }
         Source::Variable { name } => {
             // Load from runtime environment
             let value = rt.resolve(*name)?;

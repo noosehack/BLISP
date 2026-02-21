@@ -130,6 +130,8 @@ pub enum Source {
     File {
         path: String,
     },
+    /// Read from stdin
+    Stdin,
     /// Reference a variable in the environment
     Variable {
         name: SymbolId,
