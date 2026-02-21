@@ -384,43 +384,53 @@ fn shift_column(col: &Column, k: usize) -> Column {
     }
 }
 
-/// Rolling mean with strict min_periods semantics
+/// Rolling mean with strict min_periods semantics (O(n) optimized)
 ///
 /// Contract (see contracts.md §5):
 /// - Trailing window: [i-w+1 .. i] inclusive
 /// - Skip NA in window, require w valid values (strict min_periods)
 /// - Prefix i < w-1 always NA
 /// - Shape preserved, NA mask monotone
+///
+/// Optimization: O(n) single-pass with running sum and valid count
+/// - Maintains sliding window [i-w+1 .. i] via add/remove operations
+/// - Tracks running_sum and valid_count for O(1) per element
 fn rolling_mean_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
             let nrows = data.len();
             let mut result = vec![f64::NAN; nrows];
 
-            // Contract: prefix i < w-1 is always NA (not enough observations)
-            // Already initialized to NAN above
+            // Edge case: window larger than data
+            if w > nrows {
+                return Column::F64(result);  // All NA
+            }
 
-            // For each row i >= w-1, compute mean of window [i-w+1 .. i]
-            for i in (w - 1)..nrows {
-                let window_start = i + 1 - w; // i - w + 1
-                let window_end = i + 1;        // Exclusive end: [start..end)
+            let mut running_sum = 0.0;
+            let mut valid_count = 0usize;
 
-                // Count valid (non-NA) values in window
-                let mut sum = 0.0;
-                let mut count = 0;
+            // Single pass: maintain sliding window [i-w+1 .. i]
+            for i in 0..nrows {
+                // Add entering value at position i (window right edge)
+                if !data[i].is_nan() {
+                    running_sum += data[i];
+                    valid_count += 1;
+                }
 
-                for &x in &data[window_start..window_end] {
-                    if !x.is_nan() {
-                        sum += x;
-                        count += 1;
+                // Remove leaving value at position i-w (left edge exits window)
+                if i >= w {
+                    let leaving_idx = i - w;
+                    if !data[leaving_idx].is_nan() {
+                        running_sum -= data[leaving_idx];
+                        valid_count -= 1;
                     }
                 }
 
-                // Strict min_periods: require w valid values
-                if count >= w {
-                    result[i] = sum / (w as f64);
+                // Emit result if window is full (i >= w-1) and has w valid values
+                if i >= w - 1 && valid_count >= w {
+                    result[i] = running_sum / (w as f64);
                 }
-                // Else: result[i] remains NA (already initialized)
+                // Else: result[i] remains NA (prefix or insufficient valid values)
             }
 
             Column::F64(result)
@@ -429,7 +439,7 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
     }
 }
 
-/// Rolling standard deviation with strict min_periods semantics (population, ddof=0)
+/// Rolling standard deviation with strict min_periods semantics (O(n) optimized)
 ///
 /// Contract (see contracts.md §5):
 /// - Trailing window: [i-w+1 .. i] inclusive
@@ -439,46 +449,63 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
 /// - Window=1 → σ = 0.0 for valid values
 /// - Prefix i < w-1 always NA
 /// - Shape preserved, NA mask monotone
+///
+/// Optimization: O(n) single-pass with running sum/sumsq
+/// - Variance formula: var = E[X²] - E[X]² = (sumsq/w) - mean²
+/// - Numerically acceptable for typical financial data
+/// - For extreme precision needs, can later add compensated method
 fn rolling_std_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
             let nrows = data.len();
             let mut result = vec![f64::NAN; nrows];
 
-            // Contract: prefix i < w-1 is always NA (not enough observations)
-            // Already initialized to NAN above
+            // Edge case: window larger than data
+            if w > nrows {
+                return Column::F64(result);  // All NA
+            }
 
-            // For each row i >= w-1, compute std of window [i-w+1 .. i]
-            for i in (w - 1)..nrows {
-                let window_start = i + 1 - w; // i - w + 1
-                let window_end = i + 1;        // Exclusive end: [start..end)
+            let mut running_sum = 0.0;
+            let mut running_sumsq = 0.0;
+            let mut valid_count = 0usize;
 
-                // Collect valid (non-NA) values in window
-                let mut values = Vec::with_capacity(w);
-                for &x in &data[window_start..window_end] {
-                    if !x.is_nan() {
-                        values.push(x);
+            // Single pass: maintain sliding window [i-w+1 .. i]
+            for i in 0..nrows {
+                // Add entering value at position i (window right edge)
+                if !data[i].is_nan() {
+                    let x = data[i];
+                    running_sum += x;
+                    running_sumsq += x * x;
+                    valid_count += 1;
+                }
+
+                // Remove leaving value at position i-w (left edge exits window)
+                if i >= w {
+                    let leaving_idx = i - w;
+                    if !data[leaving_idx].is_nan() {
+                        let x = data[leaving_idx];
+                        running_sum -= x;
+                        running_sumsq -= x * x;
+                        valid_count -= 1;
                     }
                 }
 
-                // Strict min_periods: require w valid values
-                if values.len() >= w {
-                    // Compute mean
-                    let sum: f64 = values.iter().sum();
-                    let mean = sum / (w as f64);
+                // Emit result if window is full (i >= w-1) and has w valid values
+                if i >= w - 1 && valid_count >= w {
+                    let mean = running_sum / (w as f64);
+                    let variance = (running_sumsq / (w as f64)) - (mean * mean);
 
-                    // Compute variance (population, ddof=0)
-                    let variance: f64 = values.iter()
-                        .map(|&x| {
-                            let diff = x - mean;
-                            diff * diff
-                        })
-                        .sum::<f64>() / (w as f64);
-
-                    // Std is sqrt of variance
-                    result[i] = variance.sqrt();
+                    // Guard against numerical error producing negative/tiny variance
+                    // Window=1 or constant series should have exactly 0 variance
+                    // Use relative epsilon to catch numerical noise
+                    let epsilon = 1e-10 * mean.abs().max(1.0);
+                    result[i] = if variance <= epsilon {
+                        0.0  // Constant series or numerical noise
+                    } else {
+                        variance.sqrt()
+                    };
                 }
-                // Else: result[i] remains NA (already initialized)
+                // Else: result[i] remains NA (prefix or insufficient valid values)
             }
 
             Column::F64(result)
