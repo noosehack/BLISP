@@ -216,6 +216,40 @@ fn plan_expr(
                         plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)
                     }
 
+                    // Rolling mean (partial): relaxed min_periods for masked calendars
+                    // Aliases: wavp (preferred), rolling-mean-partial
+                    "wavp" | "rolling-mean-partial" => {
+                        if elements.len() != 3 {
+                            return Err("wavp expects 2 arguments: (wavp w x)".to_string());
+                        }
+
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("wavp w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("wavp w must be integer, not float".to_string()),
+                            _ => return Err("wavp w must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::RollMeanPartial { w }, &elements[2..], plan, ctx, interner)
+                    }
+
+                    // Rolling std (partial): relaxed min_periods for masked calendars
+                    // Aliases: wstp (preferred), rolling-std-partial
+                    "wstp" | "rolling-std-partial" => {
+                        if elements.len() != 3 {
+                            return Err("wstp expects 2 arguments: (wstp w x)".to_string());
+                        }
+
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("wstp w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("wstp w must be integer, not float".to_string()),
+                            _ => return Err("wstp w must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::RollStdPartial { w }, &elements[2..], plan, ctx, interner)
+                    }
+
                     // Feature engineering: ft-std as planner rewrite
                     // (ft-std w x) → (shift 1 (rolling-std w x))
                     "ft-std" => {
@@ -328,7 +362,8 @@ fn plan_expr(
                     }
 
                     // Unit ratio (ur): Risk-adjusted returns
-                    // Canonical: (ur w step x) → (/ x (* 1587.4507866 (rolling-std w x)))
+                    // Canonical: (ur w step x) → (/ x (* 1587.4507866 (wstp w x)))
+                    // Uses PARTIAL (relaxed) rolling-std to match CLISPI semantics
                     // Where: 1587.45... = 100 * sqrt(252) = percentage scale * annualization
                     // step param ignored (compatibility)
                     // Used for: normalizing log returns by rolling volatility
@@ -351,13 +386,13 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
                         let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
 
-                        // Create rolling-std node
+                        // Create rolling-std (partial/relaxed) node for CLISPI compatibility
                         let std_node_id = NodeId(plan.nodes.len());
                         let std_node = Node {
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollStd { w },
+                                func: NumericFunc::RollStdPartial { w },
                             }),
                             schema: x_schema.clone(),
                         };

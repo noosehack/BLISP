@@ -253,6 +253,26 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone
     RollStd { w: usize },
+    /// Rolling mean (partial window): relaxed min_periods for masked calendars
+    ///
+    /// Contract:
+    /// - Trailing window: [i-w+1 .. i] inclusive
+    /// - Skip NA in window, require ≥2 valid values (relaxed, not strict w)
+    /// - Use available valid values only
+    /// - Designed for: weekday-masked calendars with weekend NAs
+    /// - Prefix i < w-1 always NA
+    /// - Shape preserved (I1-I3)
+    RollMeanPartial { w: usize },
+    /// Rolling std (partial window): relaxed min_periods for masked calendars
+    ///
+    /// Contract:
+    /// - Trailing window: [i-w+1 .. i] inclusive
+    /// - Skip NA in window, require ≥2 valid values (relaxed, not strict w)
+    /// - Use available valid values only
+    /// - Designed for: weekday-masked calendars with weekend NAs
+    /// - Prefix i < w-1 always NA
+    /// - Shape preserved (I1-I3)
+    RollStdPartial { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)

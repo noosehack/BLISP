@@ -149,6 +149,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Shift { k } => shift_column(col, *k),
                     NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
                     NumericFunc::RollStd { w } => rolling_std_column(col, *w),
+                    NumericFunc::RollMeanPartial { w } => rolling_mean_partial(col, *w),
+                    NumericFunc::RollStdPartial { w } => rolling_std_partial(col, *w),
                     NumericFunc::W5 => unreachable!("W5 handled above"),
                 }
             });
@@ -795,9 +797,9 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
                     }
                 }
 
-                // Emit result if window is full (i >= w-1) and has at least 1 valid value
-                // Updated for masked time series: use available valid values, not strict w
-                if i >= w - 1 && valid_count >= 1 {
+                // Emit result if window is full (i >= w-1) AND has exactly w valid values (strict)
+                // Contract: strict min_periods = w (skip NA, require full window)
+                if i >= w - 1 && valid_count >= w {
                     result[i] = running_sum / (valid_count as f64);
                 }
                 // Else: result[i] remains NA (prefix or no valid values)
@@ -860,9 +862,9 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                     }
                 }
 
-                // Emit result if window is full (i >= w-1) and has at least 2 valid values
-                // Updated for masked time series: use available valid values, not strict w
-                if i >= w - 1 && valid_count >= 2 {
+                // Emit result if window is full (i >= w-1) AND has exactly w valid values (strict)
+                // Contract: strict min_periods = w (skip NA, require full window)
+                if i >= w - 1 && valid_count >= w {
                     let mean = running_sum / (valid_count as f64);
                     let variance = (running_sumsq / (valid_count as f64)) - (mean * mean);
 
@@ -877,6 +879,124 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                     };
                 }
                 // Else: result[i] remains NA (prefix or insufficient valid values)
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling mean with partial window (relaxed min_periods for masked calendars)
+///
+/// Contract:
+/// - Trailing window: [i-w+1 .. i] inclusive
+/// - Skip NA in window, require ≥2 valid values (relaxed, not strict w)
+/// - Use available valid values only
+/// - Prefix i < w-1 always NA
+/// - Designed for: masked time series (e.g., weekday-only data with weekend NAs)
+///
+/// Difference from strict rolling_mean:
+/// - Strict: requires valid_count == w (full window)
+/// - Partial: requires valid_count >= 2 (any partial window)
+fn rolling_mean_partial(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            if w > nrows {
+                return Column::F64(result);
+            }
+
+            let mut running_sum = 0.0;
+            let mut valid_count = 0usize;
+
+            for i in 0..nrows {
+                // Add entering value
+                if !data[i].is_nan() {
+                    running_sum += data[i];
+                    valid_count += 1;
+                }
+
+                // Remove leaving value
+                if i >= w {
+                    let leaving_idx = i - w;
+                    if !data[leaving_idx].is_nan() {
+                        running_sum -= data[leaving_idx];
+                        valid_count -= 1;
+                    }
+                }
+
+                // Emit if window position reached and ≥2 valid values (relaxed)
+                if i >= w - 1 && valid_count >= 2 {
+                    result[i] = running_sum / (valid_count as f64);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Rolling standard deviation with partial window (relaxed min_periods for masked calendars)
+///
+/// Contract:
+/// - Trailing window: [i-w+1 .. i] inclusive
+/// - Skip NA in window, require ≥2 valid values (relaxed, not strict w)
+/// - Use available valid values only
+/// - Prefix i < w-1 always NA
+/// - Designed for: masked time series (e.g., weekday-only data with weekend NAs)
+///
+/// Difference from strict rolling_std:
+/// - Strict: requires valid_count == w (full window)
+/// - Partial: requires valid_count >= 2 (any partial window)
+fn rolling_std_partial(col: &Column, w: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let nrows = data.len();
+            let mut result = vec![f64::NAN; nrows];
+
+            if w > nrows {
+                return Column::F64(result);
+            }
+
+            let mut running_sum = 0.0;
+            let mut running_sumsq = 0.0;
+            let mut valid_count = 0usize;
+
+            for i in 0..nrows {
+                // Add entering value
+                if !data[i].is_nan() {
+                    let x = data[i];
+                    running_sum += x;
+                    running_sumsq += x * x;
+                    valid_count += 1;
+                }
+
+                // Remove leaving value
+                if i >= w {
+                    let leaving_idx = i - w;
+                    if !data[leaving_idx].is_nan() {
+                        let x = data[leaving_idx];
+                        running_sum -= x;
+                        running_sumsq -= x * x;
+                        valid_count -= 1;
+                    }
+                }
+
+                // Emit if window position reached and ≥2 valid values (relaxed)
+                if i >= w - 1 && valid_count >= 2 {
+                    let mean = running_sum / (valid_count as f64);
+                    let variance = (running_sumsq / (valid_count as f64)) - (mean * mean);
+
+                    if variance > 1e-14 {
+                        result[i] = variance.sqrt();
+                    } else {
+                        result[i] = 0.0;
+                    }
+                }
             }
 
             Column::F64(result)
