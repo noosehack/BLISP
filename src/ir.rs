@@ -121,6 +121,8 @@ pub enum Operation {
     Binary(BinaryOp),
     /// Join two frames
     Join(JoinOp),
+    /// Schema-transforming operation (I1+I3 preserved, I2 rebuilt)
+    Schema(SchemaOp),
 }
 
 /// Data source operations
@@ -297,6 +299,29 @@ pub enum JoinOp {
     },
 }
 
+/// Schema-transforming operations (I2_schema invariant)
+///
+/// Contract:
+/// - I1 preserved: index Arc ptr_eq
+/// - I2_schema: colnames Arc REBUILT (not preserved, but deterministic)
+/// - I3 preserved: nrows unchanged
+#[derive(Debug, Clone)]
+pub enum SchemaOp {
+    /// Pairwise spreads: column differences
+    ///
+    /// Semantics: xminus(data, half)
+    /// - half=false: All pairs (nc*(nc-1) columns) - A-B, B-A, C-A, C-B, B-C, A-C
+    /// - half=true: Upper triangle only (nc*(nc-1)/2 columns) - A-B, A-C, B-C
+    /// - Column naming: "colA\colB" (backslash separator)
+    /// - NA policy: if either input NA, output NA
+    /// - Output ncols: depends on half mode
+    /// - Output colnames: newly generated Arc (deterministic order)
+    Xminus {
+        input: NodeId,
+        half: bool,  // false = all pairs, true = upper triangle only
+    },
+}
+
 impl Plan {
     /// Validate the plan against contracts.md
     ///
@@ -399,6 +424,18 @@ impl Plan {
                 }
                 Operation::Source(_) => {
                     // Sources have no inputs to validate
+                }
+                Operation::Schema(SchemaOp::Xminus { input, .. }) => {
+                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+
+                    // Verify I1 + I3 preserved (I2_schema allows colname rebuild)
+                    if node.schema.index_type != input_node.schema.index_type {
+                        return Err("Schema op must preserve index type (I1)".to_string());
+                    }
+                    if node.schema.nrows != input_node.schema.nrows {
+                        return Err("Schema op must preserve nrows (I3)".to_string());
+                    }
+                    // Note: colnames (I2) are intentionally rebuilt for schema ops
                 }
             }
         }

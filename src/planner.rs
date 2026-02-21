@@ -9,7 +9,7 @@
 ///
 /// The planner does NOT execute - it only builds the IR DAG and validates it.
 
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaInfo};
+use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaInfo, SchemaOp};
 use crate::normalize::CanonExpr;
 use crate::ast::{Expr, Interner, SymbolId};
 use std::collections::HashMap;
@@ -392,6 +392,33 @@ fn plan_expr(
                     // Join operations
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),
                     "asofr" => plan_join(JoinKind::AsofR, &elements[1..], plan, ctx, interner),
+
+                    // Schema-transforming operations
+                    "xminus" => {
+                        if elements.len() != 3 {
+                            return Err("xminus expects 2 arguments: (xminus data half)".to_string());
+                        }
+
+                        // Parse half as boolean (0/false or 1/true)
+                        let half = match &elements[2] {
+                            Expr::Int(0) => false,
+                            Expr::Int(1) => true,
+                            Expr::Int(i) => return Err(format!("xminus half must be 0 or 1, got {}", i)),
+                            _ => return Err("xminus half must be integer (0 or 1)".to_string()),
+                        };
+
+                        // Plan input
+                        let input = plan_expr(&elements[1], plan, ctx, interner)?;
+
+                        // Create xminus node
+                        let node_id = NodeId(plan.nodes.len());
+                        let node = Node {
+                            id: node_id,
+                            op: Operation::Schema(SchemaOp::Xminus { input, half }),
+                            schema: SchemaInfo::unknown(),  // Schema will be rebuilt at runtime
+                        };
+                        Ok(plan.add_node(node))
+                    }
 
                     // Let bindings: (let ((name1 expr1) (name2 expr2) ...) body)
                     "let" => {

@@ -10,8 +10,8 @@
 ///
 /// This is where Phase 2's frozen API earns its keep.
 
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc};
-use crate::frame::{Frame, map_numeric_preserve_tags, asofr};
+use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaOp};
+use crate::frame::{Frame, Tags, map_numeric_preserve_tags, asofr};
 use crate::value::Value;
 use crate::runtime::Runtime;
 use crate::io;
@@ -71,6 +71,7 @@ fn execute_node(
         Operation::Unary(unary) => execute_unary(unary, ctx),
         Operation::Binary(binary) => execute_binary(binary, ctx),
         Operation::Join(join) => execute_join(join, ctx),
+        Operation::Schema(schema) => execute_schema(schema, ctx, rt),
     }
 }
 
@@ -285,6 +286,104 @@ fn execute_join(join: &JoinOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> 
     }
 }
 
+/// Execute a schema-transforming operation
+///
+/// Contract:
+/// - I1 preserved: index Arc ptr_eq
+/// - I2_schema: colnames Arc rebuilt (deterministic)
+/// - I3 preserved: nrows unchanged
+fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Result<Arc<Frame>, String> {
+    use crate::frame::ColData;
+
+    match schema {
+        SchemaOp::Xminus { input, half } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            // Validate: need at least 2 columns
+            let ncols = input_frame.cols.len();
+            if ncols < 2 {
+                return Err(format!("xminus requires at least 2 columns (have {})", ncols));
+            }
+
+            // Extract raw columns from ColData
+            let input_cols: Vec<&blawktrust::Column> = input_frame.cols.iter()
+                .map(|cd| match cd {
+                    ColData::Mat(col_arc) => col_arc.as_ref(),
+                })
+                .collect();
+
+            // Generate output columns and column names
+            let mut output_cols = Vec::new();
+            let mut output_colnames: Vec<String> = Vec::new();
+
+            if *half {
+                // Half mode: upper triangle only (j < r)
+                // Creates nc*(nc-1)/2 columns
+                for j in 0..ncols {
+                    for r in (j+1)..ncols {
+                        let col_j = input_cols[j];
+                        let col_r = input_cols[r];
+
+                        // Compute j - r
+                        let spread_col = xminus_columns(col_j, col_r);
+                        output_cols.push(Arc::new(spread_col));
+
+                        // Generate column name: "colJ\colR"
+                        let name_j = &input_frame.tags.colnames[j];
+                        let name_r = &input_frame.tags.colnames[r];
+                        let new_name = format!("{}\\{}", name_j, name_r);
+                        output_colnames.push(new_name);
+                    }
+                }
+            } else {
+                // Full mode: all pairs (j != r)
+                // Creates nc*(nc-1) columns
+                for j in 0..ncols {
+                    for r in 0..ncols {
+                        if j != r {
+                            let col_j = input_cols[j];
+                            let col_r = input_cols[r];
+
+                            // Compute j - r
+                            let spread_col = xminus_columns(col_j, col_r);
+                            output_cols.push(Arc::new(spread_col));
+
+                            // Generate column name: "colJ\colR"
+                            let name_j = &input_frame.tags.colnames[j];
+                            let name_r = &input_frame.tags.colnames[r];
+                            let new_name = format!("{}\\{}", name_j, name_r);
+                            output_colnames.push(new_name);
+                        }
+                    }
+                }
+            }
+
+            // Create new Tags with rebuilt colnames (I2_schema)
+            let new_tags = Tags {
+                index_name: input_frame.tags.index_name.clone(),  // Preserve index name
+                index: Arc::clone(&input_frame.tags.index),        // I1: preserved
+                colnames: Arc::new(output_colnames),                // I2_schema: rebuilt
+            };
+
+            // Build output frame using Frame::new
+            let result = Frame::new(new_tags, output_cols);
+
+            // Verify schema contracts
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "I1 violation: index Arc not preserved in xminus"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "I3 violation: nrows not preserved in xminus"
+            );
+
+            Ok(Arc::new(result))
+        }
+    }
+}
+
 // ============================================================================
 // Kernel functions (will eventually come from blawktrust)
 // ============================================================================
@@ -445,6 +544,35 @@ fn cumsum_column(col: &Column) -> Column {
             Column::F64(result)
         }
         _ => col.clone(),
+    }
+}
+
+/// Pairwise spread: col_a - col_b
+///
+/// Contract:
+/// - Element-wise subtraction
+/// - NA policy: if either input NA, output NA
+/// - O(n) single pass
+fn xminus_columns(col_a: &Column, col_b: &Column) -> Column {
+    match (col_a, col_b) {
+        (Column::F64(data_a), Column::F64(data_b)) => {
+            if data_a.len() != data_b.len() {
+                panic!("xminus: column length mismatch");
+            }
+
+            let result = data_a.iter().zip(data_b.iter())
+                .map(|(&a, &b)| {
+                    if a.is_nan() || b.is_nan() {
+                        f64::NAN
+                    } else {
+                        a - b
+                    }
+                })
+                .collect();
+
+            Column::F64(result)
+        }
+        _ => col_a.clone(),
     }
 }
 
