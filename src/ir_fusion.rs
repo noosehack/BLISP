@@ -176,7 +176,8 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
 
         // Rolling - NOT fusible (already O(n), complex state)
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
-        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } => false,
+        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
+        NumericFunc::RollMeanPartialExclCurrent { .. } | NumericFunc::RollStdPartialExclCurrent { .. } => false,
     }
 }
 
@@ -375,7 +376,8 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
         NumericFunc::Locf | NumericFunc::W5 | NumericFunc::CumSum |
         NumericFunc::Shift { .. } |
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
-        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } => {
+        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
+        NumericFunc::RollMeanPartialExclCurrent { .. } | NumericFunc::RollStdPartialExclCurrent { .. } => {
             panic!("Attempted to fuse non-fusible operation: {:?}", func)
         }
     }

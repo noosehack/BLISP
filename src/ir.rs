@@ -273,6 +273,19 @@ pub enum NumericFunc {
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
     RollStdPartial { w: usize },
+    /// Rolling mean (partial window) excluding current observation - for ft-zscore
+    ///
+    /// Contract:
+    /// - Window ending at i-1: [i-w .. i-1] inclusive, excluding current row i
+    /// - At row i, uses stats from w eligible observations ending at or before i-1
+    /// - Skip masked and NA observations when counting back
+    /// - Require ≥2 valid values in window
+    /// - Used by ft-zscore to avoid lookahead: zscore[i] uses stats from i-1 and earlier
+    RollMeanPartialExclCurrent { w: usize },
+    /// Rolling std (partial window) excluding current observation - for ft-zscore
+    ///
+    /// Same contract as RollMeanPartialExclCurrent but for standard deviation
+    RollStdPartialExclCurrent { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)

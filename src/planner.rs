@@ -445,7 +445,8 @@ fn plan_expr(
                     }
 
                     // Feature zscore: (ft-zscore w x) → (/ (- x (ft-mean w x)) (ft-std w x))
-                    // No self-reference: compares x[i] to yesterday's distribution
+                    // No self-reference: compares x[i] to distribution from i-1 and earlier (no lookahead)
+                    // Uses RollMeanPartialExclCurrent / RollStdPartialExclCurrent (window ending at i-1)
                     "ft-zscore" => {
                         if elements.len() != 3 {
                             return Err("ft-zscore expects 2 arguments: (ft-zscore w x)".to_string());
@@ -462,35 +463,11 @@ fn plan_expr(
                         // Plan input x
                         let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
 
-                        // Plan (ft-mean w x) = shift(1, rolling-mean(w, x))
-                        // Use RollMeanPartial for masked calendar compatibility (w5)
-                        let mean_rolling_node = plan_unary(NumericFunc::RollMeanPartial { w }, &[elements[2].clone()], plan, ctx, interner)?;
-                        let mean_node_id = NodeId(plan.nodes.len());
-                        let mean_schema = plan.get_node(mean_rolling_node).ok_or("Invalid mean node")?.schema.clone();
-                        let ft_mean_node = Node {
-                            id: mean_node_id,
-                            op: Operation::Unary(UnaryOp::MapNumeric {
-                                input: mean_rolling_node,
-                                func: NumericFunc::Shift { k: 1 },
-                            }),
-                            schema: mean_schema,
-                        };
-                        let ft_mean_node_id = plan.add_node(ft_mean_node);
+                        // Plan ft-mean: rolling mean excluding current observation (window ending at i-1)
+                        let ft_mean_node_id = plan_unary(NumericFunc::RollMeanPartialExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
-                        // Plan (ft-std w x) = shift(1, rolling-std(w, x))
-                        // Use RollStdPartial for masked calendar compatibility (w5)
-                        let std_rolling_node = plan_unary(NumericFunc::RollStdPartial { w }, &[elements[2].clone()], plan, ctx, interner)?;
-                        let std_node_id = NodeId(plan.nodes.len());
-                        let std_schema = plan.get_node(std_rolling_node).ok_or("Invalid std node")?.schema.clone();
-                        let ft_std_node = Node {
-                            id: std_node_id,
-                            op: Operation::Unary(UnaryOp::MapNumeric {
-                                input: std_rolling_node,
-                                func: NumericFunc::Shift { k: 1 },
-                            }),
-                            schema: std_schema,
-                        };
-                        let ft_std_node_id = plan.add_node(ft_std_node);
+                        // Plan ft-std: rolling std excluding current observation (window ending at i-1)
+                        let ft_std_node_id = plan_unary(NumericFunc::RollStdPartialExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
                         // Plan (- x ft-mean)
                         let sub_node_id = NodeId(plan.nodes.len());
