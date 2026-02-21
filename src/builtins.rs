@@ -14,7 +14,7 @@ use blawktrust::builtins::ops::{dlog_column, wstd, wstd0, wzscore};
 // Import orientation support
 use blawktrust::lookup_ori;
 
-/// Convert Table to TableView automatically
+/// Convert Table/Frame to TableView automatically
 fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView>, String> {
     match v {
         Value::TableView(tv) => Ok(tv.view_arc()),
@@ -28,7 +28,29 @@ fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView
             let bt = blawktrust::Table::new(names, columns);
             Ok(Arc::new(blawktrust::TableView::new(bt)))
         }
-        _ => Err(format!("Expected table, got {}", v.type_name())),
+        Value::Frame(f) => {
+            // Convert BLADE Frame to blawktrust::TableView
+            use crate::frame::ColData;
+
+            let mut names = Vec::new();
+            let mut columns = Vec::new();
+
+            // Extract column names from Tags
+            for colname in f.tags.colnames.iter() {
+                names.push(colname.clone());
+            }
+
+            // Extract columns from ColData (deref Arc to get Column)
+            for col_data in &f.cols {
+                match col_data {
+                    ColData::Mat(col_arc) => columns.push((**col_arc).clone()),
+                }
+            }
+
+            let bt = blawktrust::Table::new(names, columns);
+            Ok(Arc::new(blawktrust::TableView::new(bt)))
+        }
+        _ => Err(format!("Expected table/frame, got {}", v.type_name())),
     }
 }
 
