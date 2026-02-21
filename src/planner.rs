@@ -128,6 +128,7 @@ fn plan_expr(
                     "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
                     "locf" | "w5" => plan_unary(NumericFunc::Locf, &elements[1..], plan, ctx, interner),
+                    "cs1" => plan_unary(NumericFunc::CumSum, &elements[1..], plan, ctx, interner),
 
                     // Shift operation: (shift k x) where k is non-negative integer
                     "shift" => {

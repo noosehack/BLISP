@@ -165,6 +165,9 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
         // Locf - NOT fusible (stateful, maintains last_valid)
         NumericFunc::Locf => false,
 
+        // CumSum - NOT fusible (stateful, maintains running sum)
+        NumericFunc::CumSum => false,
+
         // Shift - NOT fusible (stateful)
         NumericFunc::Shift { .. } => false,
 
@@ -365,7 +368,7 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
 
         // These should not be fused (filtered by is_fusible_unary)
         NumericFunc::Dlog | NumericFunc::Ret |
-        NumericFunc::Locf |
+        NumericFunc::Locf | NumericFunc::CumSum |
         NumericFunc::Shift { .. } |
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } => {
             panic!("Attempted to fuse non-fusible operation: {:?}", func)

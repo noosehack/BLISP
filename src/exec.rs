@@ -138,6 +138,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Abs => abs_column(col),
                     NumericFunc::Inv => inv_column(col),
                     NumericFunc::Locf => locf_column(col),
+                    NumericFunc::CumSum => cumsum_column(col),
                     NumericFunc::Shift { k } => shift_column(col, *k),
                     NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
                     NumericFunc::RollStd { w } => rolling_std_column(col, *w),
@@ -412,6 +413,33 @@ fn locf_column(col: &Column) -> Column {
                     result.push(x);
                     last_valid = Some(x);
                 }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Cumulative sum starting at 1.0 (cs1)
+///
+/// Contract:
+/// - Starts at 1.0 (not 0.0!)
+/// - NA policy: "skip" - NA treated as +0 (no update)
+/// - NA ELIMINATION: output never NA (always outputs running sum)
+/// - O(n) single pass
+fn cumsum_column(col: &Column) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut cumsum = 1.0;
+
+            for &x in data.iter() {
+                if !x.is_nan() {
+                    cumsum += x;
+                }
+                // Always output cumsum (never NA, even if input is NA)
+                result.push(cumsum);
             }
 
             Column::F64(result)

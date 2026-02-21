@@ -181,6 +181,18 @@ pub enum NumericFunc {
     /// - NA mask: can only shrink after first valid (fills existing NAs)
     /// - Different from most ops: REDUCES NAs, doesn't grow them
     Locf,
+    /// Cumulative sum starting at 1.0
+    ///
+    /// Contract:
+    /// - Starts at 1.0 (not 0.0!)
+    /// - cs1[0] = 1.0 + (x[0] if valid else 0)
+    /// - cs1[i] = cs1[i-1] + (x[i] if valid else 0)
+    /// - NA policy: "skip" - NA treated as +0 (no update to running sum)
+    /// - NA ELIMINATION: output is NEVER NA (always outputs current cumsum)
+    /// - Shape preserved (I1-I3)
+    /// - Used for index reconstruction from differences
+    /// - NOT idempotent (cs1(cs1(x)) != cs1(x))
+    CumSum,
     /// Shift (lag): shift k rows down
     ///
     /// Contract:
