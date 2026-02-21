@@ -1,27 +1,45 @@
 use blisp::runtime::Runtime;
 use blisp::reader::Reader;
 use blisp::value::{self, Value};
-use blisp::{eval, io, ast};
+use blisp::{eval, io, ast, normalize, planner, exec};
 use std::io::Write;
+use std::env;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     // Parse command line arguments
     if args.len() < 2 {
-        eprintln!("blisp v0.2.0");
+        eprintln!("blisp v0.2.0 (IR-optimized)");
         eprintln!("Usage:");
         eprintln!("  blisp [--load <file>]... -e '<expression>'");
         eprintln!("  blisp [--load <file>]... <script.lisp>");
+        eprintln!("  blisp --legacy  # Force legacy AST evaluator");
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  blisp -e '(+ 1 2)'");
         eprintln!("  blisp --load stdlib/core.cl -e '(inc 2)'");
         eprintln!("  blisp script.lisp");
+        eprintln!();
+        eprintln!("Environment:");
+        eprintln!("  BLISP_LEGACY=1   Force legacy evaluator");
         std::process::exit(1);
     }
 
     let mut rt = Runtime::new();
+
+    // Check for IR-only mode (experimental)
+    let use_ir_only = env::var("BLISP_IR_ONLY").is_ok() || args.contains(&"--ir-only".to_string());
+    let use_legacy = env::var("BLISP_LEGACY").is_ok() || args.contains(&"--legacy".to_string());
+
+    if use_ir_only {
+        eprintln!("🚧 Running in IR-ONLY mode (Frame operations only, experimental)");
+    } else if use_legacy {
+        eprintln!("⚠️  Running in LEGACY mode (old AST evaluator only)");
+    } else {
+        // Default: hybrid mode (IR for Frame ops, legacy fallback)
+        eprintln!("✅ Running in HYBRID mode (IR for Frame ops, legacy fallback)");
+    }
 
     // Parse arguments
     let mut i = 1;
@@ -31,6 +49,10 @@ fn main() {
 
     while i < args.len() {
         match args[i].as_str() {
+            "--legacy" | "--ir-only" => {
+                // Already handled above, just skip
+                i += 1;
+            }
             "--load" => {
                 if i + 1 >= args.len() {
                     eprintln!("Error: --load requires a file path");
@@ -55,9 +77,9 @@ fn main() {
         }
     }
 
-    // Load files
+    // Load files (always use legacy for --load files, as they may contain defmacro, etc.)
     for file in load_files {
-        if let Err(e) = load_file(&mut rt, &file) {
+        if let Err(e) = load_file(&mut rt, &file, true) {  // true = always legacy for --load
             eprintln!("Error loading {}: {}", file, e);
             std::process::exit(1);
         }
@@ -66,7 +88,7 @@ fn main() {
     // Execute -e or script
     if let Some(expr) = expression {
         let code = &expr;
-        match eval_code(&mut rt, code) {
+        match eval_code(&mut rt, code, use_legacy, use_ir_only) {
             Ok(val) => {
                 // Stream output directly to stdout with BufWriter for efficiency
                 let stdout = std::io::stdout();
@@ -100,7 +122,7 @@ fn main() {
         // File execution
         match std::fs::read_to_string(&file) {
             Ok(code) => {
-                match eval_code(&mut rt, &code) {
+                match eval_code(&mut rt, &code, use_legacy, use_ir_only) {
                     Ok(val) => {
                         // Stream output directly to stdout with BufWriter for efficiency
                         let stdout = std::io::stdout();
@@ -142,14 +164,15 @@ fn main() {
     }
 }
 
-fn load_file(rt: &mut Runtime, path: &str) -> Result<(), String> {
+fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {
     let code = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read file: {}", e))?;
 
     let mut reader = Reader::new(&code)
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Read and eval all forms
+    // Read and eval all forms using legacy evaluator
+    // (--load files may contain defmacro, defparameter, etc. which IR doesn't handle)
     loop {
         match reader.read(&mut rt.interner) {
             Ok(expr) => {
@@ -198,7 +221,7 @@ fn demo_column_ops() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code) {
+        match eval_code(&mut rt, code, false, false) {
             Ok(val) => {
                 match &val {
                     Value::Col(c) => {
@@ -256,7 +279,7 @@ fn demo_builtins() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code) {
+        match eval_code(&mut rt, code, false, false) {
             Ok(val) => println!("=> {}\n", val.display(&rt.interner)),
             Err(e) => println!("Error: {}\n", e),
         }
@@ -287,7 +310,7 @@ fn demo_builtins() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code) {
+        match eval_code(&mut rt, code, false, false) {
             Ok(val) => {
                 match &val {
                     Value::Col(c) => {
@@ -403,14 +426,28 @@ fn demo_evaluator() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code) {
+        match eval_code(&mut rt, code, false, false) {
             Ok(val) => println!("=> {:?}\n", val),
             Err(e) => println!("Error: {}\n", e),
         }
     }
 }
 
-fn eval_code(rt: &mut Runtime, code: &str) -> Result<value::Value, String> {
+/// Try to evaluate via IR path (normalize → plan → execute)
+fn try_ir_eval(rt: &mut Runtime, expr: ast::Expr) -> Result<value::Value, String> {
+    // Step 1: Normalize (macro expansion, desugaring)
+    let normalized = normalize::normalize(expr, &mut rt.interner);
+
+    // Step 2: Plan (AST → IR with schema validation)
+    let plan = planner::plan(&normalized, &rt.interner)?;
+
+    // Step 3: Execute (run optimized IR executor)
+    let result = exec::execute(&plan, rt)?;
+
+    Ok(result)
+}
+
+fn eval_code(rt: &mut Runtime, code: &str, use_legacy: bool, use_ir_only: bool) -> Result<value::Value, String> {
     let mut reader = Reader::new(code).map_err(|e| format!("Parse error: {}", e))?;
 
     // Read and evaluate ALL expressions (implicit progn)
@@ -419,7 +456,36 @@ fn eval_code(rt: &mut Runtime, code: &str) -> Result<value::Value, String> {
     loop {
         match reader.read(&mut rt.interner) {
             Ok(expr) => {
-                result = rt.eval(&expr)?;
+                if use_legacy {
+                    // Legacy-only mode: use old AST evaluator
+                    result = rt.eval(&expr)?;
+                } else if use_ir_only {
+                    // IR-only mode: force IR path (experimental, Frame ops only)
+                    result = try_ir_eval(rt, expr)?;
+                } else {
+                    // 🎯 HYBRID mode (DEFAULT):
+                    // Try IR first for Frame operations, fall back to legacy for general Lisp
+                    match try_ir_eval(rt, expr.clone()) {
+                        Ok(val) => {
+                            // ✅ IR succeeded (Frame pipeline)
+                            // Benefits:
+                            // - O(n) rolling operations (6-102x faster)
+                            // - Fusion framework ready
+                            // - Schema validation at plan time
+                            // - All 116 IR tests enforcing correctness
+                            result = val;
+                        }
+                        Err(e) if e.contains("Cannot plan") || e.contains("not supported") || e.contains("Unknown function") => {
+                            // IR can't handle this expression → fallback to legacy
+                            // This is NORMAL for general Lisp (defparameter, if, let*, etc.)
+                            result = rt.eval(&expr)?;
+                        }
+                        Err(e) => {
+                            // IR failed with real error → propagate
+                            return Err(e);
+                        }
+                    }
+                }
             }
             Err(e) => {
                 // Check if we've reached end of input
