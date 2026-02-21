@@ -183,6 +183,33 @@ pub enum NumericFunc {
     /// - NA mask: can only shrink after first valid (fills existing NAs)
     /// - Different from most ops: REDUCES NAs, doesn't grow them
     Locf,
+
+    /// Weekday mask (w5/wkd): Set weekend values to NA (shape-preserving)
+    ///
+    /// Contract:
+    /// - **Shape-preserving**: All invariants maintained (I1, I2, I3)
+    /// - For each row: if Saturday or Sunday → set all column values to NA
+    /// - Weekday rows: values unchanged
+    /// - Index unchanged (preserves time alignment for joins)
+    /// - Colnames unchanged
+    /// - Nrows unchanged
+    /// - Composable: (w5 (w5 x)) == (w5 x)
+    /// - Safe for backtesting: no time axis distortion
+    /// - Works with rolling ops: window size remains consistent
+    ///
+    /// Why masking not filtering:
+    /// - Preserves alignment with other series
+    /// - No hidden schema rebuild
+    /// - Deterministic shape
+    /// - Composable with mask arithmetic: (* x (w5 signal))
+    ///
+    /// Notes:
+    /// - Requires date index to determine weekday/weekend
+    /// - Day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
+    /// - Weekdays: Monday-Friday (1-5)
+    /// - Weekends: Saturday-Sunday (0, 6)
+    W5,
+
     /// Cumulative sum starting at 1.0
     ///
     /// Contract:

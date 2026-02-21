@@ -11,7 +11,7 @@
 /// This is where Phase 2's frozen API earns its keep.
 
 use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaOp};
-use crate::frame::{Frame, Tags, map_numeric_preserve_tags, asofr};
+use crate::frame::{Frame, Tags, ColData, map_numeric_preserve_tags, asofr};
 use crate::value::Value;
 use crate::runtime::Runtime;
 use crate::io;
@@ -128,6 +128,11 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             let input_frame = ctx.load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
+            // Special handling for W5: requires index access for weekday determination
+            if matches!(func, NumericFunc::W5) {
+                return w5_mask_weekends(&input_frame);
+            }
+
             // Execute using ONLY the frozen primitive
             let result = map_numeric_preserve_tags(&input_frame, |col| {
                 match func {
@@ -143,6 +148,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Shift { k } => shift_column(col, *k),
                     NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
                     NumericFunc::RollStd { w } => rolling_std_column(col, *w),
+                    NumericFunc::W5 => unreachable!("W5 handled above"),
                 }
             });
 
@@ -545,6 +551,83 @@ fn cumsum_column(col: &Column) -> Column {
         }
         _ => col.clone(),
     }
+}
+
+/// Weekday mask (w5): Set weekend values to NA
+///
+/// Contract:
+/// - Shape-preserving: I1, I2, I3 all maintained
+/// - For each row: if Saturday (6) or Sunday (0) → set all column values to NA
+/// - Weekday rows (Monday-Friday, 1-5): values unchanged
+/// - Requires Date or Timestamp index
+/// - O(n) single pass per column
+fn w5_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
+    use crate::frame::IndexColumn;
+
+    // Determine which rows are weekends
+    let weekend_mask: Vec<bool> = match &*frame.tags.index {
+        IndexColumn::Date(dates) => {
+            dates.iter().map(|&date| {
+                // Parse date to get day of week
+                // Date is stored as i32: days since Unix epoch (1970-01-01)
+                // Use chrono-like calculation to determine day of week
+
+                // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
+                // day_of_week = (4 + days_since_epoch) % 7
+                // 0=Sunday, 1=Monday, ..., 6=Saturday
+                let day_of_week = (4 + date).rem_euclid(7);
+
+                // Weekend: Sunday (0) or Saturday (6)
+                day_of_week == 0 || day_of_week == 6
+            }).collect()
+        }
+        IndexColumn::Timestamp(timestamps) => {
+            timestamps.iter().map(|&ts| {
+                // Timestamp is i64 milliseconds since Unix epoch
+                // Convert to days and use same logic
+                let days = (ts / 86400000) as i32;  // 86400000 ms per day
+                let day_of_week = (4 + days).rem_euclid(7);
+                day_of_week == 0 || day_of_week == 6
+            }).collect()
+        }
+        IndexColumn::String(_) => {
+            return Err("w5 requires Date or Timestamp index, got String".to_string());
+        }
+    };
+
+    // Apply weekend mask to all columns
+    let masked_cols: Vec<ColData> = frame.cols.iter().map(|col_data| {
+        match col_data {
+            ColData::Mat(col_arc) => {
+                match &**col_arc {
+                    Column::F64(data) => {
+                        let masked_data: Vec<f64> = data.iter().enumerate().map(|(i, &val)| {
+                            if weekend_mask[i] {
+                                f64::NAN  // Weekend: mask to NA
+                            } else {
+                                val  // Weekday: unchanged
+                            }
+                        }).collect();
+                        ColData::Mat(Arc::new(Column::F64(masked_data)))
+                    }
+                    other => ColData::Mat(Arc::new(other.clone()))
+                }
+            }
+        }
+    }).collect();
+
+    // Build result frame with preserved tags (I1, I2, I3)
+    let result = Frame {
+        tags: Arc::clone(&frame.tags),  // I1, I2 preserved via Arc
+        cols: masked_cols,
+        nrows: frame.nrows,  // I3: preserved
+    };
+
+    // Verify invariants
+    debug_assert_eq!(result.nrows(), frame.nrows(), "W5: I3 violation - nrows changed");
+    debug_assert_eq!(result.ncols(), frame.ncols(), "W5: column count changed");
+
+    Ok(Arc::new(result))
 }
 
 /// Pairwise spread: col_a - col_b

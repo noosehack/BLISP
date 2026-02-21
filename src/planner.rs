@@ -127,7 +127,8 @@ fn plan_expr(
                     "sqrt" => plan_unary(NumericFunc::Sqrt, &elements[1..], plan, ctx, interner),
                     "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
-                    "locf" | "w5" => plan_unary(NumericFunc::Locf, &elements[1..], plan, ctx, interner),
+                    "locf" => plan_unary(NumericFunc::Locf, &elements[1..], plan, ctx, interner),
+                    "w5" | "wkd" => plan_unary(NumericFunc::W5, &elements[1..], plan, ctx, interner),
                     "cs1" => plan_unary(NumericFunc::CumSum, &elements[1..], plan, ctx, interner),
 
                     // Shift operation: (shift k x) where k is non-negative integer
