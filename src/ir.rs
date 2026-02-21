@@ -239,6 +239,8 @@ pub enum BinaryFunc {
     Mul,
     /// Division
     Div,
+    /// Greater than: x > y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    Gt,
 }
 
 /// Join operations

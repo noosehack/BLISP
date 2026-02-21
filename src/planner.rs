@@ -376,6 +376,7 @@ fn plan_expr(
                     "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),
                     "*" => plan_binary(BinaryFunc::Mul, &elements[1..], plan, ctx, interner),
                     "/" => plan_binary(BinaryFunc::Div, &elements[1..], plan, ctx, interner),
+                    ">" => plan_binary(BinaryFunc::Gt, &elements[1..], plan, ctx, interner),
 
                     // Join operations
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),

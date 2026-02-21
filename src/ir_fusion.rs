@@ -388,6 +388,9 @@ fn apply_scalar_binary(col: &Column, func: BinaryFunc, scalar: f64) -> Column {
                                 x / scalar
                             }
                         }
+                        BinaryFunc::Gt => {
+                            if x > scalar { 1.0 } else { 0.0 }
+                        }
                     }
                 }
             }).collect();

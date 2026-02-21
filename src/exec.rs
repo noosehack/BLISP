@@ -564,6 +564,9 @@ fn binary_scalar_column(col: &Column, scalar: f64, func: BinaryFunc) -> Column {
                                 x / scalar
                             }
                         }
+                        BinaryFunc::Gt => {
+                            if x > scalar { 1.0 } else { 0.0 }
+                        }
                     }
                 }
             }).collect();
@@ -639,6 +642,9 @@ fn binary_column_column(lhs: &Column, rhs: &Column, func: BinaryFunc) -> Result<
                             } else {
                                 x / y
                             }
+                        }
+                        BinaryFunc::Gt => {
+                            if x > y { 1.0 } else { 0.0 }
                         }
                     }
                 }
