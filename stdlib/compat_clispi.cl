@@ -37,7 +37,8 @@
 (defmacro std_dev (x) `(std ,x))        ; CLISPI std_dev → BLISP std
 
 ;; --- Cumulative operations ---
-;; cs1 now points to cs1-cols at the builtin level - no macro needed
+;; cs1 - now in IR as NumericFunc::CumSum (Phase 2.2)
+;; ecs1 - implemented as macro: exp(cs1(dlog(x))) (Phase 3)
 
 ;; --- Comparison operations ---
 ;; > now points to >-cols at the builtin level - no macro needed
@@ -73,6 +74,18 @@
 
 ;; Alias for backward compat
 (defmacro ir2 (x) `(ir ,x))
+
+;; --- Unit Ratio (ur) ---
+;; Unit ratio = value / (100 * sqrt(252) * rolling_std)
+;; Used for risk-adjusted returns in GLD_NUM pipeline
+;; Note: step parameter ignored (for future keep-shape support)
+(defmacro ur (w step x)
+  `(/ ,x (* 100.0 (* 15.874507866 (rolling-std ,w ,x)))))  ; sqrt(252) ≈ 15.874507866
+
+;; --- Exponential Cumulative Sum (ecs1) ---
+;; Reconstruct price index from log returns: exp(cumsum(dlog(prices)))
+;; Inverse of dlog: if y = dlog(x), then x ≈ ecs1(y)
+(defmacro ecs1 (x) `(exp (cs1 (dlog ,x))))
 
 ;; =============================================================================
 ;; SECTION 4: ORIENTATION (NOW A BUILTIN!)
@@ -110,6 +123,7 @@
 ;;   - uc (upside capture) → needs BLISP builtin
 ;;   - whr                 → needs BLISP builtin
 ;;   - wmax, wmin, wmed    → needs BLISP builtin
+;;   - ur                  → ✅ IMPLEMENTED as macro (Phase 3)
 
 ;; MISSING - Pairwise:
 ;;   - xdiv, xplus, xmult  → needs BLISP builtin
