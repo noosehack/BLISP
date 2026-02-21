@@ -137,6 +137,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     NumericFunc::Sqrt => sqrt_column(col),
                     NumericFunc::Abs => abs_column(col),
                     NumericFunc::Inv => inv_column(col),
+                    NumericFunc::Locf => locf_column(col),
                     NumericFunc::Shift { k } => shift_column(col, *k),
                     NumericFunc::RollMean { w } => rolling_mean_column(col, *w),
                     NumericFunc::RollStd { w } => rolling_std_column(col, *w),
@@ -382,6 +383,37 @@ pub fn inv_column(col: &Column) -> Column {
                     f64::NAN
                 }
             }).collect();
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Last observation carried forward (fill NA with last valid value)
+///
+/// Contract:
+/// - Leading NAs preserved until first valid value
+/// - After first valid: NA filled with last valid value before it
+/// - Valid values pass through unchanged
+/// - Idempotent: locf(locf(x)) == locf(x)
+/// - O(n) single pass
+fn locf_column(col: &Column) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid: Option<f64> = None;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // If we have a valid value, use it; otherwise keep NA
+                    result.push(last_valid.unwrap_or(f64::NAN));
+                } else {
+                    // Valid value: pass through and remember it
+                    result.push(x);
+                    last_valid = Some(x);
+                }
+            }
+
             Column::F64(result)
         }
         _ => col.clone(),

@@ -169,6 +169,18 @@ pub enum NumericFunc {
     Abs,
     /// Inverse: 1/x
     Inv,
+    /// Last observation carried forward (fill NA with last valid)
+    ///
+    /// Contract:
+    /// - Leading NAs preserved until first valid value
+    /// - After first valid: NA[i] = last valid value before i
+    /// - Valid values pass through unchanged
+    /// - Idempotent: locf(locf(x)) == locf(x)
+    /// - Shape preserved (I1-I3)
+    /// - NA policy: "skip" (carries previous value, not "poison")
+    /// - NA mask: can only shrink after first valid (fills existing NAs)
+    /// - Different from most ops: REDUCES NAs, doesn't grow them
+    Locf,
     /// Shift (lag): shift k rows down
     ///
     /// Contract:
