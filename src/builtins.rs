@@ -129,6 +129,11 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("w5", builtin_w5);
     rt.register_builtin("mask-weekend", builtin_mask_weekend);
     rt.register_builtin("with-mask", builtin_with_mask);
+    rt.register_builtin("mask-on", builtin_with_mask);  // Alias
+    rt.register_builtin("mask-off", builtin_mask_off);
+    rt.register_builtin("mask-list", builtin_mask_list);
+    rt.register_builtin("mask-stats", builtin_mask_stats);
+    rt.register_builtin("mask-define", builtin_mask_define);
     rt.register_builtin("xminus", builtin_xminus);
     rt.register_builtin("cs1", builtin_cs1_cols);      // Surface name → table version
     rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
@@ -1062,6 +1067,176 @@ fn parse_mask_expr(val: &Value, rt: &Runtime) -> Result<crate::mask::MaskExpr, S
 
         _ => Err(format!("Invalid mask expression: expected symbol, string, or list, got {}", val.type_name())),
     }
+}
+
+/// (mask-off frame) - Clear active mask
+///
+/// Sets active_mask to empty (all unmasked).
+/// Named masks in MaskSet are preserved.
+///
+/// Returns: Frame with active_mask cleared
+pub fn builtin_mask_off(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("mask-off expects 1 argument (frame), got {}", args.len()));
+    }
+
+    let frame = args[0].as_frame()?;
+    let nrows = frame.nrows();
+
+    let new_tags = crate::frame::Tags {
+        index_name: frame.tags.index_name.clone(),
+        index: Arc::clone(&frame.tags.index),
+        colnames: Arc::clone(&frame.tags.colnames),
+        masks: frame.tags.masks.clone(),  // Preserve named masks
+        active_mask: crate::mask::ActiveMask::empty(nrows),  // Clear active mask
+    };
+
+    let new_frame = crate::frame::Frame::with_tags(
+        Arc::new(new_tags),
+        frame.cols.iter().filter_map(|cd| {
+            if let crate::frame::ColData::Mat(col) = cd {
+                Some(Arc::clone(col))
+            } else {
+                None
+            }
+        }).collect()
+    );
+
+    Ok(Value::Frame(Arc::new(new_frame)))
+}
+
+/// (mask-list frame) - List available masks with statistics
+///
+/// Returns a list of mask information: (name masked_count total_count pct_masked)
+///
+/// Output format: List of lists for simplicity
+pub fn builtin_mask_list(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("mask-list expects 1 argument (frame), got {}", args.len()));
+    }
+
+    let frame = args[0].as_frame()?;
+    let nrows = frame.nrows();
+
+    let mut result_list = Vec::new();
+
+    // List each named mask
+    for (name, mask_arc) in &frame.tags.masks.row_masks {
+        let mask = &**mask_arc;
+        let masked_count = mask.count_ones();
+        let pct_masked = if nrows > 0 {
+            (masked_count as f64 / nrows as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Create a list: (name masked_count total_count pct_masked)
+        let info = Value::List(vec![
+            Value::Str(name.clone().into()),
+            Value::Int(masked_count as i64),
+            Value::Int(nrows as i64),
+            Value::Float(pct_masked),
+        ]);
+
+        result_list.push(info);
+    }
+
+    Ok(Value::List(result_list))
+}
+
+/// (mask-stats frame expr) - Show statistics for a mask expression
+///
+/// Compiles expr and reports:
+/// - masked_count
+/// - unmasked_count
+/// - pct_masked
+///
+/// Returns: List (masked_count unmasked_count pct_masked)
+pub fn builtin_mask_stats(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("mask-stats expects 2 arguments (frame expr), got {}", args.len()));
+    }
+
+    let frame = args[0].as_frame()?;
+    let nrows = frame.nrows();
+
+    let mask_expr = parse_mask_expr(&args[1], rt)?;
+
+    // Compile expression
+    let compiled = crate::mask::compile_mask_expr(&mask_expr, &frame.tags.masks, nrows)?;
+
+    let masked_count = compiled.count_ones();
+    let unmasked_count = compiled.count_zeros();
+    let pct_masked = if nrows > 0 {
+        (masked_count as f64 / nrows as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Return list: (masked_count unmasked_count pct_masked)
+    Ok(Value::List(vec![
+        Value::Int(masked_count as i64),
+        Value::Int(unmasked_count as i64),
+        Value::Float(pct_masked),
+    ]))
+}
+
+/// (mask-define frame "name" expr) - Define a named mask from expression
+///
+/// Compiles expr into a bitvec and stores in MaskSet under "name".
+/// Does NOT activate the mask (consistent with mask-weekend).
+///
+/// Collision policy: Error if name exists with different bitset (T6).
+///
+/// Returns: Frame with named mask added
+pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("mask-define expects 3 arguments (frame name expr), got {}", args.len()));
+    }
+
+    let frame = args[0].as_frame()?;
+    let nrows = frame.nrows();
+
+    // Extract name (string or symbol)
+    let mask_name = match &args[1] {
+        Value::Sym(id) => rt.interner.resolve(*id).to_string(),
+        Value::Str(s) => s.to_string(),
+        _ => return Err(format!("mask-define expects string or symbol name, got {}", args[1].type_name())),
+    };
+
+    let mask_expr = parse_mask_expr(&args[2], rt)?;
+
+    // Compile expression
+    let compiled = crate::mask::compile_mask_expr(&mask_expr, &frame.tags.masks, nrows)?;
+
+    // Add to MaskSet
+    let mut new_masks = frame.tags.masks.clone();
+    new_masks.insert(
+        mask_name.clone(),
+        Arc::new(compiled),
+        nrows
+    ).map_err(|e| format!("mask-define: {}", e))?;
+
+    let new_tags = crate::frame::Tags {
+        index_name: frame.tags.index_name.clone(),
+        index: Arc::clone(&frame.tags.index),
+        colnames: Arc::clone(&frame.tags.colnames),
+        masks: new_masks,
+        active_mask: frame.tags.active_mask.clone(),  // Don't activate
+    };
+
+    let new_frame = crate::frame::Frame::with_tags(
+        Arc::new(new_tags),
+        frame.cols.iter().filter_map(|cd| {
+            if let crate::frame::ColData::Mat(col) = cd {
+                Some(Arc::clone(col))
+            } else {
+                None
+            }
+        }).collect()
+    );
+
+    Ok(Value::Frame(Arc::new(new_frame)))
 }
 
 /// (xminus table half) - Pairwise spreads (A - B for all pairs of numeric columns)

@@ -158,15 +158,56 @@ For `rolling-mean 3` at row 6:
 - Consistent with frame ownership model
 - If X has additional exclusions, they should be applied BEFORE the join (user's responsibility)
 
+**Clarification (Phase G)**:
+- For joins where `output.index == Y.index`, `output.active_mask == Y.active_mask`
+- X's masks are NOT OR'ed unless X is explicitly reindexed onto Y first
+- This prevents accidental mask propagation from X when it's not aligned with Y
+
 **Tripwire**: Test T5 (`t5_join_inherits_y_masks`)
+
+### 3.5 Reindex Operations (Phase G)
+
+**Rule**: When a frame is reindexed to a new index J:
+- All named row masks in `MaskSet` are reindexed onto J
+- Active mask is recomputed from expr (if present) or reindexed directly
+- New rows (in J but not in old index) default to `false` (unmasked)
+
+**Rationale**:
+- Masks are metadata about the timeline, not about values
+- Missing rows are "new structure" - shouldn't be accidentally excluded
+- Preserves mask semantics when timeline changes
+
+**Algorithm**:
+```rust
+reindex_maskset(old_masks, old_index, new_index):
+    for each named mask:
+        new_mask[i] = if new_index[i] exists in old_index:
+                         old_mask[old_position]
+                      else:
+                         false (default unmasked)
+```
+
+**Active Mask Reindex**:
+1. If `active_mask.expr.is_some()`: Recompile expr against reindexed MaskSet (preferred)
+2. If `active_mask.expr.is_none()`: Reindex compiled bitvec directly
+
+**Examples**:
+- Source index: [10, 11, 12] with mask on [11]
+- Target index: [11, 12, 13, 14]
+- Result mask: [true, false, false, false] (11 preserved, 13-14 default false)
+
+**Tripwire**: Tests in `tests/reindex_mask.rs`:
+- `reindex_preserves_named_masks_on_overlap`
+- `reindex_defaults_false_for_new_rows`
+- `reindex_preserves_active_mask_via_expr`
 
 ## 4. Mask Name Collision Policy
 
 ### 4.1 Deterministic Error on Collision
 
-**Rule**: When merging mask sets, if the same name exists in both frames with DIFFERENT bitsets, error deterministically.
+**Rule**: When adding/merging mask sets, if the same name exists with DIFFERENT bitsets, error deterministically.
 
-**Check**:
+**Check** (in both `MaskSet::insert` and `MaskSet::merge`):
 1. Arc pointer equality (`Arc::ptr_eq`)
 2. If not pointer-equal, bitwise equality (`*a == *b`)
 3. If different bitsets ⇒ error
@@ -174,6 +215,10 @@ For `rolling-mean 3` at row 6:
 **Error Message**: `"Mask '{name}' collision: different bitsets with same name"`
 
 **Rationale**: Prevents silent corruption. If two frames have "weekend" masks that differ, it's likely a bug (different date ranges, misaligned indices). Force user to resolve explicitly.
+
+**Implementation**: Applied to both:
+- `MaskSet::insert()` - for mask-define and mask-weekend (Phase H)
+- `MaskSet::merge()` - for binary frame operations (Phase D)
 
 **Tripwire**: Test T6 (`t6_mask_name_collision_deterministic`)
 
@@ -251,7 +296,7 @@ for i in 0..nrows {
 - `src/builtins.rs:994` - with-mask (activates mask) ✓
 - `src/exec.rs:382` - xminus (inherits input masks) ✓
 - `src/exec.rs:1302` - binary_frame_frame (merges + ORs) ✓
-- `src/frame.rs:271` - reindex_by (TODO: needs target frame for proper inheritance)
+- `src/frame.rs:271` - reindex_by (reindexes masks via Phase G functions) ✓
 - `src/frame.rs:408` - asofr (inherits Y masks) ✓
 - `src/frame.rs:497` - asofr_fallback (inherits Y masks) ✓
 
@@ -264,7 +309,7 @@ for i in 0..nrows {
 - Stores in `frame.tags.masks[name]`
 - Does NOT activate (orthogonal to active_mask)
 
-**with-mask**: `(with-mask frame mask-expr)`
+**with-mask**: `(with-mask frame mask-expr)` (alias: **mask-on**)
 - Activates mask expression
 - Compiles expression to BitVec
 - Sets as `frame.tags.active_mask`
@@ -273,6 +318,28 @@ for i in 0..nrows {
   - `(not expr)` → NOT
   - `(and expr ...)` → AND
   - `(or expr ...)` → OR
+
+**mask-off**: `(mask-off frame)`
+- Clears active mask (sets to all-false)
+- Preserves named masks in MaskSet
+- Returns: Frame with active_mask cleared
+
+**mask-list**: `(mask-list frame)`
+- Lists all named masks with statistics
+- Returns: List of `(name masked_count total_count pct_masked)` tuples
+- Example output: `(("weekend" 4 14 28.571))`
+
+**mask-stats**: `(mask-stats frame mask-expr)`
+- Compiles mask expression and reports statistics
+- Returns: List `(masked_count unmasked_count pct_masked)`
+- Useful for previewing mask before activating
+
+**mask-define**: `(mask-define frame "name" mask-expr)`
+- Defines a named mask from expression
+- Stores compiled bitvec in `frame.tags.masks[name]`
+- Does NOT activate (consistent with mask-weekend)
+- Collision policy (T6): Errors if name exists with different bitset
+- Returns: Frame with named mask added
 
 ### 7.2 Internal IR Operations
 
@@ -296,6 +363,25 @@ Six tripwire tests in `tests/mask_tripwires.rs`:
 4. **T4**: Binary ops OR active masks, masked rows NA
 5. **T5**: Join inherits Y masks (policy explicit)
 6. **T6**: Mask name collision deterministic
+
+### 8.2 Phase-Specific Tests
+
+**Phase G** (`tests/reindex_mask.rs`): 5 tests
+- `reindex_preserves_named_masks_on_overlap`
+- `reindex_defaults_false_for_new_rows`
+- `reindex_preserves_active_mask_via_expr`
+- `reindex_active_mask_without_expr_uses_bitvec`
+- `reindex_empty_overlap_all_new_rows`
+
+**Phase H** (`tests/mask_ux.rs`): 5 tests
+- `test_mask_list_contains_weekend`
+- `test_mask_stats_counts_match_known_calendar`
+- `test_mask_define_or_equals_weekend`
+- `test_mask_define_collision_errors_deterministically` (validates T6)
+- `test_mask_off_clears_active_mask`
+
+**Phase F** (`tests/phase_f_streaming_rolling.rs`): Performance & correctness
+- `test_masked_rows_always_na_in_streaming` (validates mask gate in O(n) path)
 
 ### 8.2 Property Tests (Future)
 
@@ -330,6 +416,7 @@ Randomly compose operations, assert:
 
 ---
 
-**Version**: 1.0 (2025-01-XX)
+**Version**: 1.1 (2025-02-21)
 **Status**: FROZEN - Do not modify without consensus
-**Tripwire Tests**: All passing ✓
+**Phases Complete**: A-H (Foundation, Propagation, Streaming, Reindex, UX)
+**Tripwire Tests**: All passing ✓ (21 mask tests total)

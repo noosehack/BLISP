@@ -266,14 +266,27 @@ pub fn reindex_by(source: &Frame, target_index: Arc<IndexColumn>) -> Frame {
         .collect();
 
     // Create new Tags with target_index and source colnames (both Arc-reused)
-    // Phase D: For reindex/join operations, inherit masks from target (since result has target's index)
-    let nrows = target_index.len();
+    // Phase G: Reindex masks from source onto target_index
+    // Policy: Named masks reindexed, new rows default to false (unmasked)
+    let reindexed_masks = crate::mask::reindex_maskset(
+        &source.tags.masks,
+        &source.tags.index,
+        &target_index
+    );
+
+    let reindexed_active_mask = crate::mask::reindex_active_mask(
+        &source.tags.active_mask,
+        &reindexed_masks,
+        &source.tags.index,
+        &target_index
+    );
+
     let out_tags = Tags {
-        index_name: source.tags.index_name.clone(), // Could be improved: take from target
+        index_name: source.tags.index_name.clone(),
         index: target_index,                         // Arc reused!
         colnames: Arc::clone(&source.tags.colnames), // Arc reused!
-        masks: crate::mask::MaskSet::new(),          // TODO: Should inherit from target frame when available
-        active_mask: crate::mask::ActiveMask::empty(nrows),  // TODO: Should inherit from target frame when available
+        masks: reindexed_masks,
+        active_mask: reindexed_active_mask,
     };
 
     Frame::new(out_tags, out_numeric)

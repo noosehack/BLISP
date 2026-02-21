@@ -36,7 +36,7 @@ impl MaskSet {
     }
 
     /// Add or update a named mask
-    /// Returns error if length doesn't match expected
+    /// Returns error if length doesn't match expected or if name collision with different bitset (T6)
     pub fn insert(&mut self, name: String, mask: Arc<BitVec>, expected_len: usize) -> Result<(), String> {
         if mask.len() != expected_len {
             return Err(format!(
@@ -46,6 +46,18 @@ impl MaskSet {
                 expected_len
             ));
         }
+
+        // Check for collision (T6): error if same name has different bitset
+        if let Some(existing_mask) = self.row_masks.get(&name) {
+            // Allow if same bits (Arc pointer equality or bitwise equality)
+            if !Arc::ptr_eq(existing_mask, &mask) && **existing_mask != *mask {
+                return Err(format!(
+                    "Mask '{}' collision: different bitsets with same name",
+                    name
+                ));
+            }
+        }
+
         self.row_masks.insert(name, mask);
         Ok(())
     }
@@ -192,6 +204,96 @@ pub fn or_active_masks(a: &ActiveMask, b: &ActiveMask) -> ActiveMask {
     };
 
     ActiveMask::from_bitvec(result, expr)
+}
+
+/// Reindex a single row mask onto a new index
+///
+/// For each position in new_index:
+/// - If the index value exists in old_index, copy the mask bit
+/// - If the index value is new (not in old_index), default to false (unmasked)
+///
+/// This preserves mask semantics when the timeline structure changes.
+pub fn reindex_row_mask(
+    old_mask: &BitVec,
+    old_index: &crate::frame::IndexColumn,
+    new_index: &crate::frame::IndexColumn,
+) -> BitVec {
+    use std::collections::HashMap;
+
+    // Build lookup: old_index value -> position
+    let mut old_map: HashMap<crate::frame::IndexKey, usize> = HashMap::new();
+    for i in 0..old_index.len() {
+        if let Some(key) = old_index.get(i) {
+            old_map.insert(key, i);
+        }
+    }
+
+    // For each new position, lookup in old and copy bit (or default false)
+    let new_nrows = new_index.len();
+    let mut new_mask = bitvec![0; new_nrows];
+
+    for new_pos in 0..new_nrows {
+        if let Some(new_key) = new_index.get(new_pos) {
+            if let Some(&old_pos) = old_map.get(&new_key) {
+                // Index value exists in both: copy mask bit
+                if old_pos < old_mask.len() {
+                    new_mask.set(new_pos, old_mask[old_pos]);
+                }
+                // else: old_pos out of bounds, default false
+            }
+            // else: new index value not in old, default false
+        }
+        // else: invalid new index value, default false
+    }
+
+    new_mask
+}
+
+/// Reindex all named masks in a MaskSet onto a new index
+///
+/// Returns a new MaskSet where each named mask has been reindexed.
+/// Rows that exist in both indices preserve their mask bit.
+/// New rows (in new_index but not old_index) default to false (unmasked).
+pub fn reindex_maskset(
+    old_masks: &MaskSet,
+    old_index: &crate::frame::IndexColumn,
+    new_index: &crate::frame::IndexColumn,
+) -> MaskSet {
+    let mut new_masks = MaskSet::new();
+
+    for (name, old_mask_arc) in &old_masks.row_masks {
+        let new_mask = reindex_row_mask(old_mask_arc, old_index, new_index);
+        // Insert should succeed (new MaskSet, no collisions)
+        new_masks.insert(name.clone(), Arc::new(new_mask), new_index.len())
+            .expect("Reindex mask insert should not fail");
+    }
+
+    new_masks
+}
+
+/// Reindex active mask onto a new index
+///
+/// If expr is present: recompile expr against reindexed MaskSet (preferred)
+/// If expr is None: reindex the compiled bitvec directly
+pub fn reindex_active_mask(
+    old_active: &ActiveMask,
+    reindexed_masks: &MaskSet,
+    old_index: &crate::frame::IndexColumn,
+    new_index: &crate::frame::IndexColumn,
+) -> ActiveMask {
+    match &old_active.expr {
+        Some(expr) => {
+            // Preferred: recompile expression against reindexed MaskSet
+            let new_compiled = compile_mask_expr(expr, reindexed_masks, new_index.len())
+                .unwrap_or_else(|_| bitvec![0; new_index.len()]);
+            ActiveMask::from_bitvec(new_compiled, Some(expr.clone()))
+        }
+        None => {
+            // Fallback: reindex compiled bitvec directly
+            let new_compiled = reindex_row_mask(&old_active.compiled, old_index, new_index);
+            ActiveMask::from_bitvec(new_compiled, None)
+        }
+    }
 }
 
 #[cfg(test)]
