@@ -247,27 +247,36 @@ fn plan_expr(
 
                     // Rolling zscore: (rolling-zscore w x) → (/ (- x (rolling-mean w x)) (rolling-std w x))
                     // Derived form: no IR primitive, rewrite into existing ops
-                    "rolling-zscore" => {
-                        if elements.len() != 3 {
-                            return Err("rolling-zscore expects 2 arguments: (rolling-zscore w x)".to_string());
+                    "rolling-zscore" | "wzs" => {
+                        // wzs is CLISPI compat: (wzs w step x) ignores step param
+                        let expected_args = if func_name == "wzs" { 4 } else { 3 };
+                        let x_index = if func_name == "wzs" { 3 } else { 2 };
+
+                        if elements.len() != expected_args {
+                            let signature = if func_name == "wzs" {
+                                "wzs expects 3 arguments: (wzs w step x)"
+                            } else {
+                                "rolling-zscore expects 2 arguments: (rolling-zscore w x)"
+                            };
+                            return Err(signature.to_string());
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-zscore w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-zscore w must be integer, not float".to_string()),
-                            _ => return Err("rolling-zscore w must be integer literal".to_string()),
+                            Expr::Int(i) => return Err(format!("{} w must be positive, got {}", func_name, i)),
+                            Expr::Float(_) => return Err(format!("{} w must be integer, not float", func_name)),
+                            _ => return Err(format!("{} w must be integer literal", func_name)),
                         };
 
                         // Plan input x
-                        let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
+                        let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
 
                         // Plan (rolling-mean w x)
-                        let mean_node = plan_unary(NumericFunc::RollMean { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let mean_node = plan_unary(NumericFunc::RollMean { w }, &[elements[x_index].clone()], plan, ctx, interner)?;
 
                         // Plan (rolling-std w x)
-                        let std_node = plan_unary(NumericFunc::RollStd { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let std_node = plan_unary(NumericFunc::RollStd { w }, &[elements[x_index].clone()], plan, ctx, interner)?;
 
                         // Plan (- x mean)
                         let sub_node_id = NodeId(plan.nodes.len());
