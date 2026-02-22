@@ -166,6 +166,23 @@ fn plan_expr(
                         plan_unary(NumericFunc::ShiftObs { k }, &elements[2..], plan, ctx, interner)
                     }
 
+                    // Keep every k-th row: (keep k x) where k is positive integer
+                    "keep" => {
+                        if elements.len() != 3 {
+                            return Err("keep expects 2 arguments: (keep k x)".to_string());
+                        }
+
+                        // Parse k as positive integer
+                        let k = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("keep k must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("keep k must be integer, not float".to_string()),
+                            _ => return Err("keep k must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::Keep { k }, &elements[2..], plan, ctx, interner)
+                    }
+
                     // Rolling mean: (rolling-mean w x) where w is positive integer
                     "rolling-mean" => {
                         if elements.len() != 3 {

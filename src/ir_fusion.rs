@@ -177,6 +177,9 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
         // Shift-obs - NOT fusible (stateful, requires mask access)
         NumericFunc::ShiftObs { .. } => false,
 
+        // Keep - NOT fusible (row-dependent operation)
+        NumericFunc::Keep { .. } => false,
+
         // Rolling - NOT fusible (already O(n), complex state)
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
         NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
@@ -377,7 +380,7 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
         // These should not be fused (filtered by is_fusible_unary)
         NumericFunc::Dlog | NumericFunc::Ret |
         NumericFunc::Locf | NumericFunc::W5 | NumericFunc::CumSum |
-        NumericFunc::Shift { .. } | NumericFunc::ShiftObs { .. } |
+        NumericFunc::Shift { .. } | NumericFunc::ShiftObs { .. } | NumericFunc::Keep { .. } |
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
         NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
         NumericFunc::RollMeanPartialExclCurrent { .. } | NumericFunc::RollStdPartialExclCurrent { .. } => {

@@ -164,6 +164,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                             NumericFunc::Locf => locf_column(col),
                             NumericFunc::CumSum => cumsum_column(col),
                             NumericFunc::Shift { k } => shift_column(col, *k),
+                            NumericFunc::Keep { k } => keep_column(col, *k),
                             NumericFunc::W5 => unreachable!("W5 handled above"),
                             NumericFunc::ShiftObs { .. } => unreachable!("ShiftObs handled separately"),
                             _ => unreachable!("Rolling ops handled separately"),
@@ -1360,6 +1361,30 @@ fn shift_column(col: &Column, k: usize) -> Column {
             }
             // If k >= nrows, all rows are NA (already initialized)
 
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Keep every k-th row (shape-preserving)
+///
+/// Contract:
+/// - Keeps rows where row_index % k == 0
+/// - Other rows filled with NA
+/// - Shape preserved (nrows unchanged)
+fn keep_column(col: &Column, k: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let result: Vec<f64> = data.iter().enumerate()
+                .map(|(i, &val)| {
+                    if i % k == 0 {
+                        val
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),

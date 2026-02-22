@@ -236,6 +236,15 @@ pub enum NumericFunc {
     /// Skips masked rows only (not NA values)
     /// For matching CLISPI's w5-filtered behavior
     ShiftObs { k: usize },
+    /// Keep every k-th row (shape-preserving)
+    ///
+    /// Contract:
+    /// - Keeps rows where row_index % k == 0
+    /// - Other rows filled with NA
+    /// - Shape preserved (I1-I3): nrows unchanged
+    /// - Used for downsampling while maintaining alignment
+    /// - Example: k=5 keeps rows 0, 5, 10, 15, ...
+    Keep { k: usize },
     /// Rolling mean: trailing window mean
     ///
     /// Contract (see contracts.md §5):
