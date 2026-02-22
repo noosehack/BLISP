@@ -232,6 +232,10 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone (only grows)
     Shift { k: usize },
+    /// Mask-aware shift: lag by k eligible (unmasked) observations
+    /// Skips masked rows only (not NA values)
+    /// For matching CLISPI's w5-filtered behavior
+    ShiftObs { k: usize },
     /// Rolling mean: trailing window mean
     ///
     /// Contract (see contracts.md §5):

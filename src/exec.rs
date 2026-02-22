@@ -134,7 +134,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                 return w5_mask_weekends(&input_frame);
             }
 
-            // Phase E: Special handling for rolling operations (mask-aware)
+            // Phase E: Special handling for rolling operations and mask-aware shift (need active_mask)
             let result = match func {
                 NumericFunc::RollMean { w } |
                 NumericFunc::RollStd { w } |
@@ -145,8 +145,13 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                     // Rolling operations need access to active_mask to count only eligible observations
                     apply_rolling_mask_aware(&input_frame, *func)?
                 }
+                NumericFunc::ShiftObs { k } => {
+                    // Mask-aware shift: skip masked rows when computing lag
+                    // This matches CLISPI's "business day lag" when weekends are masked
+                    apply_shift_obs_mask_aware(&input_frame, *k)?
+                }
                 _ => {
-                    // Non-rolling operations: use standard map_numeric_preserve_tags
+                    // Non-rolling, non-mask-aware operations: use standard map_numeric_preserve_tags
                     map_numeric_preserve_tags(&input_frame, |col| {
                         match func {
                             NumericFunc::Dlog => dlog_column(col, 1),
@@ -160,6 +165,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                             NumericFunc::CumSum => cumsum_column(col),
                             NumericFunc::Shift { k } => shift_column(col, *k),
                             NumericFunc::W5 => unreachable!("W5 handled above"),
+                            NumericFunc::ShiftObs { .. } => unreachable!("ShiftObs handled separately"),
                             _ => unreachable!("Rolling ops handled separately"),
                         }
                     })
@@ -627,6 +633,35 @@ fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, S
                     NumericFunc::RollStdPartialExclCurrent { w } => rolling_std_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
                     _ => unreachable!("Non-rolling op passed to apply_rolling_mask_aware"),
                 };
+                ColData::Mat(Arc::new(result_col))
+            }
+        })
+        .collect();
+
+    Ok(Frame {
+        tags: Arc::clone(&frame.tags),  // Preserve tags (I1-I3)
+        cols: cols_out,
+        nrows: frame.nrows,
+    })
+}
+
+/// Apply mask-aware shift (observation-based lag)
+///
+/// Contract:
+/// - Skips masked rows when computing lag (business-day lag when weekend mask active)
+/// - For each unmasked row i, shift_obs(k)[i] = source at k-th unmasked row before i
+/// - Masked rows output NA
+/// - If fewer than k unmasked rows before position i → NA
+/// - Shape preserved (I1-I3)
+fn apply_shift_obs_mask_aware(frame: &Frame, k: usize) -> Result<Frame, String> {
+    let active_mask = &frame.tags.active_mask;
+    let nrows = frame.nrows();
+
+    // Transform each column with mask-aware shift
+    let cols_out: Vec<ColData> = frame.cols.iter()
+        .map(|col_data| match col_data {
+            ColData::Mat(col) => {
+                let result_col = shift_obs_column(col, k, active_mask, nrows);
                 ColData::Mat(Arc::new(result_col))
             }
         })
@@ -1293,6 +1328,24 @@ fn xminus_columns(col_a: &Column, col_b: &Column) -> Column {
     }
 }
 
+/// Helper: compute eligible rows (unmasked) and position mapping
+/// Returns (eligible_rows, pos_in_eligible)
+/// eligible_rows: Vec<usize> = indices of unmasked rows
+/// pos_in_eligible: Vec<i32> = for each row, its position in eligible list (-1 if masked)
+fn eligible_rows(mask: &crate::mask::ActiveMask, nrows: usize) -> (Vec<usize>, Vec<i32>) {
+    let eligible: Vec<usize> = (0..nrows)
+        .filter(|&i| !mask.is_masked(i))
+        .collect();
+
+    let mut pos_in_eligible = vec![-1i32; nrows];
+    for (p, &i) in eligible.iter().enumerate() {
+        pos_in_eligible[i] = p as i32;
+    }
+
+    (eligible, pos_in_eligible)
+}
+
+/// Calendar shift (positional): shift by k calendar rows
 fn shift_column(col: &Column, k: usize) -> Column {
     match col {
         Column::F64(data) => {
@@ -1306,6 +1359,58 @@ fn shift_column(col: &Column, k: usize) -> Column {
                 result[k..].copy_from_slice(&data[0..nrows - k]);
             }
             // If k >= nrows, all rows are NA (already initialized)
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Mask-aware shift (observation-based): shift by k eligible (unmasked) rows
+/// Skip masked rows only (not NA values)
+/// For matching CLISPI's w5-filtered behavior
+fn shift_obs_column(col: &Column, k: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = vec![f64::NAN; nrows];
+
+            // Precompute eligible rows
+            let (eligible, pos_in_eligible) = eligible_rows(mask, nrows);
+
+            // For each output row
+            for t in 0..nrows {
+                // Masked rows output NA
+                if mask.is_masked(t) {
+                    result[t] = f64::NAN;
+                    continue;
+                }
+
+                // Get position in eligible stream
+                let p = pos_in_eligible[t];
+                if p < 0 {
+                    // Should not happen (we checked !masked)
+                    result[t] = f64::NAN;
+                    continue;
+                }
+
+                // Source position in eligible stream
+                let src_p = p - (k as i32);
+                if src_p < 0 {
+                    // Not enough eligible rows before this one
+                    result[t] = f64::NAN;
+                    continue;
+                }
+
+                // Get source row index (guaranteed unmasked)
+                let src_row = eligible[src_p as usize];
+
+                // Copy value (may be NA, which is fine)
+                result[t] = if src_row < data.len() {
+                    data[src_row]
+                } else {
+                    f64::NAN
+                };
+            }
 
             Column::F64(result)
         }

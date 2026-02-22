@@ -148,6 +148,24 @@ fn plan_expr(
                         plan_unary(NumericFunc::Shift { k }, &elements[2..], plan, ctx, interner)
                     }
 
+                    // Mask-aware shift (observation-based lag): (shift-obs k x) or (shiftm k x)
+                    // Skips masked rows when computing lag - business-day lag when weekend mask active
+                    "shift-obs" | "shiftm" => {
+                        if elements.len() != 3 {
+                            return Err(format!("{} expects 2 arguments: ({} k x)", func_name, func_name));
+                        }
+
+                        // Parse k as non-negative integer
+                        let k = match &elements[1] {
+                            Expr::Int(i) if *i >= 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("{} k must be non-negative, got {}", func_name, i)),
+                            Expr::Float(_) => return Err(format!("{} k must be integer, not float", func_name)),
+                            _ => return Err(format!("{} k must be integer literal", func_name)),
+                        };
+
+                        plan_unary(NumericFunc::ShiftObs { k }, &elements[2..], plan, ctx, interner)
+                    }
+
                     // Rolling mean: (rolling-mean w x) where w is positive integer
                     "rolling-mean" => {
                         if elements.len() != 3 {
