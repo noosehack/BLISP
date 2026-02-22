@@ -15,6 +15,7 @@ fn main() {
         eprintln!("  blisp [--load <file>]... -e '<expression>'");
         eprintln!("  blisp [--load <file>]... <script.lisp>");
         eprintln!("  blisp --legacy  # Force legacy AST evaluator");
+        eprintln!("  blisp --dic     # List all builtin operations");
         eprintln!();
         eprintln!("Examples:");
         eprintln!("  blisp -e '(+ 1 2)'");
@@ -24,6 +25,12 @@ fn main() {
         eprintln!("Environment:");
         eprintln!("  BLISP_LEGACY=1   Force legacy evaluator");
         std::process::exit(1);
+    }
+
+    // Handle --dic first (dictionary of operations)
+    if args.contains(&"--dic".to_string()) {
+        print_dictionary();
+        std::process::exit(0);
     }
 
     let mut rt = Runtime::new();
@@ -49,7 +56,7 @@ fn main() {
 
     while i < args.len() {
         match args[i].as_str() {
-            "--legacy" | "--ir-only" => {
+            "--legacy" | "--ir-only" | "--dic" => {
                 // Already handled above, just skip
                 i += 1;
             }
@@ -170,6 +177,97 @@ fn main() {
         eprintln!("Error: must provide -e <expr> or <script>");
         std::process::exit(1);
     }
+}
+
+/// Print dictionary of all builtin operations
+fn print_dictionary() {
+    let mut rt = Runtime::new();
+
+    println!("BLISP v0.2.0 - Builtin Operations Dictionary");
+    println!("==============================================");
+    println!();
+
+    // Collect all builtin names
+    let mut names: Vec<String> = rt.builtins.keys()
+        .map(|&sym| rt.interner.resolve(sym).to_string())
+        .collect();
+    names.sort();
+
+    println!("Total operations: {}", names.len());
+    println!();
+
+    // Categorize operations
+    let arithmetic = vec!["+", "-", "*", "/", "abs"];
+    let comparison = vec!["<", "<=", "==", "!=", ">", ">="];
+    let math = vec!["log", "exp", "sqrt"];
+    let io = vec!["file", "file-head", "stdin", "save", "print"];
+    let temporal = vec!["dlog", "dlog-col", "dlog-cols", "ret", "diff", "diff-col", "diff-cols",
+                       "shift", "shift-col", "shift-cols"];
+    let aggregate = vec!["sum", "sum0", "mean", "mean0", "std", "std0"];
+    let table_ops = vec!["col", "cols", "setcol", "withcol", "select", "select-num",
+                        "make-col", "apply-cols", "map-cols", "w"];
+    let rolling = vec!["wstd", "wstd0", "wstd-cols", "wstd0-cols", "wv", "wv-cols",
+                      "wz0", "wz0-cols", "wzs"];
+    let transforms = vec!["locf", "locf-cols", "WKD", "cs1", "cs1-col", "cs1-cols",
+                         "ecs1", "ecs1-col", "ecs1-cols", "xminus", "zscore", "chop",
+                         "keep-shape", "keep-shape-cols"];
+    let mask_ops = vec!["mask-weekend", "with-mask", "mask-on", "mask-off",
+                       "mask-list", "mask-stats", "mask-define"];
+    let join_ops = vec!["mapr", "asofr"];
+    let comparisons_col = vec![">-col", ">-cols"];
+    let finance = vec!["ur", "ur-col", "ur-cols", "o"];
+    let utility = vec!["type-of", "len"];
+
+    let mut categorized = std::collections::HashSet::new();
+
+    macro_rules! print_category {
+        ($title:expr, $ops:expr) => {
+            let mut found: Vec<&String> = names.iter()
+                .filter(|n| $ops.contains(&n.as_str()))
+                .collect();
+            if !found.is_empty() {
+                println!("{}:", $title);
+                found.sort();
+                for name in &found {
+                    print!("  {:<20}", name);
+                    categorized.insert(name.as_str());
+                }
+                println!();
+                println!();
+            }
+        };
+    }
+
+    print_category!("Arithmetic", arithmetic);
+    print_category!("Comparison", comparison);
+    print_category!("Math Functions", math);
+    print_category!("I/O Operations", io);
+    print_category!("Temporal Operations", temporal);
+    print_category!("Aggregations", aggregate);
+    print_category!("Table Operations", table_ops);
+    print_category!("Rolling Statistics", rolling);
+    print_category!("Transforms & Filters", transforms);
+    print_category!("Mask Operations", mask_ops);
+    print_category!("Join Operations", join_ops);
+    print_category!("Column Comparisons", comparisons_col);
+    print_category!("Finance Operations", finance);
+    print_category!("Utility", utility);
+
+    // Print uncategorized operations
+    let uncategorized: Vec<&String> = names.iter()
+        .filter(|n| !categorized.contains(n.as_str()))
+        .collect();
+
+    if !uncategorized.is_empty() {
+        println!("Other Operations:");
+        for name in uncategorized {
+            print!("  {:<20}", name);
+        }
+        println!();
+        println!();
+    }
+
+    println!("Note: WKD is the canonical weekend mask operation (legacy alias: w5)");
 }
 
 fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {
