@@ -208,7 +208,7 @@ fn print_dictionary() {
                         "make-col", "apply-cols", "map-cols", "w"];
     let rolling = vec!["wstd", "wstd0", "wstd-cols", "wstd0-cols", "wv", "wv-cols",
                       "wz0", "wz0-cols", "wzs"];
-    let transforms = vec!["locf", "locf-cols", "WKD", "cs1", "cs1-col", "cs1-cols",
+    let transforms = vec!["locf", "locf-cols", "wkd", "cs1", "cs1-col", "cs1-cols",
                          "ecs1", "ecs1-col", "ecs1-cols", "xminus", "zscore", "chop",
                          "keep-shape", "keep-shape-cols"];
     let mask_ops = vec!["mask-weekend", "with-mask", "mask-on", "mask-off",
@@ -267,7 +267,7 @@ fn print_dictionary() {
         println!();
     }
 
-    println!("Note: WKD is the canonical weekend mask operation (legacy alias: w5)");
+    println!("Note: wkd is the canonical weekend mask operation");
 }
 
 fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {

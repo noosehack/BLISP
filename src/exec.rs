@@ -129,8 +129,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             let input_frame = ctx.load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
-            // Special handling for WKD: requires index access for weekday determination
-            if matches!(func, NumericFunc::WKD) {
+            // Special handling for Wkd: requires index access for weekday determination
+            if matches!(func, NumericFunc::Wkd) {
                 return wkd_mask_weekends(&input_frame);
             }
 
@@ -138,14 +138,14 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             let result = match func {
                 NumericFunc::RollMean { w } |
                 NumericFunc::RollStd { w } |
-                NumericFunc::RollMeanPartial { w } |
-                NumericFunc::RollStdPartial { w } |
-                NumericFunc::RollMeanPartialExclCurrent { w } |
-                NumericFunc::RollStdPartialExclCurrent { w } => {
+                NumericFunc::RollMeanMin2 { w } |
+                NumericFunc::RollStdMin2 { w } |
+                NumericFunc::RollMeanMin2ExclCurrent { w } |
+                NumericFunc::RollStdMin2ExclCurrent { w } => {
                     // Rolling operations need access to active_mask to count only eligible observations
                     apply_rolling_mask_aware(&input_frame, *func)?
                 }
-                NumericFunc::ShiftObs { k } => {
+                NumericFunc::LagObs { k } => {
                     // Mask-aware shift: skip masked rows when computing lag
                     // This matches CLISPI's "business day lag" when weekends are masked
                     apply_shift_obs_mask_aware(&input_frame, *k)?
@@ -165,8 +165,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                             NumericFunc::CumSum => cumsum_column(col),
                             NumericFunc::Shift { k } => shift_column(col, *k),
                             NumericFunc::Keep { k } => keep_column(col, *k),
-                            NumericFunc::WKD => unreachable!("WKD handled above"),
-                            NumericFunc::ShiftObs { .. } => unreachable!("ShiftObs handled separately"),
+                            NumericFunc::Wkd => unreachable!("Wkd handled above"),
+                            NumericFunc::LagObs { .. } => unreachable!("LagObs handled separately"),
                             _ => unreachable!("Rolling ops handled separately"),
                         }
                     })
@@ -603,7 +603,7 @@ pub fn inv_column(col: &Column) -> Column {
 
 /// Mask-aware dlog: log returns with NA-skipping lag
 ///
-/// Contract (updated for shape-preserving WKD):
+/// Contract (updated for shape-preserving wkd):
 /// - dlog[i] = log(x[i]) - log(x[last_valid before i])
 /// - Skips NAs in lag: looks back for last valid value
 /// - If current value NA → output NA
@@ -628,10 +628,10 @@ fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, S
                 let result_col = match &func {
                     NumericFunc::RollMean { w } => rolling_mean_mask_aware(col, *w, active_mask, nrows),
                     NumericFunc::RollStd { w } => rolling_std_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::RollMeanPartial { w } => rolling_mean_partial_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::RollStdPartial { w } => rolling_std_partial_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::RollMeanPartialExclCurrent { w } => rolling_mean_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
-                    NumericFunc::RollStdPartialExclCurrent { w } => rolling_std_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
+                    NumericFunc::RollMeanMin2 { w } => rolling_mean_partial_mask_aware(col, *w, active_mask, nrows),
+                    NumericFunc::RollStdMin2 { w } => rolling_std_partial_mask_aware(col, *w, active_mask, nrows),
+                    NumericFunc::RollMeanMin2ExclCurrent { w } => rolling_mean_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
+                    NumericFunc::RollStdMin2ExclCurrent { w } => rolling_std_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
                     _ => unreachable!("Non-rolling op passed to apply_rolling_mask_aware"),
                 };
                 ColData::Mat(Arc::new(result_col))
@@ -1087,7 +1087,7 @@ fn rolling_std_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::m
 /// Why NA-skipping lag:
 /// - Monday after weekend: uses Friday's value (not Sunday NA)
 /// - Gap-filling semantics: skips NA to find last valid price
-/// - CLISPI equivalent: LOCF→WKD→dlog creates zeros, BLISP WKD→dlog creates multi-day returns
+/// - CLISPI equivalent: LOCF→wkd→dlog creates zeros, BLISP wkd→dlog creates multi-day returns
 /// - Both approaches yield identical non-NA, non-zero cumsum results
 fn dlog_column(col: &Column, _lag: usize) -> Column {
     match col {
@@ -1122,7 +1122,7 @@ fn dlog_column(col: &Column, _lag: usize) -> Column {
 
 /// Mask-aware ret: arithmetic returns with NA-skipping lag
 ///
-/// Contract (updated for shape-preserving WKD):
+/// Contract (updated for shape-preserving wkd):
 /// - ret[i] = (x[i] - x[last_valid before i]) / x[last_valid before i]
 /// - Skips NAs in lag: looks back for last valid value
 /// - If current value NA → output NA
@@ -1192,13 +1192,13 @@ fn locf_column(col: &Column) -> Column {
 
 /// Cumulative sum starting at 1.0 (cs1)
 ///
-/// Contract (updated for shape-preserving WKD):
+/// Contract (updated for shape-preserving wkd):
 /// - Starts at 1.0 (not 0.0!)
 /// - NA policy: "skip and preserve"
 ///   - NA input → NA output (preserves weekend masks)
 ///   - Valid values: cumsum updates and outputs
 ///   - Running sum maintained across NA positions
-/// - Compatible with masked time series (WKD)
+/// - Compatible with masked time series (wkd)
 /// - O(n) single pass
 fn cumsum_column(col: &Column) -> Column {
     match col {
@@ -1208,7 +1208,7 @@ fn cumsum_column(col: &Column) -> Column {
 
             for &x in data.iter() {
                 if x.is_nan() {
-                    // NA input → NA output (preserves masks from WKD)
+                    // NA input → NA output (preserves masks from wkd)
                     result.push(f64::NAN);
                 } else {
                     // Valid input: update cumsum and output
@@ -1223,7 +1223,7 @@ fn cumsum_column(col: &Column) -> Column {
     }
 }
 
-/// Weekday mask (WKD): Set weekend values to NA
+/// Weekday mask (wkd): Set weekend values to NA
 ///
 /// Contract:
 /// - Shape-preserving: I1, I2, I3 all maintained
@@ -1261,7 +1261,7 @@ fn wkd_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
             }).collect()
         }
         IndexColumn::String(_) => {
-            return Err("WKD requires Date or Timestamp index, got String".to_string());
+            return Err("wkd requires Date or Timestamp index, got String".to_string());
         }
     };
 
@@ -1393,7 +1393,7 @@ fn keep_column(col: &Column, k: usize) -> Column {
 
 /// Mask-aware shift (observation-based): shift by k eligible (unmasked) rows
 /// Skip masked rows only (not NA values)
-/// For matching CLISPI's WKD-filtered behavior
+/// For matching CLISPI's wkd-filtered behavior
 fn shift_obs_column(col: &Column, k: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
     match col {
         Column::F64(data) => {

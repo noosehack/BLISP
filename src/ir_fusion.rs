@@ -165,8 +165,8 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
         // Locf - NOT fusible (stateful, maintains last_valid)
         NumericFunc::Locf => false,
 
-        // WKD - NOT fusible (requires index access for weekday determination)
-        NumericFunc::WKD => false,
+        // Wkd - NOT fusible (requires index access for weekday determination)
+        NumericFunc::Wkd => false,
 
         // CumSum - NOT fusible (stateful, maintains running sum)
         NumericFunc::CumSum => false,
@@ -175,15 +175,15 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
         NumericFunc::Shift { .. } => false,
 
         // Shift-obs - NOT fusible (stateful, requires mask access)
-        NumericFunc::ShiftObs { .. } => false,
+        NumericFunc::LagObs { .. } => false,
 
         // Keep - NOT fusible (row-dependent operation)
         NumericFunc::Keep { .. } => false,
 
         // Rolling - NOT fusible (already O(n), complex state)
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
-        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
-        NumericFunc::RollMeanPartialExclCurrent { .. } | NumericFunc::RollStdPartialExclCurrent { .. } => false,
+        NumericFunc::RollMeanMin2 { .. } | NumericFunc::RollStdMin2 { .. } |
+        NumericFunc::RollMeanMin2ExclCurrent { .. } | NumericFunc::RollStdMin2ExclCurrent { .. } => false,
     }
 }
 
@@ -379,11 +379,11 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
 
         // These should not be fused (filtered by is_fusible_unary)
         NumericFunc::Dlog | NumericFunc::Ret |
-        NumericFunc::Locf | NumericFunc::WKD | NumericFunc::CumSum |
-        NumericFunc::Shift { .. } | NumericFunc::ShiftObs { .. } | NumericFunc::Keep { .. } |
+        NumericFunc::Locf | NumericFunc::Wkd | NumericFunc::CumSum |
+        NumericFunc::Shift { .. } | NumericFunc::LagObs { .. } | NumericFunc::Keep { .. } |
         NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
-        NumericFunc::RollMeanPartial { .. } | NumericFunc::RollStdPartial { .. } |
-        NumericFunc::RollMeanPartialExclCurrent { .. } | NumericFunc::RollStdPartialExclCurrent { .. } => {
+        NumericFunc::RollMeanMin2 { .. } | NumericFunc::RollStdMin2 { .. } |
+        NumericFunc::RollMeanMin2ExclCurrent { .. } | NumericFunc::RollStdMin2ExclCurrent { .. } => {
             panic!("Attempted to fuse non-fusible operation: {:?}", func)
         }
     }

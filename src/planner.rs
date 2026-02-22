@@ -128,7 +128,7 @@ fn plan_expr(
                     "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
                     "locf" => plan_unary(NumericFunc::Locf, &elements[1..], plan, ctx, interner),
-                    "WKD" | "w5" => plan_unary(NumericFunc::WKD, &elements[1..], plan, ctx, interner),  // TODO: remove "w5" alias
+                    "wkd" => plan_unary(NumericFunc::Wkd, &elements[1..], plan, ctx, interner),
                     "cs1" => plan_unary(NumericFunc::CumSum, &elements[1..], plan, ctx, interner),
 
                     // Shift operation: (shift k x) where k is non-negative integer
@@ -148,22 +148,22 @@ fn plan_expr(
                         plan_unary(NumericFunc::Shift { k }, &elements[2..], plan, ctx, interner)
                     }
 
-                    // Mask-aware shift (observation-based lag): (shift-obs k x) or (shiftm k x)
+                    // Mask-aware shift (observation-based lag): (lag-obs k x)
                     // Skips masked rows when computing lag - business-day lag when weekend mask active
-                    "shift-obs" | "shiftm" => {
+                    "lag-obs" => {
                         if elements.len() != 3 {
-                            return Err(format!("{} expects 2 arguments: ({} k x)", func_name, func_name));
+                            return Err(format!("lag-obs expects 2 arguments: (lag-obs k x)"));
                         }
 
                         // Parse k as non-negative integer
                         let k = match &elements[1] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("{} k must be non-negative, got {}", func_name, i)),
-                            Expr::Float(_) => return Err(format!("{} k must be integer, not float", func_name)),
-                            _ => return Err(format!("{} k must be integer literal", func_name)),
+                            Expr::Int(i) => return Err(format!("lag-obs k must be non-negative, got {}", i)),
+                            Expr::Float(_) => return Err("lag-obs k must be integer, not float".to_string()),
+                            _ => return Err("lag-obs k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::ShiftObs { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::LagObs { k }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Keep every k-th row: (keep k x) where k is positive integer
@@ -200,21 +200,21 @@ fn plan_expr(
                         plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)
                     }
 
-                    // Rolling mean partial: (rolling-mean-partial w x) where w is positive integer
-                    "rolling-mean-partial" => {
+                    // Rolling mean (min 2 observations): (rolling-mean-min2 w x) where w is positive integer
+                    "rolling-mean-min2" => {
                         if elements.len() != 3 {
-                            return Err("rolling-mean-partial expects 2 arguments: (rolling-mean-partial w x)".to_string());
+                            return Err("rolling-mean-min2 expects 2 arguments: (rolling-mean-min2 w x)".to_string());
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-mean-partial w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-mean-partial w must be integer, not float".to_string()),
-                            _ => return Err("rolling-mean-partial w must be integer literal".to_string()),
+                            Expr::Int(i) => return Err(format!("rolling-mean-min2 w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-mean-min2 w must be integer, not float".to_string()),
+                            _ => return Err("rolling-mean-min2 w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::RollMeanPartial { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollMeanMin2 { w }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Feature engineering: ft-mean as planner rewrite
@@ -268,38 +268,21 @@ fn plan_expr(
                         plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)
                     }
 
-                    // Rolling mean (partial): relaxed min_periods for masked calendars
-                    // Aliases: wavp (preferred), rolling-mean-partial
-                    "wavp" | "rolling-mean-partial" => {
+
+                    // Rolling std (min 2 observations): relaxed min_periods for masked calendars
+                    "rolling-std-min2" => {
                         if elements.len() != 3 {
-                            return Err("wavp expects 2 arguments: (wavp w x)".to_string());
+                            return Err("rolling-std-min2 expects 2 arguments: (rolling-std-min2 w x)".to_string());
                         }
 
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("wavp w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("wavp w must be integer, not float".to_string()),
-                            _ => return Err("wavp w must be integer literal".to_string()),
+                            Expr::Int(i) => return Err(format!("rolling-std-min2 w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("rolling-std-min2 w must be integer, not float".to_string()),
+                            _ => return Err("rolling-std-min2 w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::RollMeanPartial { w }, &elements[2..], plan, ctx, interner)
-                    }
-
-                    // Rolling std (partial): relaxed min_periods for masked calendars
-                    // Aliases: wstp (preferred), rolling-std-partial
-                    "wstp" | "rolling-std-partial" => {
-                        if elements.len() != 3 {
-                            return Err("wstp expects 2 arguments: (wstp w x)".to_string());
-                        }
-
-                        let w = match &elements[1] {
-                            Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("wstp w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("wstp w must be integer, not float".to_string()),
-                            _ => return Err("wstp w must be integer literal".to_string()),
-                        };
-
-                        plan_unary(NumericFunc::RollStdPartial { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollStdMin2 { w }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Feature engineering: ft-std as planner rewrite
@@ -362,27 +345,27 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
                         let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
 
-                        // Create rolling-mean (partial) node using already-planned x_node
-                        // Use partial for CLISPI compatibility with masked calendars
+                        // Create rolling-mean (min2) node using already-planned x_node
+                        // Use min2 for CLISPI compatibility with masked calendars
                         let mean_node_id = NodeId(plan.nodes.len());
                         let mean_node = Node {
                             id: mean_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollMeanPartial { w },
+                                func: NumericFunc::RollMeanMin2 { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
                         let mean_node_id = plan.add_node(mean_node);
 
-                        // Create rolling-std (partial) node using already-planned x_node
-                        // Use partial for CLISPI compatibility with masked calendars
+                        // Create rolling-std (min2) node using already-planned x_node
+                        // Use min2 for CLISPI compatibility with masked calendars
                         let std_node_id = NodeId(plan.nodes.len());
                         let std_node = Node {
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollStdPartial { w },
+                                func: NumericFunc::RollStdMin2 { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
@@ -416,8 +399,8 @@ fn plan_expr(
                     }
 
                     // Unit ratio (ur): Risk-adjusted returns
-                    // Canonical: (ur w step x) → (/ x (* 1587.4507866 (wstp w x)))
-                    // Uses PARTIAL (relaxed) rolling-std to match CLISPI semantics
+                    // Canonical: (ur w step x) → (/ x (* 1587.4507866 (rolling-std-min2 w x)))
+                    // Uses min2 (relaxed) rolling-std to match CLISPI semantics
                     // Where: 1587.45... = 100 * sqrt(252) = percentage scale * annualization
                     // step param ignored (compatibility)
                     // Used for: normalizing log returns by rolling volatility
@@ -440,13 +423,13 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
                         let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
 
-                        // Create rolling-std (partial/relaxed) node for CLISPI compatibility
+                        // Create rolling-std (min2/relaxed) node for CLISPI compatibility
                         let std_node_id = NodeId(plan.nodes.len());
                         let std_node = Node {
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::RollStdPartial { w },
+                                func: NumericFunc::RollStdMin2 { w },
                             }),
                             schema: x_schema.clone(),
                         };
@@ -481,7 +464,7 @@ fn plan_expr(
 
                     // Feature zscore: (ft-zscore w x) → (/ (- x (ft-mean w x)) (ft-std w x))
                     // No self-reference: compares x[i] to distribution from i-1 and earlier (no lookahead)
-                    // Uses RollMeanPartialExclCurrent / RollStdPartialExclCurrent (window ending at i-1)
+                    // Uses RollMeanMin2ExclCurrent / RollStdMin2ExclCurrent (window ending at i-1)
                     "ft-zscore" => {
                         if elements.len() != 3 {
                             return Err("ft-zscore expects 2 arguments: (ft-zscore w x)".to_string());
@@ -499,10 +482,10 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
 
                         // Plan ft-mean: rolling mean excluding current observation (window ending at i-1)
-                        let ft_mean_node_id = plan_unary(NumericFunc::RollMeanPartialExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_mean_node_id = plan_unary(NumericFunc::RollMeanMin2ExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
                         // Plan ft-std: rolling std excluding current observation (window ending at i-1)
-                        let ft_std_node_id = plan_unary(NumericFunc::RollStdPartialExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_std_node_id = plan_unary(NumericFunc::RollStdMin2ExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
                         // Plan (- x ft-mean)
                         let sub_node_id = NodeId(plan.nodes.len());

@@ -184,7 +184,7 @@ pub enum NumericFunc {
     /// - Different from most ops: REDUCES NAs, doesn't grow them
     Locf,
 
-    /// Weekday mask (WKD): Set weekend values to NA (shape-preserving)
+    /// Weekday mask (wkd): Set weekend values to NA (shape-preserving)
     ///
     /// Contract:
     /// - **Shape-preserving**: All invariants maintained (I1, I2, I3)
@@ -193,7 +193,7 @@ pub enum NumericFunc {
     /// - Index unchanged (preserves time alignment for joins)
     /// - Colnames unchanged
     /// - Nrows unchanged
-    /// - Composable: (WKD (WKD x)) == (WKD x)
+    /// - Composable: (wkd (wkd x)) == (wkd x)
     /// - Safe for backtesting: no time axis distortion
     /// - Works with rolling ops: window size remains consistent
     ///
@@ -201,23 +201,23 @@ pub enum NumericFunc {
     /// - Preserves alignment with other series
     /// - No hidden schema rebuild
     /// - Deterministic shape
-    /// - Composable with mask arithmetic: (* x (WKD signal))
+    /// - Composable with mask arithmetic: (* x (wkd signal))
     ///
     /// Notes:
     /// - Requires date index to determine weekday/weekend
     /// - Day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
     /// - Weekdays: Monday-Friday (1-5)
     /// - Weekends: Saturday-Sunday (0, 6)
-    WKD,
+    Wkd,
 
     /// Cumulative sum starting at 1.0
     ///
-    /// Contract (updated for shape-preserving WKD):
+    /// Contract (updated for shape-preserving wkd):
     /// - Starts at 1.0 (not 0.0!)
     /// - For valid values: cs1[i] = cs1[i-1] + x[i]
     /// - For NA values: cs1[i] = NA (preserves input NA)
     /// - NA policy: "skip and preserve"
-    ///   - NA input → NA output (preserves weekend masks from WKD)
+    ///   - NA input → NA output (preserves weekend masks from wkd)
     ///   - Running sum continues across NA positions
     /// - Compatible with masked time series operations
     /// - Shape preserved (I1-I3)
@@ -234,8 +234,8 @@ pub enum NumericFunc {
     Shift { k: usize },
     /// Mask-aware shift: lag by k eligible (unmasked) observations
     /// Skips masked rows only (not NA values)
-    /// For matching CLISPI's WKD-filtered behavior
-    ShiftObs { k: usize },
+    /// For matching CLISPI's wkd-filtered behavior
+    LagObs { k: usize },
     /// Keep every k-th row (shape-preserving)
     ///
     /// Contract:
@@ -266,7 +266,7 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone
     RollStd { w: usize },
-    /// Rolling mean (partial window): relaxed min_periods for masked calendars
+    /// Rolling mean (min 2 observations): relaxed min_periods for masked calendars
     ///
     /// Contract:
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -275,8 +275,8 @@ pub enum NumericFunc {
     /// - Designed for: weekday-masked calendars with weekend NAs
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
-    RollMeanPartial { w: usize },
-    /// Rolling std (partial window): relaxed min_periods for masked calendars
+    RollMeanMin2 { w: usize },
+    /// Rolling std (min 2 observations): relaxed min_periods for masked calendars
     ///
     /// Contract:
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -285,8 +285,8 @@ pub enum NumericFunc {
     /// - Designed for: weekday-masked calendars with weekend NAs
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
-    RollStdPartial { w: usize },
-    /// Rolling mean (partial window) excluding current observation - for ft-zscore
+    RollStdMin2 { w: usize },
+    /// Rolling mean (min 2 observations) excluding current observation - for ft-zscore
     ///
     /// Contract:
     /// - Window ending at i-1: [i-w .. i-1] inclusive, excluding current row i
@@ -294,11 +294,11 @@ pub enum NumericFunc {
     /// - Skip masked and NA observations when counting back
     /// - Require ≥2 valid values in window
     /// - Used by ft-zscore to avoid lookahead: zscore[i] uses stats from i-1 and earlier
-    RollMeanPartialExclCurrent { w: usize },
-    /// Rolling std (partial window) excluding current observation - for ft-zscore
+    RollMeanMin2ExclCurrent { w: usize },
+    /// Rolling std (min 2 observations) excluding current observation - for ft-zscore
     ///
-    /// Same contract as RollMeanPartialExclCurrent but for standard deviation
-    RollStdPartialExclCurrent { w: usize },
+    /// Same contract as RollMeanMin2ExclCurrent but for standard deviation
+    RollStdMin2ExclCurrent { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)
