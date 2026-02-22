@@ -774,8 +774,10 @@ fn rolling_std_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask
 
                 // Strict: emit only if we have exactly w observations
                 if count == w {
-                    let mean = sum / (w as f64);
-                    let variance = (sumsq / (w as f64)) - (mean * mean);
+                    let n = w as f64;
+                    let mean = sum / n;
+                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
+                    let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
                     result.push(variance.max(0.0).sqrt());  // max(0) for numerical stability
                 } else {
                     result.push(f64::NAN);
@@ -987,7 +989,8 @@ fn rolling_std_partial_mask_aware_offset(col: &Column, w: usize, mask: &crate::m
                 if count >= 2 {
                     let n = count as f64;
                     let mean = sum / n;
-                    let variance = (sumsq / n) - (mean * mean);
+                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
+                    let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
                     result.push(variance.max(0.0).sqrt());
                 } else {
                     result.push(f64::NAN);
@@ -1420,8 +1423,10 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                 // Emit result if window is full (i >= w-1) AND has exactly w valid values (strict)
                 // Contract: strict min_periods = w (skip NA, require full window)
                 if i >= w - 1 && valid_count >= w {
-                    let mean = running_sum / (valid_count as f64);
-                    let variance = (running_sumsq / (valid_count as f64)) - (mean * mean);
+                    let n = valid_count as f64;
+                    let mean = running_sum / n;
+                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
+                    let variance = ((running_sumsq / n) - (mean * mean)) * n / (n - 1.0);
 
                     // Guard against numerical error producing negative/tiny variance
                     // Window=1 or constant series should have exactly 0 variance
@@ -1543,8 +1548,10 @@ fn rolling_std_partial(col: &Column, w: usize) -> Column {
 
                 // Emit if window position reached and ≥2 valid values (relaxed)
                 if i >= w - 1 && valid_count >= 2 {
-                    let mean = running_sum / (valid_count as f64);
-                    let variance = (running_sumsq / (valid_count as f64)) - (mean * mean);
+                    let n = valid_count as f64;
+                    let mean = running_sum / n;
+                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
+                    let variance = ((running_sumsq / n) - (mean * mean)) * n / (n - 1.0);
 
                     if variance > 1e-14 {
                         result[i] = variance.sqrt();
