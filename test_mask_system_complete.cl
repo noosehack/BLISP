@@ -1,5 +1,5 @@
 ; Complete mask system test
-; Matches CLISPI: locf → w5 → dlog → cs1 → wavg(250)
+; Matches CLISPI: locf → WKD → dlog → cs1 → wavg(250)
 ; In BLISP: locf → mask-weekend → with-mask → dlog → cs1 → rolling-mean-partial(250)
 
 (rolling-mean-partial 250

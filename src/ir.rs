@@ -184,7 +184,7 @@ pub enum NumericFunc {
     /// - Different from most ops: REDUCES NAs, doesn't grow them
     Locf,
 
-    /// Weekday mask (w5/wkd): Set weekend values to NA (shape-preserving)
+    /// Weekday mask (WKD): Set weekend values to NA (shape-preserving)
     ///
     /// Contract:
     /// - **Shape-preserving**: All invariants maintained (I1, I2, I3)
@@ -193,7 +193,7 @@ pub enum NumericFunc {
     /// - Index unchanged (preserves time alignment for joins)
     /// - Colnames unchanged
     /// - Nrows unchanged
-    /// - Composable: (w5 (w5 x)) == (w5 x)
+    /// - Composable: (WKD (WKD x)) == (WKD x)
     /// - Safe for backtesting: no time axis distortion
     /// - Works with rolling ops: window size remains consistent
     ///
@@ -201,23 +201,23 @@ pub enum NumericFunc {
     /// - Preserves alignment with other series
     /// - No hidden schema rebuild
     /// - Deterministic shape
-    /// - Composable with mask arithmetic: (* x (w5 signal))
+    /// - Composable with mask arithmetic: (* x (WKD signal))
     ///
     /// Notes:
     /// - Requires date index to determine weekday/weekend
     /// - Day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
     /// - Weekdays: Monday-Friday (1-5)
     /// - Weekends: Saturday-Sunday (0, 6)
-    W5,
+    WKD,
 
     /// Cumulative sum starting at 1.0
     ///
-    /// Contract (updated for shape-preserving w5):
+    /// Contract (updated for shape-preserving WKD):
     /// - Starts at 1.0 (not 0.0!)
     /// - For valid values: cs1[i] = cs1[i-1] + x[i]
     /// - For NA values: cs1[i] = NA (preserves input NA)
     /// - NA policy: "skip and preserve"
-    ///   - NA input → NA output (preserves weekend masks from w5)
+    ///   - NA input → NA output (preserves weekend masks from WKD)
     ///   - Running sum continues across NA positions
     /// - Compatible with masked time series operations
     /// - Shape preserved (I1-I3)
@@ -234,7 +234,7 @@ pub enum NumericFunc {
     Shift { k: usize },
     /// Mask-aware shift: lag by k eligible (unmasked) observations
     /// Skips masked rows only (not NA values)
-    /// For matching CLISPI's w5-filtered behavior
+    /// For matching CLISPI's WKD-filtered behavior
     ShiftObs { k: usize },
     /// Keep every k-th row (shape-preserving)
     ///

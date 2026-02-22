@@ -216,7 +216,7 @@ After implementation, test with:
 ```bash
 cd /home/ubuntu && /home/ubuntu/blisp/target/release/blisp -e '
 (let* ((data (file "/home/ubuntu/ES1I.csv"))
-       (w5d (w5 data))
+       (w5d (WKD data))
        (ret (dlog-cols w5d 1))
        (mean (ft-wmean-cols ret 25))
        (std (ft-wstd-cols ret 25))

@@ -4,7 +4,7 @@
 
 ### clispi version (line 26):
 ```lisp
-(let* ((s (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))))
+(let* ((s (-> (stdin) (WKD) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))))
   (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1)))
 ```
 
@@ -14,7 +14,7 @@
 |----------|--------|-------|--------|-------|
 | `->` | ✅ | ❌ | **MISSING** | Threading macro - HIGH PRIORITY |
 | `stdin` | ✅ | ✅ | ✅ OK | |
-| `w5` | ✅ | ✅ | ✅ OK | Filter weekdays |
+| `WKD` | ✅ | ✅ | ✅ OK | Filter weekdays |
 | `dlog` | ✅ | ✅ | ✅ OK | Use `dlog-cols` for tables |
 | `x-` | ✅ (macro) | ✅ | ✅ OK | `xminus` in blisp, takes (table half) |
 | `cs1` | ✅ | ✅ | ✅ OK | Use `cs1-cols` for tables |
@@ -45,7 +45,7 @@
 
 Current blisp approach uses intermediate variables:
 ```lisp
-(let* ((s (shift-cols (>-cols (wz0-cols (cs1-cols (xminus (dlog-cols (w5 (file ...))))))))))
+(let* ((s (shift-cols (>-cols (wz0-cols (cs1-cols (xminus (dlog-cols (WKD (file ...))))))))))
   ...)
 ```
 

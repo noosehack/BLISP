@@ -152,7 +152,7 @@ All Phase 1 operations run on the **IR executor** with:
 **Target**: GLD_NUM blockers (~6 hours)
 
 1. **locf** (1-2 hours) - Last observation carried forward
-   - `w5` macro maps to `locf`
+   - `WKD` macro maps to `locf`
    - Fill NA values forward
    - Idempotent: `locf(locf(x)) == locf(x)`
 

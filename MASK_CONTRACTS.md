@@ -53,7 +53,7 @@ This document freezes the mask system semantics to prevent future drift.
 - **Partial**: Requires `>= min_periods` eligible observations (typically `min_periods = 2`)
   - `rolling-mean-partial w` ⇒ output valid if we have ≥2 eligible obs
 
-**Rationale**: Matches CLISPI's observation-based rolling semantics. CLISPI `w5` removes weekend rows before `wavg(250)`, so window counts 250 weekday observations. BLISP achieves same semantics with masks while keeping calendar index intact.
+**Rationale**: Matches CLISPI's observation-based rolling semantics. CLISPI `WKD` removes weekend rows before `wavg(250)`, so window counts 250 weekday observations. BLISP achieves same semantics with masks while keeping calendar index intact.
 
 **Tripwire**: Test T2 (`t2_rolling_strict_vs_partial_start_dates`)
 
@@ -394,8 +394,8 @@ Randomly compose operations, assert:
 
 ### 9.1 CLISPI Compatibility
 
-**CLISPI**: `locf → w5 → dlog → cs1 → wavg(250)`
-- `w5` removes weekend rows (data-shaping)
+**CLISPI**: `locf → WKD → dlog → cs1 → wavg(250)`
+- `WKD` removes weekend rows (data-shaping)
 - `wavg(250)` counts 250 observations in filtered data
 
 **BLISP**: `locf → mask-weekend → with-mask → dlog → cs1 → wavg(250)`

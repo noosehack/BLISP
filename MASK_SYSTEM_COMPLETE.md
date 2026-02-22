@@ -159,7 +159,7 @@ All 7 sites verified and fixed:
 **Result**: Matches CLISPI semantics while preserving calendar index
 
 ### 2. Metadata, Not Data-Shaping
-**CLISPI**: `w5` removes rows → data reshaped → downstream ops see filtered data
+**CLISPI**: `WKD` removes rows → data reshaped → downstream ops see filtered data
 **BLISP**: `mask-weekend` + `with-mask` → metadata set → all ops respect mask
 
 **Benefit**: Index stays intact, reversible, composable
@@ -218,7 +218,7 @@ All 7 sites verified and fixed:
 
 ### CLISPI Compatibility Pipeline
 ```lisp
-; CLISPI: locf → w5 → dlog → cs1 → wavg(250)
+; CLISPI: locf → WKD → dlog → cs1 → wavg(250)
 ; BLISP equivalent:
 (rolling-mean-partial 250
   (ecs1

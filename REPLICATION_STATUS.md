@@ -43,7 +43,7 @@
 
 **Reference command:**
 ```bash
-./darqt_test ES1I.csv "locf|w5|wzs 250 5"
+./darqt_test ES1I.csv "locf|WKD|wzs 250 5"
 ```
 
 **Current BLISP attempts:**
@@ -51,7 +51,7 @@
 #### Attempt 1: With keep(5)
 ```bash
 /home/ubuntu/blisp/target/release/blisp -e \
-  '(keep 5 (ft-zscore 250 (w5 (locf (read-csv "/home/ubuntu/ES1I.csv")))))' \
+  '(keep 5 (ft-zscore 250 (WKD (locf (read-csv "/home/ubuntu/ES1I.csv")))))' \
   2>/dev/null | awk -F';' 'NR==1 || $2 != "NA"'
 ```
 **Result:** Wrong values, different z-scores
@@ -59,7 +59,7 @@
 #### Attempt 2: Without keep(5)
 ```bash
 /home/ubuntu/blisp/target/release/blisp -e \
-  '(ft-zscore 250 (w5 (locf (read-csv "/home/ubuntu/ES1I.csv"))))' \
+  '(ft-zscore 250 (WKD (locf (read-csv "/home/ubuntu/ES1I.csv"))))' \
   2>/dev/null | awk -F';' 'NR==1 || $2 != "NA"'
 ```
 **Result:** Wrong values, different z-scores
@@ -67,7 +67,7 @@
 #### Attempt 3: Using wzs instead of ft-zscore
 ```bash
 /home/ubuntu/blisp/target/release/blisp -e \
-  '(wzs 250 5 (w5 (locf (read-csv "/home/ubuntu/ES1I.csv"))))' \
+  '(wzs 250 5 (WKD (locf (read-csv "/home/ubuntu/ES1I.csv"))))' \
   2>/dev/null | awk -F';' 'NR==1 || $2 != "NA"'
 ```
 **Result:** Wrong values, different z-scores
@@ -136,7 +136,7 @@ Date         Reference        BLISP (ft-zscore)    BLISP (wzs)
   - `/home/ubuntu/test_wzs_regular.sh`
   - `/home/ubuntu/test_w5_only.sh`
 - **Reference:** `/home/ubuntu/ES1I_locf_wzs_250_5.csv` (6,820 rows)
-- **Pipeline:** `ES1I.csv → locf → w5 → wzs(250, 5)`
+- **Pipeline:** `ES1I.csv → locf → WKD → wzs(250, 5)`
 
 ### Test Data
 - **Original:** `/home/ubuntu/ES1I.csv` (9,550 rows, 189 KB)
@@ -150,7 +150,7 @@ Date         Reference        BLISP (ft-zscore)    BLISP (wzs)
 - ✅ `locf` - Last observation carried forward
 - ✅ `ft-zscore` - Forward-test z-score (excludes current)
 - ✅ `wzs` - Regular z-score (includes current)
-- ✅ `w5` - Weekend mask (sets Sat/Sun to NA)
+- ✅ `WKD` - Weekend mask (sets Sat/Sun to NA)
 - ✅ `keep` - Keep every k-th row (shape-preserving, fills with NA)
 - ✅ `shift` - Calendar lag
 - ✅ `shift-obs` - Observation lag (mask-aware)

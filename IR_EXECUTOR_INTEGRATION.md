@@ -224,7 +224,7 @@ cargo test --test ir_equivalence --test metamorphic --test differential_exec
 
 **NOT YET Supported** (falls back to legacy):
 - `stdin` (I/O operation)
-- `w5`, `cs1`, `ecs1`, `wzs`, `wq`, `x-`, `o`, `chop`, etc. (macro library ops)
+- `WKD`, `cs1`, `ecs1`, `wzs`, `wq`, `x-`, `o`, `chop`, etc. (macro library ops)
 - General Lisp (defparameter, defmacro, if, progn, etc.)
 - `sum`, `mean` (aggregation functions)
 - `>`, `<` (comparison/filtering)
@@ -233,7 +233,7 @@ cargo test --test ir_equivalence --test metamorphic --test differential_exec
 
 1. **Add pipeline threading to IR**: `(->  x (dlog) (shift 1))`
 2. **Add stdin to planner**: `(stdin)` → Source::Stdin
-3. **Add macro library ops**: w5, cs1, wzs, etc.
+3. **Add macro library ops**: WKD, cs1, wzs, etc.
 4. **Add aggregations**: sum, mean (reduce operations)
 5. **Add filtering**: `>`, `<` (row selection)
 

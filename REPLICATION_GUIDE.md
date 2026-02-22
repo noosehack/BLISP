@@ -308,7 +308,7 @@ ES1I_locf_ftzs_25.csv    → ES1I + locf + ft-zscore(25)
 - `dlog` - Log returns
 - `ret` - Simple returns
 - `cs1` - Cumulative sum from 1.0
-- `wkd` or `w5` - Weekday mask
+- `wkd` or `WKD` - Weekday mask
 
 ## Verification Workflow
 

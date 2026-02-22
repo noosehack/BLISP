@@ -193,7 +193,7 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
 - `src/ir.rs` - NumericFunc enum (operations)
 - `Cargo.toml` - Dependencies
 
-## Current w5 Implementation (src/exec.rs, line 640)
+## Current WKD Implementation (src/exec.rs, line 640)
 ```rust
 fn w5_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
     // Computes weekend_mask: Vec<bool> from index dates

@@ -7,7 +7,7 @@
 ## The GLD_NUM Expression
 
 ```lisp
-(let* ((s (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))))
+(let* ((s (-> (stdin) (WKD) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))))
   (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1)))
 ```
 
@@ -20,7 +20,7 @@
 | Op | Actual Meaning | IR Status | Type |
 |----|----------------|-----------|------|
 | `stdin` | Read CSV from stdin | ❌ Missing | Source |
-| `w5` | Macro → `locf` (fill forward) | ❌ Missing | Unary (shape-preserving) |
+| `WKD` | Macro → `locf` (fill forward) | ❌ Missing | Unary (shape-preserving) |
 | `dlog` | Daily log returns | ✅ IN IR | Unary |
 | `x- 1` | Pairwise spread: col[i] - col[1] | ❌ Missing | **Schema transform** |
 | `cs1` | **Cumulative sum** (starts at 1.0) | ❌ Missing | Unary (shape-preserving) |
@@ -50,7 +50,7 @@
 
 **Need to add (shape-preserving):**
 - `stdin` - Source node
-- `locf` (w5) - Fill forward NA
+- `locf` (WKD) - Fill forward NA
 - `cs1` - Cumulative sum (scan)
 - `ecs1` - Exponential cumsum: exp(cumsum(dlog))
 - `>` - Comparison → numeric mask (1.0/0.0)
@@ -240,7 +240,7 @@ pub enum Operation {
 | Operation | Status After Implementation |
 |-----------|------------------------------|
 | stdin | ✅ Phase 1 |
-| w5 (locf) | ✅ Phase 2 |
+| WKD (locf) | ✅ Phase 2 |
 | dlog | ✅ Already in IR |
 | x- | ✅ Phase 2 |
 | cs1 | ✅ Phase 2 |

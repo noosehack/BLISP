@@ -74,7 +74,7 @@
     (wzs-ft-cols              ; ← Ft-measurable z-score
       (cs1-cols
         (xminus
-          (dlog-cols (w5 (file "At.csv")) 1)
+          (dlog-cols (WKD (file "At.csv")) 1)
           1))
       25)
     -1.0)
@@ -101,7 +101,7 @@ All steps working end-to-end.
 ### Cross-Sectional
 - `(xminus returns 1)` - Pairwise spreads
 - `(cs1-cols data)` - Cumulative sum
-- `(w5 table)` - Filter weekdays
+- `(WKD table)` - Filter weekdays
 
 ### Advanced
 - `(mapr source target)` - Row alignment

@@ -126,7 +126,7 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("keep-shape-cols", builtin_keep_shape_cols);
 
     // GLD_NUM Tier 3: Table Transforms
-    rt.register_builtin("w5", builtin_w5);
+    rt.register_builtin("WKD", builtin_wkd);
     rt.register_builtin("mask-weekend", builtin_mask_weekend);
     rt.register_builtin("with-mask", builtin_with_mask);
     rt.register_builtin("mask-on", builtin_with_mask);  // Alias
@@ -818,7 +818,7 @@ fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, S
 // GLD_NUM Tier 3: Table Transforms
 // ============================================================================
 
-/// (w5 table) - Filter table to weekdays only (keep rows where date column is Mon-Fri)
+/// (WKD table) - Filter table to weekdays only (keep rows where date column is Mon-Fri)
 ///
 /// Uses kdb idiom: (date + 5) % 7 > 1
 /// - Epoch (1970-01-01) is Thursday
@@ -826,15 +826,15 @@ fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, S
 /// - Modulo 7 then > 1 selects weekdays
 ///
 /// Assumes first column is Date type with days since epoch.
-fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("w5 expects 1 argument (table), got {}", args.len()));
+        return Err(format!("WKD expects 1 argument (table), got {}", args.len()));
     }
 
     let tv = ensure_tableview(&args[0], rt)?;
 
     if tv.table.columns.is_empty() {
-        return Err("w5: table has no columns".to_string());
+        return Err("WKD: table has no columns".to_string());
     }
 
     // Get first column (should be Date)
@@ -842,7 +842,7 @@ fn builtin_w5(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     let date_data = match date_col {
         blawktrust::Column::Date(data) => data,
-        _ => return Err("w5: first column must be Date type".to_string()),
+        _ => return Err("WKD: first column must be Date type".to_string()),
     };
 
     // Build mask: (date + 5) % 7 > 1 (weekdays)
@@ -2244,7 +2244,7 @@ fn builtin_col(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Example:
 ///   (w prices 0)              ; First column
 ///   (w prices 1)              ; Second column
-///   (w5 prices)               ; Alias for (w prices 5)
+///   (WKD prices)              ; Alias for (w prices 5)
 fn builtin_w(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
         return Err(format!("w expects 2 arguments (table index), got {}", args.len()));
