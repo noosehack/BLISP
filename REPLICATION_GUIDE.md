@@ -525,6 +525,97 @@ tail -10 /home/ubuntu/ES1I_locf_wzs_250_1.csv
 - Values range typically: -3.0 to +3.0 (standard deviations)
 - Last date: 2026-02-21 (or current date in dataset)
 
+## CLISPI wzs Step Parameter vs BLISP
+
+### Important: Step ≠ Keep
+
+CLISPI's `wzs` step parameter works differently than a simple "keep every kth row":
+
+**CLISPI wzs behavior:**
+```lisp
+(wzs window step data)
+```
+1. Compute rolling z-score for **ALL rows** (full calculation)
+2. Resample output by keeping every `step`-th row
+3. Keep rows at indices: `step`, `2*step`, `3*step`, ... (skips index 0)
+
+**Example: wzs 250 5**
+- Calculates z-score for rows 0, 1, 2, ..., 9549
+- Keeps rows at indices: 5, 10, 15, 20, 25, ... (1910 rows from 9550)
+- Does NOT keep index 0 (warmup row)
+
+### BLISP Replication Pattern
+
+**Wrong approach:**
+```lisp
+;; This is NOT equivalent to CLISPI step
+(keep 5 (ft-zscore 250 (locf data)))
+;; Problem: keeps index 0, 5, 10, 15... (wrong starting point)
+```
+
+**Correct approach (kdb-ish):**
+```bash
+# Step 1: Calculate for ALL rows
+blisp -e '(ft-zscore 250 (locf (read-csv "data.csv")))' |
+# Step 2: Resample (keep every 5th, skip index 0)
+awk -F';' 'NR==1 || (NR-1) % 5 == 0 && NR > 6'
+```
+
+**Alternative (shape-preserving):**
+```bash
+# Calculate for all rows, then post-process
+blisp -e '(ft-zscore 250 (locf data))' |
+awk -F';' 'NR==1 || (NR-1) % 5 == 0' > output.csv
+```
+
+### Why This Matters
+
+BLISP uses **kdb-ish rolling functions** that:
+1. Calculate statistics at EVERY date (full temporal resolution)
+2. Maintain alignment across series
+3. Preserve join semantics
+
+Then **resample** the output to match CLISPI's step behavior:
+- Resampling is a post-calculation operation
+- Rolling windows still see ALL rows during calculation
+- Step does NOT affect window computation
+
+### Reference Files
+
+For ES1I pipelines:
+- `ES1I_locf_wzs_250_1.csv` - All rows (9,550)
+- `ES1I_locf_wzs_250_5.csv` - Every 5th row (1,910 non-NA rows, 9,550 shape-preserved)
+
+Pattern in step=5:
+```
+Row index:    0    1    2    3    4    5    6    7    8    9   10
+Has value:   NA   NA   NA   NA   NA   ✓   NA   NA   NA   NA    ✓
+                                    ^                          ^
+                              index 5                    index 10
+```
+
+### Complete Example: ES1I step=5
+
+```bash
+#!/bin/bash
+# ES1I with step=5: Calculate all, then resample
+
+# Method 1: Remove non-kept rows (1,910 output rows)
+/home/ubuntu/blisp/target/release/blisp -e \
+  '(ft-zscore 250 (locf (read-csv "/home/ubuntu/ES1I.csv")))' \
+  2>/dev/null | \
+  awk -F';' 'NR==1 || (NR-1) % 5 == 0' > output_filtered.csv
+
+# Method 2: Keep shape with NA (9,550 output rows)
+# Use BLISP's built-in keep for shape-preserving
+# NOTE: This keeps index 0 too, different from CLISPI step
+/home/ubuntu/blisp/target/release/blisp -e \
+  '(keep 5 (ft-zscore 250 (locf (read-csv "/home/ubuntu/ES1I.csv"))))' \
+  2>/dev/null > output_shaped.csv
+```
+
+**For exact CLISPI replication:** Use Method 1 (awk post-processing)
+
 ## Summary
 
 **Golden Rules:**
@@ -534,12 +625,21 @@ tail -10 /home/ubuntu/ES1I_locf_wzs_250_1.csv
 4. Check function names in `src/planner.rs` if unsure
 5. Start simple, build complexity gradually
 6. Verify output before comparing
+7. **For step parameter:** Calculate all rows, then resample with awk
 
 **Most Common Pipeline:**
 ```bash
 cargo run --release -- -e \
   '(ft-zscore WINDOW (locf (read-csv "PATH")))' \
   2>/dev/null > output.csv
+```
+
+**Pipeline with step (CLISPI-compatible):**
+```bash
+cargo run --release -- -e \
+  '(ft-zscore WINDOW (locf (read-csv "PATH")))' \
+  2>/dev/null | \
+  awk -F';' 'NR==1 || (NR-1) % STEP == 0' > output.csv
 ```
 
 This covers 80% of replication tasks!
