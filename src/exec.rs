@@ -190,6 +190,26 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
             Ok(Arc::new(result))
         }
+
+        // Fused operations (stubs - implementations need transcript recovery)
+        UnaryOp::FusedElementwise { .. } => {
+            Err("FusedElementwise execution not yet recovered from transcript".to_string())
+        }
+        UnaryOp::FusedCs1Elementwise { .. } => {
+            Err("FusedCs1Elementwise execution not yet recovered from transcript".to_string())
+        }
+        UnaryOp::FusedCs1DlogOfs { .. } => {
+            Err("FusedCs1DlogOfs execution not yet recovered from transcript".to_string())
+        }
+        UnaryOp::FusedCs1DlogObs { .. } => {
+            Err("FusedCs1DlogObs execution not yet recovered from transcript".to_string())
+        }
+        UnaryOp::FusedDlogObsElementwise { .. } => {
+            Err("FusedDlogObsElementwise execution not yet recovered from transcript".to_string())
+        }
+        UnaryOp::FusedDlogOfsElementwise { .. } => {
+            Err("FusedDlogOfsElementwise execution not yet recovered from transcript".to_string())
+        }
     }
 }
 
