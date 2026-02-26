@@ -120,7 +120,8 @@ fn plan_expr(
                     }
 
                     // Unary numeric operations
-                    "dlog" => plan_unary(NumericFunc::SHF_PTW_NLN_DLOG, &elements[1..], plan, ctx, interner),
+                    "dlog" => plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // default: OBS (NA-skipping)
+                    "dlog-ofs" => plan_unary(NumericFunc::SHF_PTW_OFS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // explicit OFS (positional)
                     "ret" => plan_unary(NumericFunc::RET, &elements[1..], plan, ctx, interner),
                     "log" => plan_unary(NumericFunc::LOG, &elements[1..], plan, ctx, interner),
                     "exp" => plan_unary(NumericFunc::EXP, &elements[1..], plan, ctx, interner),
@@ -891,11 +892,11 @@ mod tests {
             _ => panic!("Expected file source"),
         }
 
-        // Node 1: dlog
+        // Node 1: dlog (should map to OBS variant)
         match &plan.nodes[1].op {
             Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
                 assert_eq!(*input, NodeId(0));
-                assert_eq!(*func, NumericFunc::SHF_PTW_NLN_DLOG);
+                assert_eq!(*func, NumericFunc::SHF_PTW_OBS_NLN_DLOG);
             }
             _ => panic!("Expected unary dlog"),
         }
