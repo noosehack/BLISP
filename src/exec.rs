@@ -191,24 +191,154 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             Ok(Arc::new(result))
         }
 
-        // Fused operations (stubs - implementations need transcript recovery)
-        UnaryOp::FusedElementwise { .. } => {
-            Err("FusedElementwise execution not yet recovered from transcript".to_string())
+        // PR4.1: Fused elementwise operations
+        UnaryOp::FusedElementwise { input, ops } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_elementwise_column(col, ops)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedElementwise: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedElementwise: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedElementwise: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
-        UnaryOp::FusedCs1Elementwise { .. } => {
-            Err("FusedCs1Elementwise execution not yet recovered from transcript".to_string())
+
+        // PR4.2a: Fused cs1 ∘ elementwise
+        UnaryOp::FusedCs1Elementwise { input, ops } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_cs1_elementwise_column(col, ops)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedCs1Elementwise: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedCs1Elementwise: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedCs1Elementwise: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
-        UnaryOp::FusedCs1DlogOfs { .. } => {
-            Err("FusedCs1DlogOfs execution not yet recovered from transcript".to_string())
+
+        // PR4.2b: Fused cs1 ∘ dlog-ofs
+        UnaryOp::FusedCs1DlogOfs { input, lag } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_cs1_dlog_ofs_column(col, *lag)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedCs1DlogOfs: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedCs1DlogOfs: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedCs1DlogOfs: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
-        UnaryOp::FusedCs1DlogObs { .. } => {
-            Err("FusedCs1DlogObs execution not yet recovered from transcript".to_string())
+
+        // PR4.2b: Fused cs1 ∘ dlog-obs
+        UnaryOp::FusedCs1DlogObs { input } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_cs1_dlog_obs_column(col)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedCs1DlogObs: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedCs1DlogObs: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedCs1DlogObs: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
-        UnaryOp::FusedDlogObsElementwise { .. } => {
-            Err("FusedDlogObsElementwise execution not yet recovered from transcript".to_string())
+
+        // PR4.3a: Fused dlog-obs ∘ elementwise
+        UnaryOp::FusedDlogObsElementwise { input, ops } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_dlog_obs_elementwise_column(col, ops)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedDlogObsElementwise: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedDlogObsElementwise: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedDlogObsElementwise: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
-        UnaryOp::FusedDlogOfsElementwise { .. } => {
-            Err("FusedDlogOfsElementwise execution not yet recovered from transcript".to_string())
+
+        // PR4.3a: Fused dlog-ofs ∘ elementwise
+        UnaryOp::FusedDlogOfsElementwise { input, lag, ops } => {
+            let input_frame = ctx.load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let result = map_numeric_preserve_tags(&input_frame, |col| {
+                fused_dlog_ofs_elementwise_column(col, *lag, ops)
+            });
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedDlogOfsElementwise: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedDlogOfsElementwise: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedDlogOfsElementwise: I3 violation"
+            );
+
+            Ok(Arc::new(result))
         }
     }
 }
@@ -746,7 +876,306 @@ fn rolling_mean_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMas
     }
 }
 
-/// Rolling mean with mask-aware observation counting (strict) - LEGACY O(n·w) version
+/// Apply a single elementwise operation to a value
+///
+/// Helper for fused execution. Only handles pure elementwise ops.
+/// NaN propagates naturally through all operations.
+#[inline]
+fn apply_elementwise_op(x: f64, op: crate::ir::NumericFunc) -> f64 {
+    use crate::ir::NumericFunc;
+
+    if x.is_nan() {
+        return f64::NAN;
+    }
+
+    match op {
+        NumericFunc::ABS => x.abs(),
+        NumericFunc::LOG => {
+            if x > 0.0 {
+                x.ln()
+            } else {
+                f64::NAN
+            }
+        }
+        NumericFunc::EXP => x.exp(),
+        NumericFunc::SQRT => {
+            if x >= 0.0 {
+                x.sqrt()
+            } else {
+                f64::NAN
+            }
+        }
+        NumericFunc::INV => {
+            if x != 0.0 {
+                1.0 / x
+            } else {
+                f64::NAN
+            }
+        }
+        _ => {
+            // Should never happen if optimizer does its job
+            // But don't panic in production - return NaN
+            f64::NAN
+        }
+    }
+}
+
+/// Execute elementwise_chain in a single pass (PR4.1)
+pub fn fused_elementwise_column(col: &Column, ops: &[crate::ir::NumericFunc]) -> Column {
+    match col {
+        Column::F64(data) => {
+            let result = data.iter().map(|&x| {
+                let mut y = x;
+                for op in ops {
+                    y = apply_elementwise_op(y, *op);
+                }
+                y
+            }).collect();
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Execute cs1 ∘ elementwise_chain in a single pass (PR4.2a)
+pub fn fused_cs1_elementwise_column(col: &Column, ops: &[crate::ir::NumericFunc]) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut acc = 1.0; // cs1 starts at 1.0
+
+            for &x in data.iter() {
+                // Apply elementwise chain
+                let mut y = x;
+                for op in ops {
+                    y = apply_elementwise_op(y, *op);
+                }
+
+                // cs1 accumulation (NA-preserving)
+                if y.is_nan() {
+                    result.push(f64::NAN); // NA input → NA output, acc unchanged
+                } else {
+                    acc += y;
+                    result.push(acc);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Execute cs1 ∘ dlog-ofs in a single pass (PR4.2b)
+///
+/// Fuses: cs1(dlog-ofs(x, k)) → single pass with two state concerns
+///
+/// State:
+/// - acc: f64 (cs1 accumulator, starts at 1.0)
+/// - x[i-k]: read from input array (OFS: positional offset lag)
+///
+/// Semantics (matches unfused behavior exactly):
+/// - dlog-ofs: For i < k → NA; for i ≥ k → ln(x[i]) - ln(x[i-k]) if both valid
+/// - cs1: acc += dlog_value if not NA; output acc if valid, NA if not
+///
+/// Example: cs1(dlog-ofs([100, 110, 121], lag=1))
+/// - i=0: dlog=NA (insufficient lag), out=NA
+/// - i=1: dlog=ln(110/100), acc=1+ln(1.1), out=acc
+/// - i=2: dlog=ln(121/110), acc+=ln(1.1), out=acc
+pub fn fused_cs1_dlog_ofs_column(col: &Column, lag: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut acc = 1.0; // cs1 starts at 1.0
+
+            for i in 0..data.len() {
+                if i < lag {
+                    // Insufficient lag → dlog output is NA
+                    result.push(f64::NAN);
+                } else {
+                    let current = data[i];
+                    let lagged = data[i - lag];
+
+                    // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
+                    let dlog_val = if current.is_finite() && lagged.is_finite() && current > 0.0 && lagged > 0.0 {
+                        current.ln() - lagged.ln()
+                    } else {
+                        f64::NAN
+                    };
+
+                    // cs1 accumulation (NA-preserving)
+                    if dlog_val.is_nan() {
+                        result.push(f64::NAN); // NA dlog → NA out, acc unchanged
+                    } else {
+                        acc += dlog_val;
+                        result.push(acc);
+                    }
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Execute cs1 ∘ dlog-obs in a single pass (PR4.2b)
+///
+/// Fuses: cs1(dlog-obs(x)) → single pass with two state variables
+///
+/// State:
+/// - acc: f64 (cs1 accumulator, starts at 1.0)
+/// - prev_valid: Option<f64> (dlog-obs last valid observation)
+///
+/// Semantics (matches unfused behavior exactly):
+/// - dlog-obs: NA-skipping lag → ln(x[i]) - ln(last_valid) if both exist
+/// - cs1: acc += dlog_value if not NA; output acc if valid, NA if not
+///
+/// NA propagation:
+/// - Input NA → output NA, both states unchanged
+/// - First valid → output NA (no predecessor), set prev_valid
+/// - Subsequent valids → compute dlog, update acc and prev_valid
+///
+/// Example: cs1(dlog-obs([100, NA, 110, 121]))
+/// - i=0: first valid, prev=None, out=NA, prev→100
+/// - i=1: input NA, out=NA, states unchanged
+/// - i=2: dlog=ln(110/100), acc=1+ln(1.1), out=acc, prev→110
+/// - i=3: dlog=ln(121/110), acc+=ln(1.1), out=acc, prev→121
+pub fn fused_cs1_dlog_obs_column(col: &Column) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut acc = 1.0; // cs1 starts at 1.0
+            let mut prev_valid: Option<f64> = None; // dlog-obs state
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // NA input → NA output, states unchanged
+                    result.push(f64::NAN);
+                } else if let Some(prev) = prev_valid {
+                    // Valid current + valid previous → compute dlog
+                    let dlog_val = if x > 0.0 && prev > 0.0 {
+                        x.ln() - prev.ln()
+                    } else {
+                        f64::NAN
+                    };
+
+                    // cs1 accumulation
+                    if dlog_val.is_nan() {
+                        result.push(f64::NAN); // NA dlog → NA out, acc unchanged
+                    } else {
+                        acc += dlog_val;
+                        result.push(acc);
+                    }
+
+                    prev_valid = Some(x); // Update prev_valid
+                } else {
+                    // First valid observation → no predecessor
+                    result.push(f64::NAN);
+                    prev_valid = Some(x);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Execute cs1 ∘ elementwise_chain in a single pass (PR4.2a)
+/// Execute dlog-obs ∘ elementwise_chain in a single pass (PR4.3a)
+///
+/// Fuses: EW_CHAIN(dlog-obs(x)) → single pass with observation-based state
+///
+/// State: last_valid (for dlog-obs)
+///
+/// Example: abs(dlog-obs([100, NA, 110, 120]))
+/// - dlog-obs: [NA, NA, ln(1.1), ln(120/110)]
+/// - abs applied immediately to each dlog result
+pub fn fused_dlog_obs_elementwise_column(col: &Column, ops: &[NumericFunc]) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid: Option<f64> = None;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // Current NA → output NA
+                    result.push(f64::NAN);
+                } else if let Some(prev) = last_valid {
+                    // Valid current, valid previous → compute dlog
+                    let dlog_val = if prev > 0.0 && x > 0.0 {
+                        x.ln() - prev.ln()
+                    } else {
+                        f64::NAN
+                    };
+
+                    // Apply elementwise chain to dlog result
+                    let mut y = dlog_val;
+                    for op in ops {
+                        y = apply_elementwise_op(y, *op);
+                    }
+
+                    result.push(y);
+                    last_valid = Some(x);
+                } else {
+                    // Valid current, no previous → output NA (first valid)
+                    result.push(f64::NAN);
+                    last_valid = Some(x);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Execute dlog-ofs ∘ elementwise_chain in a single pass (PR4.3a)
+///
+/// Fuses: EW_CHAIN(dlog-ofs(x, k)) → single pass with fixed-lag predecessor
+///
+/// State: None (uses positional lag)
+///
+/// Example: abs(dlog-ofs([100, 110, 121], lag=1))
+/// - For i < lag: NA
+/// - For i >= lag: ln(x[i]) - ln(x[i-k]), then apply elementwise chain
+pub fn fused_dlog_ofs_elementwise_column(col: &Column, lag: usize, ops: &[NumericFunc]) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+
+            for i in 0..data.len() {
+                if i < lag {
+                    // Prefix: not enough history
+                    result.push(f64::NAN);
+                } else {
+                    let current = data[i];
+                    let lagged = data[i - lag];
+
+                    // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
+                    let dlog_val = if current.is_finite() && lagged.is_finite() 
+                        && current > 0.0 && lagged > 0.0 {
+                        current.ln() - lagged.ln()
+                    } else {
+                        f64::NAN
+                    };
+
+                    // Apply elementwise chain to dlog result
+                    let mut y = dlog_val;
+                    for op in ops {
+                        y = apply_elementwise_op(y, *op);
+                    }
+
+                    result.push(y);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}/// Rolling mean with mask-aware observation counting (strict) - LEGACY O(n·w) version
 ///
 /// Kept for comparison testing. Use `rolling_mean_mask_aware_legacy` for verification.
 #[cfg(test)]
