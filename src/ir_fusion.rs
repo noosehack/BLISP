@@ -601,3 +601,166 @@ pub fn optimize_cs1_dlog_fusion(plan: &Plan) -> Plan {
 
     Plan { nodes: new_nodes }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::*;
+
+    /// Tripwire 1: Elementwise chain fusion (PR4.1)
+    /// 
+    /// Test that x → ABS → LOG → EXP fuses into FusedElementwise
+    /// Before: 4 nodes (source + 3 ops)
+    /// After: 2 nodes (source + 1 fused)
+    #[test]
+    fn test_tripwire_elementwise_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        // source
+        let src = plan.add_node(Node {
+            id: NodeId(0),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        // ABS
+        let abs_node = plan.add_node(Node {
+            id: NodeId(1),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: src,
+                func: NumericFunc::ABS,
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        // LOG
+        let log_node = plan.add_node(Node {
+            id: NodeId(2),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: abs_node,
+                func: NumericFunc::LOG,
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        // EXP
+        plan.add_node(Node {
+            id: NodeId(3),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: log_node,
+                func: NumericFunc::EXP,
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        assert_eq!(plan.nodes.len(), 4, "Before optimization: 4 nodes");
+        
+        let optimized = optimize(&plan);
+        
+        assert_eq!(optimized.nodes.len(), 2, "After optimization: 2 nodes (source + fused)");
+        
+        // Verify fused node structure
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                assert_eq!(input.0, 0, "Fused node should point to source");
+                assert_eq!(ops.len(), 3, "Should have 3 fused ops");
+                assert!(matches!(ops[0], NumericFunc::ABS));
+                assert!(matches!(ops[1], NumericFunc::LOG));
+                assert!(matches!(ops[2], NumericFunc::EXP));
+            }
+            _ => panic!("Expected FusedElementwise, got {:?}", optimized.nodes[1].op),
+        }
+    }
+
+    /// Tripwire 2: cs1 ∘ elementwise fusion (PR4.2a)
+    ///
+    /// Test that x → LOG → cs1 fuses into FusedCs1Elementwise
+    #[test]
+    fn test_tripwire_cs1_elementwise_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        let src = plan.add_node(Node {
+            id: NodeId(0),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        let log_node = plan.add_node(Node {
+            id: NodeId(1),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: src,
+                func: NumericFunc::LOG,
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        plan.add_node(Node {
+            id: NodeId(2),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: log_node,
+                func: NumericFunc::SHF_PFX_LIN_SUM, // cs1
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        assert_eq!(plan.nodes.len(), 3);
+        
+        let optimized = optimize(&plan);
+        
+        assert_eq!(optimized.nodes.len(), 2, "Should fuse to 2 nodes");
+        
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                assert_eq!(input.0, 0);
+                assert_eq!(ops.len(), 1);
+                assert!(matches!(ops[0], NumericFunc::LOG));
+            }
+            _ => panic!("Expected FusedCs1Elementwise"),
+        }
+    }
+
+    /// Tripwire 3: cs1 ∘ dlog fusion (PR4.2b)
+    ///
+    /// Test that x → dlog-obs → cs1 fuses into FusedCs1DlogObs
+    #[test]
+    fn test_tripwire_cs1_dlog_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        let src = plan.add_node(Node {
+            id: NodeId(0),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        let dlog_node = plan.add_node(Node {
+            id: NodeId(1),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: src,
+                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG, // dlog-obs
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        plan.add_node(Node {
+            id: NodeId(2),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: dlog_node,
+                func: NumericFunc::SHF_PFX_LIN_SUM, // cs1
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        assert_eq!(plan.nodes.len(), 3);
+        
+        let optimized = optimize(&plan);
+        
+        assert_eq!(optimized.nodes.len(), 2, "Should fuse to 2 nodes");
+        
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                assert_eq!(input.0, 0, "Should point to source");
+            }
+            _ => panic!("Expected FusedCs1DlogObs"),
+        }
+    }
+}
