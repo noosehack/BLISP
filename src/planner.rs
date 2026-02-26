@@ -149,9 +149,9 @@ fn plan_expr(
                         plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
                     }
 
-                    // Mask-aware shift (observation-based lag): (lag-obs k x)
+                    // Mask-aware shift (observation-based lag): (lag-obs k x) or (shift-obs k x)
                     // Skips masked rows when computing lag - business-day lag when weekend mask active
-                    "lag-obs" => {
+                    "lag-obs" | "shift-obs" => {
                         if elements.len() != 3 {
                             return Err(format!("lag-obs expects 2 arguments: (lag-obs k x)"));
                         }

@@ -2046,4 +2046,146 @@ mod tests {
         let plan_ofs = plan(&normalized_ofs, &interner);
         assert!(plan_ofs.is_ok(), "dlog-ofs should plan successfully");
     }
+
+    // PR2.5: Mandatory tests for shift OFS vs OBS semantic verification
+
+    #[test]
+    fn test_shift_ofs_kernel() {
+        // Test OFS shift kernel directly: positional offset
+        let data = vec![10.0, 20.0, 30.0, 40.0];
+        let col = Column::F64(data);
+
+        let result = shift_column(&col, 1);
+
+        if let Column::F64(vals) = result {
+            assert!(vals[0].is_nan(), "First row should be NA");
+            assert_eq!(vals[1], 10.0, "out[1] = in[0]");
+            assert_eq!(vals[2], 20.0, "out[2] = in[1]");
+            assert_eq!(vals[3], 30.0, "out[3] = in[2]");
+        } else {
+            panic!("Expected F64 column");
+        }
+    }
+
+    #[test]
+    fn test_shift_obs_kernel_with_mask() {
+        // Test OBS shift kernel: observation-based (skip masked rows)
+        let data = vec![10.0, 20.0, 30.0, 40.0];
+        let col = Column::F64(data);
+
+        // Create mask: rows 1,2 masked (only 0,3 eligible)
+        use bitvec::prelude::*;
+        let bv = bitvec![0, 1, 1, 0];  // 1 = masked
+        let mask = crate::mask::ActiveMask::from_bitvec(bv, None);
+
+        let result = shift_obs_column(&col, 1, &mask, 4);
+
+        if let Column::F64(vals) = result {
+            // Row 0: unmasked, but no predecessor in eligible stream → NA
+            assert!(vals[0].is_nan(), "Row 0: no predecessor");
+            // Rows 1,2: masked → NA
+            assert!(vals[1].is_nan(), "Row 1: masked");
+            assert!(vals[2].is_nan(), "Row 2: masked");
+            // Row 3: unmasked, 1 step back in eligible stream → row 0 → 10.0
+            assert_eq!(vals[3], 10.0, "Row 3: obs shift k=1 should find row 0");
+        } else {
+            panic!("Expected F64 column");
+        }
+    }
+
+    #[test]
+    fn test_shift_semantic_divergence() {
+        // Test proves: OFS ≠ OBS when masked rows exist
+        // OFS shift propagates NA from masked position
+        // OBS shift skips masked rows to find eligible observation
+
+        let data = vec![10.0, 20.0, 30.0, 40.0];
+        let col = Column::F64(data);
+
+        // OFS: positional shift (no mask awareness)
+        let ofs_result = shift_column(&col, 1);
+
+        // OBS: observation-based shift with mask
+        use bitvec::prelude::*;
+        let bv = bitvec![0, 1, 1, 0];  // 1 = masked
+        let mask = crate::mask::ActiveMask::from_bitvec(bv, None);
+        let obs_result = shift_obs_column(&col, 1, &mask, 4);
+
+        if let (Column::F64(ofs_vals), Column::F64(obs_vals)) = (ofs_result, obs_result) {
+            // Position 1: OFS = 10.0 (in[0]), OBS = NA (masked)
+            assert_eq!(ofs_vals[1], 10.0, "OFS at position 1");
+            assert!(obs_vals[1].is_nan(), "OBS at position 1 (masked)");
+
+            // Position 3: OFS = 30.0 (in[2]), OBS = 10.0 (skipped masked rows 1,2)
+            assert_eq!(ofs_vals[3], 30.0, "OFS at position 3: used in[2]");
+            assert_eq!(obs_vals[3], 10.0, "OBS at position 3: skipped to in[0]");
+
+            // They diverge at positions where mask affects observation counting
+            assert_ne!(ofs_vals[3], obs_vals[3], "OFS ≠ OBS at position 3");
+        } else {
+            panic!("Expected F64 columns");
+        }
+    }
+
+    #[test]
+    fn test_shift_equivalence_clean() {
+        // Test proves: OFS == OBS on clean (unmasked) data
+        let data = vec![10.0, 20.0, 30.0, 40.0];
+        let col = Column::F64(data);
+
+        // OFS: positional shift
+        let ofs_result = shift_column(&col, 1);
+
+        // OBS: observation-based shift with empty mask
+        let mask = crate::mask::ActiveMask::empty(4);
+        let obs_result = shift_obs_column(&col, 1, &mask, 4);
+
+        if let (Column::F64(ofs_vals), Column::F64(obs_vals)) = (ofs_result, obs_result) {
+            for i in 0..4 {
+                if ofs_vals[i].is_nan() && obs_vals[i].is_nan() {
+                    continue; // Both NA, OK
+                }
+                assert_eq!(ofs_vals[i], obs_vals[i],
+                    "OFS should equal OBS on unmasked data at position {}", i);
+            }
+        } else {
+            panic!("Expected F64 columns");
+        }
+    }
+
+    #[test]
+    fn test_shift_ir_routing() {
+        // Test proves: planner accepts "shift", "lag-obs", and "shift-obs" tokens
+        let mut interner = Interner::new();
+
+        // Test "shift" token → OFS variant
+        let shift_expr = Expr::List(vec![
+            Expr::Sym(interner.intern("shift")),
+            Expr::Int(1),
+            Expr::Sym(interner.intern("x")),
+        ]);
+        let normalized_shift = normalize(shift_expr, &mut interner);
+        let plan_shift = plan(&normalized_shift, &interner);
+        assert!(plan_shift.is_ok(), "shift should plan successfully");
+
+        // Test "lag-obs" token → OBS variant
+        let lag_obs_expr = Expr::List(vec![
+            Expr::Sym(interner.intern("lag-obs")),
+            Expr::Int(1),
+            Expr::Sym(interner.intern("x")),
+        ]);
+        let normalized_lag = normalize(lag_obs_expr, &mut interner);
+        let plan_lag = plan(&normalized_lag, &interner);
+        assert!(plan_lag.is_ok(), "lag-obs should plan successfully");
+
+        // Test "shift-obs" token → OBS variant (alias)
+        let shift_obs_expr = Expr::List(vec![
+            Expr::Sym(interner.intern("shift-obs")),
+            Expr::Int(1),
+            Expr::Sym(interner.intern("x")),
+        ]);
+        let normalized_shift_obs = normalize(shift_obs_expr, &mut interner);
+        let plan_shift_obs = plan(&normalized_shift_obs, &interner);
+        assert!(plan_shift_obs.is_ok(), "shift-obs should plan successfully");
+    }
 }
