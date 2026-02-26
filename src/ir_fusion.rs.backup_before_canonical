@@ -80,7 +80,7 @@ pub fn identify_segments(plan: &Plan) -> Vec<Segment> {
                 // Handle join inputs
                 use crate::ir::JoinOp;
                 match join_op {
-                    JoinOp::ALIGN { x, y } | JoinOp::ASOF_ALIGN { x, y } => {
+                    JoinOp::MapR { x, y } | JoinOp::AsofR { x, y } => {
                         consumers.entry(*x).or_default().push(node.id);
                         consumers.entry(*y).or_default().push(node.id);
                     }
@@ -156,34 +156,34 @@ pub fn identify_segments(plan: &Plan) -> Vec<Segment> {
 fn is_fusible_unary(func: NumericFunc) -> bool {
     match func {
         // Simple pointwise functions - fusible
-        NumericFunc::LOG | NumericFunc::EXP | NumericFunc::SQRT |
-        NumericFunc::ABS | NumericFunc::INV => true,
+        NumericFunc::Log | NumericFunc::Exp | NumericFunc::Sqrt |
+        NumericFunc::Abs | NumericFunc::Inv => true,
 
         // Temporal functions - NOT fusible (different semantics)
-        NumericFunc::SHF_PTW_NLN_DLOG | NumericFunc::RET => false,
+        NumericFunc::Dlog | NumericFunc::Ret => false,
 
         // Locf - NOT fusible (stateful, maintains last_valid)
-        NumericFunc::SHF_REC_NLN_LOCF => false,
+        NumericFunc::Locf => false,
 
         // Wkd - NOT fusible (requires index access for weekday determination)
-        NumericFunc::MSK_WKE => false,
+        NumericFunc::Wkd => false,
 
         // CumSum - NOT fusible (stateful, maintains running sum)
-        NumericFunc::SHF_PFX_LIN_SUM => false,
+        NumericFunc::CumSum => false,
 
         // Shift - NOT fusible (stateful)
-        NumericFunc::SHF_PTW_LIN_SHF { .. } => false,
+        NumericFunc::Shift { .. } => false,
 
         // Shift-obs - NOT fusible (stateful, requires mask access)
-        NumericFunc::LAG_OBS { .. } => false,
+        NumericFunc::LagObs { .. } => false,
 
         // Keep - NOT fusible (row-dependent operation)
-        NumericFunc::KEEP { .. } => false,
+        NumericFunc::Keep { .. } => false,
 
         // Rolling - NOT fusible (already O(n), complex state)
-        NumericFunc::SHF_WIN_LIN_AVG { .. } | NumericFunc::SHF_WIN_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { .. } => false,
+        NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
+        NumericFunc::RollMeanMin2 { .. } | NumericFunc::RollStdMin2 { .. } |
+        NumericFunc::RollMeanMin2ExclCurrent { .. } | NumericFunc::RollStdMin2ExclCurrent { .. } => false,
     }
 }
 
@@ -371,19 +371,19 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
     use crate::exec::{log_column, exp_column, sqrt_column, abs_column, inv_column};
 
     match func {
-        NumericFunc::LOG => log_column(col),
-        NumericFunc::EXP => exp_column(col),
-        NumericFunc::SQRT => sqrt_column(col),
-        NumericFunc::ABS => abs_column(col),
-        NumericFunc::INV => inv_column(col),
+        NumericFunc::Log => log_column(col),
+        NumericFunc::Exp => exp_column(col),
+        NumericFunc::Sqrt => sqrt_column(col),
+        NumericFunc::Abs => abs_column(col),
+        NumericFunc::Inv => inv_column(col),
 
         // These should not be fused (filtered by is_fusible_unary)
-        NumericFunc::SHF_PTW_NLN_DLOG | NumericFunc::RET |
-        NumericFunc::SHF_REC_NLN_LOCF | NumericFunc::MSK_WKE | NumericFunc::SHF_PFX_LIN_SUM |
-        NumericFunc::SHF_PTW_LIN_SHF { .. } | NumericFunc::LAG_OBS { .. } | NumericFunc::KEEP { .. } |
-        NumericFunc::SHF_WIN_LIN_AVG { .. } | NumericFunc::SHF_WIN_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { .. } => {
+        NumericFunc::Dlog | NumericFunc::Ret |
+        NumericFunc::Locf | NumericFunc::Wkd | NumericFunc::CumSum |
+        NumericFunc::Shift { .. } | NumericFunc::LagObs { .. } | NumericFunc::Keep { .. } |
+        NumericFunc::RollMean { .. } | NumericFunc::RollStd { .. } |
+        NumericFunc::RollMeanMin2 { .. } | NumericFunc::RollStdMin2 { .. } |
+        NumericFunc::RollMeanMin2ExclCurrent { .. } | NumericFunc::RollStdMin2ExclCurrent { .. } => {
             panic!("Attempted to fuse non-fusible operation: {:?}", func)
         }
     }
@@ -398,17 +398,17 @@ fn apply_scalar_binary(col: &Column, func: BinaryFunc, scalar: f64) -> Column {
                     f64::NAN
                 } else {
                     match func {
-                        BinaryFunc::ADD => x + scalar,
-                        BinaryFunc::SUB => x - scalar,
-                        BinaryFunc::MUL => x * scalar,
-                        BinaryFunc::DIV => {
+                        BinaryFunc::Add => x + scalar,
+                        BinaryFunc::Sub => x - scalar,
+                        BinaryFunc::Mul => x * scalar,
+                        BinaryFunc::Div => {
                             if scalar == 0.0 {
                                 f64::NAN  // Division by zero
                             } else {
                                 x / scalar
                             }
                         }
-                        BinaryFunc::GTR => {
+                        BinaryFunc::Gt => {
                             if x > scalar { 1.0 } else { 0.0 }
                         }
                     }
@@ -442,7 +442,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: x_id,
-                func: NumericFunc::ABS,
+                func: NumericFunc::Abs,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -451,7 +451,7 @@ mod tests {
             id: NodeId(2),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: abs_id,
-                func: NumericFunc::SQRT,
+                func: NumericFunc::Sqrt,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -460,7 +460,7 @@ mod tests {
             id: NodeId(3),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: sqrt_id,
-                func: NumericFunc::LOG,
+                func: NumericFunc::Log,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -492,7 +492,7 @@ mod tests {
             op: Operation::Binary(BinaryOp::MapNumeric2 {
                 lhs: x_id,
                 rhs: ValueRef::Scalar(2.0),
-                func: BinaryFunc::MUL,
+                func: BinaryFunc::Mul,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -502,7 +502,7 @@ mod tests {
             op: Operation::Binary(BinaryOp::MapNumeric2 {
                 lhs: mul_id,
                 rhs: ValueRef::Scalar(5.0),
-                func: BinaryFunc::ADD,
+                func: BinaryFunc::Add,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -533,7 +533,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: x_id,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::Dlog,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -542,7 +542,7 @@ mod tests {
             id: NodeId(2),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: dlog_id,
-                func: NumericFunc::LOG,
+                func: NumericFunc::Log,
             }),
             schema: SchemaInfo::unknown(),
         });
@@ -575,7 +575,7 @@ mod tests {
         let log_result = crate::exec::log_column(&sqrt_result);
 
         // Execute fused
-        let funcs = vec![NumericFunc::ABS, NumericFunc::SQRT, NumericFunc::LOG];
+        let funcs = vec![NumericFunc::Abs, NumericFunc::Sqrt, NumericFunc::Log];
         let fused_result = execute_fused_unary(&frame, &funcs);
 
         // Compare results
@@ -612,11 +612,11 @@ mod tests {
         let frame = Arc::new(Frame::new(tags, vec![Arc::clone(&col)]));
 
         // Execute unfused (step by step)
-        let mul_result = apply_scalar_binary(&col, BinaryFunc::MUL, 2.0);
-        let add_result = apply_scalar_binary(&mul_result, BinaryFunc::ADD, 5.0);
+        let mul_result = apply_scalar_binary(&col, BinaryFunc::Mul, 2.0);
+        let add_result = apply_scalar_binary(&mul_result, BinaryFunc::Add, 5.0);
 
         // Execute fused
-        let ops = vec![(BinaryFunc::MUL, 2.0), (BinaryFunc::ADD, 5.0)];
+        let ops = vec![(BinaryFunc::Mul, 2.0), (BinaryFunc::Add, 5.0)];
         let fused_result = execute_fused_scalar_binary(&frame, &ops);
 
         // Compare results
@@ -648,7 +648,7 @@ mod tests {
         let frame = Arc::new(Frame::new(tags, vec![col]));
 
         // Execute fused operation
-        let funcs = vec![NumericFunc::ABS, NumericFunc::SQRT];
+        let funcs = vec![NumericFunc::Abs, NumericFunc::Sqrt];
         let result = execute_fused_unary(&frame, &funcs);
 
         // Verify Arc identity (I1-I3)

@@ -120,16 +120,16 @@ fn plan_expr(
                     }
 
                     // Unary numeric operations
-                    "dlog" => plan_unary(NumericFunc::SHF_PTW_NLN_DLOG, &elements[1..], plan, ctx, interner),
-                    "ret" => plan_unary(NumericFunc::RET, &elements[1..], plan, ctx, interner),
-                    "log" => plan_unary(NumericFunc::LOG, &elements[1..], plan, ctx, interner),
-                    "exp" => plan_unary(NumericFunc::EXP, &elements[1..], plan, ctx, interner),
-                    "sqrt" => plan_unary(NumericFunc::SQRT, &elements[1..], plan, ctx, interner),
-                    "abs" => plan_unary(NumericFunc::ABS, &elements[1..], plan, ctx, interner),
-                    "inv" => plan_unary(NumericFunc::INV, &elements[1..], plan, ctx, interner),
-                    "locf" => plan_unary(NumericFunc::SHF_REC_NLN_LOCF, &elements[1..], plan, ctx, interner),
-                    "wkd" => plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner),
-                    "cs1" => plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner),
+                    "dlog" => plan_unary(NumericFunc::Dlog, &elements[1..], plan, ctx, interner),
+                    "ret" => plan_unary(NumericFunc::Ret, &elements[1..], plan, ctx, interner),
+                    "log" => plan_unary(NumericFunc::Log, &elements[1..], plan, ctx, interner),
+                    "exp" => plan_unary(NumericFunc::Exp, &elements[1..], plan, ctx, interner),
+                    "sqrt" => plan_unary(NumericFunc::Sqrt, &elements[1..], plan, ctx, interner),
+                    "abs" => plan_unary(NumericFunc::Abs, &elements[1..], plan, ctx, interner),
+                    "inv" => plan_unary(NumericFunc::Inv, &elements[1..], plan, ctx, interner),
+                    "locf" => plan_unary(NumericFunc::Locf, &elements[1..], plan, ctx, interner),
+                    "wkd" => plan_unary(NumericFunc::Wkd, &elements[1..], plan, ctx, interner),
+                    "cs1" => plan_unary(NumericFunc::CumSum, &elements[1..], plan, ctx, interner),
 
                     // Shift operation: (shift k x) where k is non-negative integer
                     "shift" => {
@@ -145,7 +145,7 @@ fn plan_expr(
                             _ => return Err("shift k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::Shift { k }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Mask-aware shift (observation-based lag): (lag-obs k x)
@@ -163,7 +163,7 @@ fn plan_expr(
                             _ => return Err("lag-obs k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::LAG_OBS { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::LagObs { k }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Keep every k-th row: (keep k x) where k is positive integer
@@ -180,7 +180,7 @@ fn plan_expr(
                             _ => return Err("keep k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::KEEP { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::Keep { k }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Rolling mean: (rolling-mean w x) where w is positive integer
@@ -197,7 +197,7 @@ fn plan_expr(
                             _ => return Err("rolling-mean w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_LIN_AVG { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Rolling mean (min 2 observations): (rolling-mean-min2 w x) where w is positive integer
@@ -214,7 +214,7 @@ fn plan_expr(
                             _ => return Err("rolling-mean-min2 w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_MIN2_LIN_AVG { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollMeanMin2 { w }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Feature engineering: ft-mean as planner rewrite
@@ -234,7 +234,7 @@ fn plan_expr(
                         };
 
                         // Plan inner rolling-mean
-                        let rolling_node = plan_unary(NumericFunc::SHF_WIN_LIN_AVG { w }, &elements[2..], plan, ctx, interner)?;
+                        let rolling_node = plan_unary(NumericFunc::RollMean { w }, &elements[2..], plan, ctx, interner)?;
 
                         // Plan outer shift(1, ...)
                         // Create a temporary node reference for the rolling-mean result
@@ -244,7 +244,7 @@ fn plan_expr(
                             id: shift_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: rolling_node,
-                                func: NumericFunc::SHF_PTW_LIN_SHF { k: 1 },
+                                func: NumericFunc::Shift { k: 1 },
                             }),
                             schema: input_node.schema.clone(), // Shift preserves schema (I1-I3)
                         };
@@ -265,7 +265,7 @@ fn plan_expr(
                             _ => return Err("rolling-std w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_NLN_SDV { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)
                     }
 
 
@@ -282,7 +282,7 @@ fn plan_expr(
                             _ => return Err("rolling-std-min2 w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_MIN2_NLN_SDV { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(NumericFunc::RollStdMin2 { w }, &elements[2..], plan, ctx, interner)
                     }
 
                     // Feature engineering: ft-std as planner rewrite
@@ -301,7 +301,7 @@ fn plan_expr(
                         };
 
                         // Plan inner rolling-std
-                        let rolling_node = plan_unary(NumericFunc::SHF_WIN_NLN_SDV { w }, &elements[2..], plan, ctx, interner)?;
+                        let rolling_node = plan_unary(NumericFunc::RollStd { w }, &elements[2..], plan, ctx, interner)?;
 
                         // Plan outer shift(1, ...)
                         let input_node = plan.get_node(rolling_node).ok_or("Invalid rolling-std node")?;
@@ -310,7 +310,7 @@ fn plan_expr(
                             id: shift_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: rolling_node,
-                                func: NumericFunc::SHF_PTW_LIN_SHF { k: 1 },
+                                func: NumericFunc::Shift { k: 1 },
                             }),
                             schema: input_node.schema.clone(), // Shift preserves schema (I1-I3)
                         };
@@ -352,7 +352,7 @@ fn plan_expr(
                             id: mean_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::SHF_WIN_MIN2_LIN_AVG { w },
+                                func: NumericFunc::RollMeanMin2 { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
@@ -365,7 +365,7 @@ fn plan_expr(
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::SHF_WIN_MIN2_NLN_SDV { w },
+                                func: NumericFunc::RollStdMin2 { w },
                             }),
                             schema: x_schema.clone(), // Unary preserves schema (I1-I3)
                         };
@@ -378,7 +378,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: x_node,
                                 rhs: ValueRef::Frame(mean_node_id),
-                                func: BinaryFunc::SUB,
+                                func: BinaryFunc::Sub,
                             }),
                             schema: x_schema.clone(), // Binary preserves LHS schema
                         };
@@ -391,7 +391,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: sub_node_id,
                                 rhs: ValueRef::Frame(std_node_id),
-                                func: BinaryFunc::DIV,
+                                func: BinaryFunc::Div,
                             }),
                             schema: x_schema, // Binary preserves LHS schema
                         };
@@ -429,7 +429,7 @@ fn plan_expr(
                             id: std_node_id,
                             op: Operation::Unary(UnaryOp::MapNumeric {
                                 input: x_node,
-                                func: NumericFunc::SHF_WIN_MIN2_NLN_SDV { w },
+                                func: NumericFunc::RollStdMin2 { w },
                             }),
                             schema: x_schema.clone(),
                         };
@@ -442,7 +442,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: std_node_id,
                                 rhs: ValueRef::Scalar(1587.4507866),
-                                func: BinaryFunc::MUL,
+                                func: BinaryFunc::Mul,
                             }),
                             schema: x_schema.clone(),
                         };
@@ -455,7 +455,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: x_node,
                                 rhs: ValueRef::Frame(scalar_node_id),
-                                func: BinaryFunc::DIV,
+                                func: BinaryFunc::Div,
                             }),
                             schema: x_schema,
                         };
@@ -482,10 +482,10 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
 
                         // Plan ft-mean: rolling mean excluding current observation (window ending at i-1)
-                        let ft_mean_node_id = plan_unary(NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_mean_node_id = plan_unary(NumericFunc::RollMeanMin2ExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
                         // Plan ft-std: rolling std excluding current observation (window ending at i-1)
-                        let ft_std_node_id = plan_unary(NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_std_node_id = plan_unary(NumericFunc::RollStdMin2ExclCurrent { w }, &[elements[2].clone()], plan, ctx, interner)?;
 
                         // Plan (- x ft-mean)
                         let sub_node_id = NodeId(plan.nodes.len());
@@ -495,7 +495,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: x_node,
                                 rhs: ValueRef::Frame(ft_mean_node_id),
-                                func: BinaryFunc::SUB,
+                                func: BinaryFunc::Sub,
                             }),
                             schema: x_schema.clone(),
                         };
@@ -508,7 +508,7 @@ fn plan_expr(
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
                                 lhs: sub_node_id,
                                 rhs: ValueRef::Frame(ft_std_node_id),
-                                func: BinaryFunc::DIV,
+                                func: BinaryFunc::Div,
                             }),
                             schema: x_schema,
                         };
@@ -516,11 +516,11 @@ fn plan_expr(
                     }
 
                     // Binary numeric operations
-                    "+" => plan_binary(BinaryFunc::ADD, &elements[1..], plan, ctx, interner),
-                    "-" => plan_binary(BinaryFunc::SUB, &elements[1..], plan, ctx, interner),
-                    "*" => plan_binary(BinaryFunc::MUL, &elements[1..], plan, ctx, interner),
-                    "/" => plan_binary(BinaryFunc::DIV, &elements[1..], plan, ctx, interner),
-                    ">" => plan_binary(BinaryFunc::GTR, &elements[1..], plan, ctx, interner),
+                    "+" => plan_binary(BinaryFunc::Add, &elements[1..], plan, ctx, interner),
+                    "-" => plan_binary(BinaryFunc::Sub, &elements[1..], plan, ctx, interner),
+                    "*" => plan_binary(BinaryFunc::Mul, &elements[1..], plan, ctx, interner),
+                    "/" => plan_binary(BinaryFunc::Div, &elements[1..], plan, ctx, interner),
+                    ">" => plan_binary(BinaryFunc::Gt, &elements[1..], plan, ctx, interner),
 
                     // Join operations
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),
@@ -547,7 +547,7 @@ fn plan_expr(
                         let node_id = NodeId(plan.nodes.len());
                         let node = Node {
                             id: node_id,
-                            op: Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input, half }),
+                            op: Operation::Schema(SchemaOp::Xminus { input, half }),
                             schema: SchemaInfo::unknown(),  // Schema will be rebuilt at runtime
                         };
                         Ok(plan.add_node(node))
@@ -577,7 +577,7 @@ fn plan_expr(
                         let node_id = NodeId(plan.nodes.len());
                         let node = Node {
                             id: node_id,
-                            op: Operation::Schema(SchemaOp::MSK_WKE_DEF { input, name }),
+                            op: Operation::Schema(SchemaOp::MaskWeekend { input, name }),
                             schema: SchemaInfo::unknown(),
                         };
                         Ok(plan.add_node(node))
@@ -598,7 +598,7 @@ fn plan_expr(
                         let node_id = NodeId(plan.nodes.len());
                         let node = Node {
                             id: node_id,
-                            op: Operation::Schema(SchemaOp::WTH_MSK { input, mask_expr }),
+                            op: Operation::Schema(SchemaOp::WithMask { input, mask_expr }),
                             schema: SchemaInfo::unknown(),
                         };
                         Ok(plan.add_node(node))
@@ -712,8 +712,8 @@ fn plan_join(
     let node = Node {
         id: node_id,
         op: match kind {
-            JoinKind::MapR => Operation::Join(JoinOp::ALIGN { x, y }),
-            JoinKind::AsofR => Operation::Join(JoinOp::ASOF_ALIGN { x, y }),
+            JoinKind::MapR => Operation::Join(JoinOp::MapR { x, y }),
+            JoinKind::AsofR => Operation::Join(JoinOp::AsofR { x, y }),
         },
         // Join contract: y's index, x's colnames, y's nrows
         schema: SchemaInfo {
@@ -895,7 +895,7 @@ mod tests {
         match &plan.nodes[1].op {
             Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
                 assert_eq!(*input, NodeId(0));
-                assert_eq!(*func, NumericFunc::SHF_PTW_NLN_DLOG);
+                assert_eq!(*func, NumericFunc::Dlog);
             }
             _ => panic!("Expected unary dlog"),
         }
@@ -927,7 +927,7 @@ mod tests {
 
         // Node 2: mapr join
         match &plan.nodes[2].op {
-            Operation::Join(JoinOp::ALIGN { x, y }) => {
+            Operation::Join(JoinOp::MapR { x, y }) => {
                 assert_eq!(*x, NodeId(0));
                 assert_eq!(*y, NodeId(1));
             }
@@ -968,7 +968,7 @@ mod tests {
 
         // Final node should be mapr
         match &plan.nodes[3].op {
-            Operation::Join(JoinOp::ALIGN { .. }) => {}
+            Operation::Join(JoinOp::MapR { .. }) => {}
             _ => panic!("Expected mapr as final op"),
         }
     }

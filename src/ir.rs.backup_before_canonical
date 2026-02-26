@@ -156,25 +156,22 @@ pub enum UnaryOp {
 ///
 /// Each corresponds to a proven kernel from blawktrust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
 pub enum NumericFunc {
     /// Difference log: dlog(x) = log(x / x[-1])
-    /// Canonical: SHF_PTW_NLN_DLOG (Shift-equivariant, Pointwise, Nonlinear, DiffLog)
-    SHF_PTW_NLN_DLOG,
+    Dlog,
     /// Simple return: ret(x) = x / x[-1] - 1
-    RET,
+    Ret,
     /// Natural log
-    LOG,
+    Log,
     /// Exponential
-    EXP,
+    Exp,
     /// Square root
-    SQRT,
+    Sqrt,
     /// Absolute value
-    ABS,
+    Abs,
     /// Inverse: 1/x
-    INV,
+    Inv,
     /// Last observation carried forward (fill NA with last valid)
-    /// Canonical: SHF_REC_NLN_LOCF (Shift-equivariant, Recursive, Nonlinear, LOCF)
     ///
     /// Contract:
     /// - Leading NAs preserved until first valid value
@@ -185,10 +182,9 @@ pub enum NumericFunc {
     /// - NA policy: "skip" (carries previous value, not "poison")
     /// - NA mask: can only shrink after first valid (fills existing NAs)
     /// - Different from most ops: REDUCES NAs, doesn't grow them
-    SHF_REC_NLN_LOCF,
+    Locf,
 
     /// Weekday mask (wkd): Set weekend values to NA (shape-preserving)
-    /// Canonical: MSK_WKE (Mask, Weekend)
     ///
     /// Contract:
     /// - **Shape-preserving**: All invariants maintained (I1, I2, I3)
@@ -212,10 +208,9 @@ pub enum NumericFunc {
     /// - Day of week: 0=Sunday, 1=Monday, ..., 6=Saturday
     /// - Weekdays: Monday-Friday (1-5)
     /// - Weekends: Saturday-Sunday (0, 6)
-    MSK_WKE,
+    Wkd,
 
     /// Cumulative sum starting at 1.0
-    /// Canonical: SHF_PFX_LIN_SUM (Shift-equivariant, Prefix, Linear, Sum)
     ///
     /// Contract (updated for shape-preserving wkd):
     /// - Starts at 1.0 (not 0.0!)
@@ -228,20 +223,19 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3)
     /// - Used for index reconstruction from differences
     /// - NOT idempotent (cs1(cs1(x)) != cs1(x))
-    SHF_PFX_LIN_SUM,
+    CumSum,
     /// Shift (lag): shift k rows down
-    /// Canonical: SHF_PTW_LIN_SHF (Shift-equivariant, Pointwise, Linear, Shift)
     ///
     /// Contract:
     /// - k ≥ 0 only (v1: no forward-looking)
     /// - Output[i] = Input[i-k] for i >= k, NA for i < k
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone (only grows)
-    SHF_PTW_LIN_SHF { k: usize },
+    Shift { k: usize },
     /// Mask-aware shift: lag by k eligible (unmasked) observations
     /// Skips masked rows only (not NA values)
     /// For matching CLISPI's wkd-filtered behavior
-    LAG_OBS { k: usize },
+    LagObs { k: usize },
     /// Keep every k-th row (shape-preserving)
     ///
     /// Contract:
@@ -250,9 +244,8 @@ pub enum NumericFunc {
     /// - Shape preserved (I1-I3): nrows unchanged
     /// - Used for downsampling while maintaining alignment
     /// - Example: k=5 keeps rows 0, 5, 10, 15, ...
-    KEEP { k: usize },
+    Keep { k: usize },
     /// Rolling mean: trailing window mean
-    /// Canonical: SHF_WIN_LIN_AVG (Shift-equivariant, Window, Linear, Average)
     ///
     /// Contract (see contracts.md §5):
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -260,9 +253,8 @@ pub enum NumericFunc {
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone
-    SHF_WIN_LIN_AVG { w: usize },
+    RollMean { w: usize },
     /// Rolling standard deviation: trailing window std (population, ddof=0)
-    /// Canonical: SHF_WIN_NLN_SDV (Shift-equivariant, Window, Nonlinear, StdDev)
     ///
     /// Contract (see contracts.md §5):
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -273,9 +265,8 @@ pub enum NumericFunc {
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
     /// - NA mask monotone
-    SHF_WIN_NLN_SDV { w: usize },
+    RollStd { w: usize },
     /// Rolling mean (min 2 observations): relaxed min_periods for masked calendars
-    /// Canonical: SHF_WIN_MIN2_LIN_AVG (Shift-equivariant, Window, Min2, Linear, Average)
     ///
     /// Contract:
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -284,9 +275,8 @@ pub enum NumericFunc {
     /// - Designed for: weekday-masked calendars with weekend NAs
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
-    SHF_WIN_MIN2_LIN_AVG { w: usize },
+    RollMeanMin2 { w: usize },
     /// Rolling std (min 2 observations): relaxed min_periods for masked calendars
-    /// Canonical: SHF_WIN_MIN2_NLN_SDV (Shift-equivariant, Window, Min2, Nonlinear, StdDev)
     ///
     /// Contract:
     /// - Trailing window: [i-w+1 .. i] inclusive
@@ -295,9 +285,8 @@ pub enum NumericFunc {
     /// - Designed for: weekday-masked calendars with weekend NAs
     /// - Prefix i < w-1 always NA
     /// - Shape preserved (I1-I3)
-    SHF_WIN_MIN2_NLN_SDV { w: usize },
+    RollStdMin2 { w: usize },
     /// Rolling mean (min 2 observations) excluding current observation - for ft-zscore
-    /// Canonical: SHF_WIN_MIN2_LIN_AVG_EXCL (Shift, Window, Min2, Linear, Avg, ExclCurrent)
     ///
     /// Contract:
     /// - Window ending at i-1: [i-w .. i-1] inclusive, excluding current row i
@@ -305,12 +294,11 @@ pub enum NumericFunc {
     /// - Skip masked and NA observations when counting back
     /// - Require ≥2 valid values in window
     /// - Used by ft-zscore to avoid lookahead: zscore[i] uses stats from i-1 and earlier
-    SHF_WIN_MIN2_LIN_AVG_EXCL { w: usize },
+    RollMeanMin2ExclCurrent { w: usize },
     /// Rolling std (min 2 observations) excluding current observation - for ft-zscore
-    /// Canonical: SHF_WIN_MIN2_NLN_SDV_EXCL (Shift, Window, Min2, Nonlinear, StdDev, ExclCurrent)
     ///
-    /// Same contract as SHF_WIN_MIN2_LIN_AVG_EXCL but for standard deviation
-    SHF_WIN_MIN2_NLN_SDV_EXCL { w: usize },
+    /// Same contract as RollMeanMin2ExclCurrent but for standard deviation
+    RollStdMin2ExclCurrent { w: usize },
 }
 
 /// Binary operations (element-wise combination of two inputs)
@@ -343,48 +331,44 @@ pub enum ValueRef {
 /// Semantics: operate cell-wise on LHS with RHS
 /// NA propagation: if either cell is NA, result is NA
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(non_camel_case_types)]
 pub enum BinaryFunc {
     /// Addition
-    ADD,
+    Add,
     /// Subtraction
-    SUB,
+    Sub,
     /// Multiplication
-    MUL,
+    Mul,
     /// Division
-    DIV,
+    Div,
     /// Greater than: x > y → 1.0 (true), 0.0 (false), NA (if either is NA)
-    GTR,
+    Gt,
 }
 
 /// Join operations
 ///
 /// Contract: Output has y's index and x's colnames
 #[derive(Debug, Clone)]
-#[allow(non_camel_case_types)]
 pub enum JoinOp {
     /// Exact match join (RIGHT OUTER JOIN)
-    /// Canonical: ALIGN
     ///
     /// Semantics: mapr(x, y)
     /// - Output index = y's index (Arc preserved)
     /// - Output colnames = x's colnames (Arc preserved)
     /// - Output nrows = y's nrows
     /// - Missing rows → NA
-    ALIGN {
+    MapR {
         x: NodeId,  // Source frame (provides data columns)
         y: NodeId,  // Target frame (provides index)
     },
 
     /// As-of join (RIGHT OUTER ASOF JOIN)
-    /// Canonical: ASOF_ALIGN
     ///
     /// Semantics: asofr(x, y)
     /// - Output index = y's index (Arc preserved)
     /// - Output colnames = x's colnames (Arc preserved)
     /// - Output nrows = y's nrows
     /// - At-or-before matching (no forward-looking)
-    ASOF_ALIGN {
+    AsofR {
         x: NodeId,  // Source frame (provides data columns)
         y: NodeId,  // Target frame (provides index)
     },
@@ -397,10 +381,8 @@ pub enum JoinOp {
 /// - I2_schema: colnames Arc REBUILT (not preserved, but deterministic)
 /// - I3 preserved: nrows unchanged
 #[derive(Debug, Clone)]
-#[allow(non_camel_case_types)]
 pub enum SchemaOp {
     /// Pairwise spreads: column differences
-    /// Canonical: SHF_PTW_LIN_SPR (Shift-equivariant, Pointwise, Linear, Spread)
     ///
     /// Semantics: xminus(data, half)
     /// - half=false: All pairs (nc*(nc-1) columns) - A-B, B-A, C-A, C-B, B-C, A-C
@@ -409,13 +391,12 @@ pub enum SchemaOp {
     /// - NA policy: if either input NA, output NA
     /// - Output ncols: depends on half mode
     /// - Output colnames: newly generated Arc (deterministic order)
-    SHF_PTW_LIN_SPR {
+    Xminus {
         input: NodeId,
         half: bool,  // false = all pairs, true = upper triangle only
     },
 
     /// Create weekend mask: (mask-weekend frame [name])
-    /// Canonical: MSK_WKE_DEF (Mask, Weekend, Define)
     ///
     /// Contract:
     /// - I1 preserved: index Arc ptr_eq
@@ -428,13 +409,12 @@ pub enum SchemaOp {
     /// - Computes weekend bitvec from index (Saturday=true, Sunday=true)
     /// - Stores in frame.tags.masks[name]
     /// - Does NOT activate the mask
-    MSK_WKE_DEF {
+    MaskWeekend {
         input: NodeId,
         name: Option<String>,  // default: "weekend"
     },
 
     /// Activate mask: (with-mask frame mask-expr)
-    /// Canonical: WTH_MSK (With, Mask)
     ///
     /// Contract:
     /// - I1 preserved: index Arc ptr_eq
@@ -448,7 +428,7 @@ pub enum SchemaOp {
     /// - Compiles mask_expr using frame.tags.masks
     /// - Sets frame.tags.active_mask to result
     /// - All subsequent operations respect active_mask
-    WTH_MSK {
+    WithMask {
         input: NodeId,
         mask_expr: crate::mask::MaskExpr,
     },
@@ -464,7 +444,7 @@ impl Plan {
     pub fn validate(&self) -> Result<(), String> {
         for node in &self.nodes {
             match &node.op {
-                Operation::Join(JoinOp::ALIGN { x, y }) | Operation::Join(JoinOp::ASOF_ALIGN { x, y }) => {
+                Operation::Join(JoinOp::MapR { x, y }) | Operation::Join(JoinOp::AsofR { x, y }) => {
                     let x_node = self.get_node(*x).ok_or("Invalid x node reference")?;
                     let y_node = self.get_node(*y).ok_or("Invalid y node reference")?;
 
@@ -557,7 +537,7 @@ impl Plan {
                 Operation::Source(_) => {
                     // Sources have no inputs to validate
                 }
-                Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input, .. }) => {
+                Operation::Schema(SchemaOp::Xminus { input, .. }) => {
                     let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I3 preserved (I2_schema allows colname rebuild)
@@ -570,7 +550,7 @@ impl Plan {
                     // Note: colnames (I2) are intentionally rebuilt for schema ops
                 }
 
-                Operation::Schema(SchemaOp::MSK_WKE_DEF { input, .. }) => {
+                Operation::Schema(SchemaOp::MaskWeekend { input, .. }) => {
                     let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
@@ -583,7 +563,7 @@ impl Plan {
                     // I2 (colnames) also preserved for mask ops
                 }
 
-                Operation::Schema(SchemaOp::WTH_MSK { input, .. }) => {
+                Operation::Schema(SchemaOp::WithMask { input, .. }) => {
                     let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
@@ -642,7 +622,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: source,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::Dlog,
             }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),
@@ -687,7 +667,7 @@ mod tests {
 
         let join = plan.add_node(Node {
             id: NodeId(2),
-            op: Operation::Join(JoinOp::ALIGN { x, y }),
+            op: Operation::Join(JoinOp::MapR { x, y }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),
                 colnames: None,
@@ -731,7 +711,7 @@ mod tests {
 
         let join = plan.add_node(Node {
             id: NodeId(2),
-            op: Operation::Join(JoinOp::ALIGN { x, y }),
+            op: Operation::Join(JoinOp::MapR { x, y }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Timestamp),
                 colnames: None,
@@ -766,7 +746,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: source,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::Dlog,
             }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),

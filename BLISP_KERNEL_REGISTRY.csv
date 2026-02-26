@@ -1,0 +1,30 @@
+kernel_id;description;inv;mem;alg;opc;canonical_old;params_schema;shape_in;shape_out
+DLOG;Difference log: log(x[i] / x[i-1]);I123;ALLOC;POINT_LAG;DLOG;I123_ALLOC_POINT_LAG_DLOG;;vec;vec
+RET;Simple return: (x[i] / x[i-1]) - 1;I123;ALLOC;POINT_LAG;RET;I123_ALLOC_POINT_LAG_RET;;vec;vec
+LOG;Natural logarithm;I123;ALLOC;POINT;LOG;I123_ALLOC_POINT_LOG;;vec;vec
+EXP;Exponential;I123;ALLOC;POINT;EXP;I123_ALLOC_POINT_EXP;;vec;vec
+SQRT;Square root;I123;ALLOC;POINT;SQRT;I123_ALLOC_POINT_SQRT;;vec;vec
+ABS;Absolute value;I123;ALLOC;POINT;ABS;I123_ALLOC_POINT_ABS;;vec;vec
+INV;Inverse: 1/x (NA on div by zero);I123;ALLOC;POINT;INV;I123_ALLOC_POINT_INV;;vec;vec
+LOCF;Last observation carried forward (fill NA with last valid);I13;ALLOC;FILL;LOCF;I13_ALLOC_FILL_LOCF;;vec;vec
+WKD;Weekend mask (set Saturday/Sunday to NA);I123;ZC;MASK_CALENDAR;WKD;I123_ZC_MASK_CALENDAR_WKD;;frame;frame
+CUM_SUM;Cumulative sum starting at 1.0;I123;ALLOC;CUM;CS1;I123_ALLOC_CUM_CS1;;vec;vec
+SHIFT;Shift (calendar lag): output[i] = input[i-k];I123;ALLOC;LAG_CALENDAR;SHIFT;I123_ALLOC_LAG_CALENDAR_SHIFT;k:int;vec;vec
+LAG_OBS;Observation lag: lag by k unmasked observations;I123;ALLOC;LAG_OBS;LAG_OBS;I123_ALLOC_LAG_OBS_LAG_OBS;k:int;vec;vec
+KEEP;Keep every k-th row (downsample with NA fill);I123;ALLOC;DOWNSAMPLE;KEEP;I123_ALLOC_DOWNSAMPLE_KEEP;k:int;vec;vec
+ROLL_MEAN;Rolling mean: trailing window [i-w+1..i], strict w valid values;I123;ALLOC;ROLL_STRICT;WMEAN;I123_ALLOC_ROLL_STRICT_WMEAN;w:int;vec;vec
+ROLL_STD;Rolling std: trailing window [i-w+1..i], strict w valid values, ddof=0;I123;ALLOC;ROLL_STRICT;WSTD;I123_ALLOC_ROLL_STRICT_WSTD;w:int;vec;vec
+ROLL_MEAN_MIN2;Rolling mean: trailing window, min 2 valid values;I123;ALLOC;ROLL_PARTIAL;WMEAN_MIN2;I123_ALLOC_ROLL_PARTIAL_WMEAN_MIN2;w:int;vec;vec
+ROLL_STD_MIN2;Rolling std: trailing window, min 2 valid values, ddof=0;I123;ALLOC;ROLL_PARTIAL;WSTD_MIN2;I123_ALLOC_ROLL_PARTIAL_WSTD_MIN2;w:int;vec;vec
+ROLL_MEAN_MIN2_EXCL;Rolling mean: window [i-w..i-1], min 2 valid, Ft-measurable;I123;ALLOC;ROLL_FT;WMEAN_FT;I123_ALLOC_ROLL_FT_WMEAN_FT;w:int;vec;vec
+ROLL_STD_MIN2_EXCL;Rolling std: window [i-w..i-1], min 2 valid, Ft-measurable;I123;ALLOC;ROLL_FT;WSTD_FT;I123_ALLOC_ROLL_FT_WSTD_FT;w:int;vec;vec
+ADD;Binary addition: lhs + rhs;I123_LHS;ALLOC;POINT;ADD;I123_LHS_ALLOC_POINT_ADD;;vec+scalar;vec
+SUB;Binary subtraction: lhs - rhs;I123_LHS;ALLOC;POINT;SUB;I123_LHS_ALLOC_POINT_SUB;;vec+scalar;vec
+MUL;Binary multiplication: lhs * rhs;I123_LHS;ALLOC;POINT;MUL;I123_LHS_ALLOC_POINT_MUL;;vec+scalar;vec
+DIV;Binary division: lhs / rhs;I123_LHS;ALLOC;POINT;DIV;I123_LHS_ALLOC_POINT_DIV;;vec+scalar;vec
+GT;Greater than: x > y → 1.0 (true), 0.0 (false), NA (if either NA);I123_LHS;ALLOC;POINT;GT;I123_LHS_ALLOC_POINT_GT;;vec+scalar;vec
+MAPR;Exact match join (RIGHT OUTER): output index from y, data from x;I1_Y_I2_X_I3_Y;ARC;JOIN_EXACT;MAPR;I1_Y_I2_X_I3_Y_ARC_JOIN_EXACT_MAPR;;frame+frame;frame
+ASOFR;As-of join (RIGHT OUTER ASOF): output index from y, at-or-before match;I1_Y_I2_X_I3_Y;ARC;JOIN_ASOF;ASOFR;I1_Y_I2_X_I3_Y_ARC_JOIN_ASOF_ASOFR;;frame+frame;frame
+XMINUS;Pairwise column differences: all pairs or upper triangle only;I13_I2SCHEMA;ALLOC;XSEC_SPREADS;XMINUS;I13_I2SCHEMA_ALLOC_XSEC_SPREADS_XMINUS;half:bool;frame;frame
+MASK_WEEKEND;Create weekend mask bitvec from index dates;I123;TAGS_MODIFIED;MASK_CREATE;MASK_WEEKEND;I123_TAGS_MODIFIED_MASK_CREATE_MASK_WEEKEND;name:string;frame;frame
+WITH_MASK;Activate mask: set active_mask in Tags;I123;TAGS_MODIFIED;MASK_ACTIVATE;WITH_MASK;I123_TAGS_MODIFIED_MASK_ACTIVATE_WITH_MASK;mask_expr:expr;frame;frame
