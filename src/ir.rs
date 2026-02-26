@@ -158,9 +158,15 @@ pub enum UnaryOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum NumericFunc {
-    /// Difference log: dlog(x) = log(x / x[-1])
-    /// Canonical: SHF_PTW_NLN_DLOG (Shift-equivariant, Pointwise, Nonlinear, DiffLog)
-    SHF_PTW_NLN_DLOG,
+    /// Difference log: observation-based (NA-skipping lag)
+    /// Canonical: SHF_PTW_OBS_NLN_DLOG (Shift-equivariant, Observation-based, Nonlinear, DiffLog)
+    /// Example: [100,NA,NA,110] → [NA,NA,NA,ln(110/100)] (skipped 2 NAs)
+    SHF_PTW_OBS_NLN_DLOG,
+
+    /// Difference log: offset-based (positional lag)
+    /// Canonical: SHF_PTW_OFS_NLN_DLOG (Shift-equivariant, Offset-based, Nonlinear, DiffLog)
+    /// Example: [100,NA,NA,110] → [NA,NA,NA,NA] (used x[i-1]=NA)
+    SHF_PTW_OFS_NLN_DLOG,
     /// Simple return: ret(x) = x / x[-1] - 1
     RET,
     /// Natural log
@@ -642,7 +648,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: source,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
             }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),
@@ -766,7 +772,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: source,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
             }),
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),

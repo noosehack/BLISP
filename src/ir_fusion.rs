@@ -160,7 +160,7 @@ fn is_fusible_unary(func: NumericFunc) -> bool {
         NumericFunc::ABS | NumericFunc::INV => true,
 
         // Temporal functions - NOT fusible (different semantics)
-        NumericFunc::SHF_PTW_NLN_DLOG | NumericFunc::RET => false,
+        NumericFunc::SHF_PTW_OBS_NLN_DLOG | NumericFunc::SHF_PTW_OFS_NLN_DLOG | NumericFunc::RET => false,
 
         // Locf - NOT fusible (stateful, maintains last_valid)
         NumericFunc::SHF_REC_NLN_LOCF => false,
@@ -378,7 +378,7 @@ fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
         NumericFunc::INV => inv_column(col),
 
         // These should not be fused (filtered by is_fusible_unary)
-        NumericFunc::SHF_PTW_NLN_DLOG | NumericFunc::RET |
+        NumericFunc::SHF_PTW_OBS_NLN_DLOG | NumericFunc::SHF_PTW_OFS_NLN_DLOG | NumericFunc::RET |
         NumericFunc::SHF_REC_NLN_LOCF | NumericFunc::MSK_WKE | NumericFunc::SHF_PFX_LIN_SUM |
         NumericFunc::SHF_PTW_LIN_SHF { .. } | NumericFunc::LAG_OBS { .. } | NumericFunc::KEEP { .. } |
         NumericFunc::SHF_WIN_LIN_AVG { .. } | NumericFunc::SHF_WIN_NLN_SDV { .. } |
@@ -533,7 +533,7 @@ mod tests {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
                 input: x_id,
-                func: NumericFunc::SHF_PTW_NLN_DLOG,
+                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
             }),
             schema: SchemaInfo::unknown(),
         });
