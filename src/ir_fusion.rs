@@ -82,129 +82,133 @@ pub fn optimize_elementwise_fusion(plan: &Plan) -> Plan {
         }
     }
 
-    let mut new_nodes = Vec::new();
-    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new(); // old id → new id
-    let mut fused = vec![false; plan.nodes.len()]; // nodes that were fused into others
+    // PASS 1: Identify fusible chains (reverse order to find longest chains first)
+    // Maps chain head node → (input, ops)
+    let mut fusion_info: HashMap<NodeId, (NodeId, Vec<NumericFunc>)> = HashMap::new();
+    let mut fused = vec![false; plan.nodes.len()];
 
-    for (i, node) in plan.nodes.iter().enumerate() {
+    for (i, node) in plan.nodes.iter().enumerate().rev() {
         if fused[i] {
-            continue; // Already fused into another node
+            continue;
         }
 
-        // Try to fuse elementwise chain starting at this node
         if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
             if func.is_pure_elementwise() {
-                // Start building a chain
                 let mut ops = vec![*func];
                 let mut current_input = *input;
                 let mut chain_nodes = vec![node.id];
 
-                // Walk backwards to find more elementwise ops
+                // Walk backwards to collect fusible ops
                 loop {
-                    // Check if input is a fusible elementwise MapNumeric with single consumer
                     let input_node = &plan.nodes[current_input.0];
-
                     if let Operation::Unary(UnaryOp::MapNumeric { input: next_input, func: input_func }) = &input_node.op {
                         if input_func.is_pure_elementwise() && consumers.get(&current_input).copied().unwrap_or(0) == 1 {
-                            // Fusible! Prepend this op (we're walking backwards)
                             ops.insert(0, *input_func);
                             chain_nodes.insert(0, current_input);
                             current_input = *next_input;
                             continue;
                         }
                     }
-
-                    break; // Can't fuse further
+                    break;
                 }
 
-                // If we found a chain of length > 1, fuse it
+                // Mark chain and store fusion info
                 if ops.len() > 1 {
-                    // Mark intermediate nodes as fused
-                    for &chain_node_id in &chain_nodes[..chain_nodes.len()-1] {
+                    for &chain_node_id in &chain_nodes {
                         fused[chain_node_id.0] = true;
                     }
-
-                    // Remap the input through node_map if it was already transformed
-                    let remapped_input = node_map.get(&current_input).copied().unwrap_or(current_input);
-
-                    // Create fused node
-                    let new_id = NodeId(new_nodes.len());
-                    node_map.insert(node.id, new_id);
-
-                    new_nodes.push(Node {
-                        id: new_id,
-                        op: Operation::Unary(UnaryOp::FusedElementwise {
-                            input: remapped_input,
-                            ops,
-                        }),
-                        schema: node.schema.clone(),
-                    });
-
-                    continue;
+                    fusion_info.insert(node.id, (current_input, ops));
                 }
             }
         }
+    }
 
-        // Not fusible - copy node with remapped inputs
-        let new_id = NodeId(new_nodes.len());
-        node_map.insert(node.id, new_id);
+    // PASS 2: Build new plan (forward order)
+    let mut new_nodes = Vec::new();
+    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
 
-        let new_op = match &node.op {
-            Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::MapNumeric { input: remapped, func: *func })
-            }
-            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedElementwise { input: remapped, ops: ops.clone() })
-            }
-            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
-                let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
-                let remapped_rhs = match rhs {
-                    ValueRef::Scalar(s) => ValueRef::Scalar(*s),
-                    ValueRef::Frame(id) => ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id)),
-                };
-                Operation::Binary(BinaryOp::MapNumeric2 { lhs: remapped_lhs, rhs: remapped_rhs, func: *func })
-            }
-            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
-                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
-                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
-                Operation::Join(crate::ir::JoinOp::ALIGN { x: remapped_x, y: remapped_y })
-            }
-            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
-                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
-                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
-                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: remapped_x, y: remapped_y })
-            }
-            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedCs1Elementwise { input: remapped, ops: ops.clone() })
-            }
-            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedCs1DlogOfs { input: remapped, lag: *lag })
-            }
-            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
-            }
-            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedDlogObsElementwise { input: remapped, ops: ops.clone() })
-            }
-            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
-                let remapped = node_map.get(input).copied().unwrap_or(*input);
-                Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input: remapped, lag: *lag, ops: ops.clone() })
-            }
-            Operation::Source(s) => Operation::Source(s.clone()),
-            Operation::Schema(s) => Operation::Schema(s.clone()),
-        };
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if fused[i] && !fusion_info.contains_key(&node.id) {
+            // This node was fused into another chain head - skip it
+            continue;
+        }
 
-        new_nodes.push(Node {
-            id: new_id,
-            op: new_op,
-            schema: node.schema.clone(),
-        });
+        if let Some((input, ops)) = fusion_info.get(&node.id) {
+            // This is a fusion chain head - create fused node
+            let remapped_input = node_map.get(input).copied().unwrap_or(*input);
+            let new_id = NodeId(new_nodes.len());
+            node_map.insert(node.id, new_id);
+
+            new_nodes.push(Node {
+                id: new_id,
+                op: Operation::Unary(UnaryOp::FusedElementwise {
+                    input: remapped_input,
+                    ops: ops.clone(),
+                }),
+                schema: node.schema.clone(),
+            });
+        } else {
+            // Not fusible - copy node with remapped inputs
+            let new_id = NodeId(new_nodes.len());
+            node_map.insert(node.id, new_id);
+
+            let new_op = match &node.op {
+                Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::MapNumeric { input: remapped, func: *func })
+                }
+                Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedElementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
+                    let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
+                    let remapped_rhs = match rhs {
+                        ValueRef::Scalar(s) => ValueRef::Scalar(*s),
+                        ValueRef::Frame(id) => ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id)),
+                    };
+                    Operation::Binary(BinaryOp::MapNumeric2 { lhs: remapped_lhs, rhs: remapped_rhs, func: *func })
+                }
+                Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
+                    let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                    let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                    Operation::Join(crate::ir::JoinOp::ALIGN { x: remapped_x, y: remapped_y })
+                }
+                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                    let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                    let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                    Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: remapped_x, y: remapped_y })
+                }
+                Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1Elementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1DlogOfs { input: remapped, lag: *lag })
+                }
+                Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
+                }
+                Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedDlogObsElementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input: remapped, lag: *lag, ops: ops.clone() })
+                }
+                Operation::Source(s) => Operation::Source(s.clone()),
+                Operation::Schema(s) => Operation::Schema(s.clone()),
+            };
+
+            new_nodes.push(Node {
+                id: new_id,
+                op: new_op,
+                schema: node.schema.clone(),
+            });
+        }
     }
 
     Plan { nodes: new_nodes }
@@ -244,6 +248,27 @@ pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
     let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
     let mut fused = vec![false; plan.nodes.len()];
 
+    // PASS 1: Mark nodes that will be fused
+    for node in &plan.nodes {
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if matches!(func, NumericFunc::SHF_PFX_LIN_SUM) {
+                let input_node = &plan.nodes[input.0];
+
+                // Mark fusible inputs
+                if let Operation::Unary(UnaryOp::FusedElementwise { .. }) = &input_node.op {
+                    if consumers.get(input).copied().unwrap_or(0) == 1 {
+                        fused[input.0] = true;
+                    }
+                } else if let Operation::Unary(UnaryOp::MapNumeric { func: ew_func, .. }) = &input_node.op {
+                    if ew_func.is_pure_elementwise() && consumers.get(input).copied().unwrap_or(0) == 1 {
+                        fused[input.0] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // PASS 2: Build optimized plan
     for (i, node) in plan.nodes.iter().enumerate() {
         if fused[i] {
             continue;
@@ -258,8 +283,7 @@ pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
                 // Case 1: Input is FusedElementwise with single consumer
                 if let Operation::Unary(UnaryOp::FusedElementwise { input: chain_input, ops }) = &input_node.op {
                     if consumers.get(input).copied().unwrap_or(0) == 1 {
-                        // Fusible! Mark intermediate as fused
-                        fused[input.0] = true;
+                        // Already marked as fused in Pass 1
 
                         // Remap chain input
                         let remapped_input = node_map.get(chain_input).copied().unwrap_or(*chain_input);
@@ -284,8 +308,7 @@ pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
                 // Case 2: Input is single elementwise MapNumeric with single consumer
                 if let Operation::Unary(UnaryOp::MapNumeric { input: ew_input, func: ew_func }) = &input_node.op {
                     if ew_func.is_pure_elementwise() && consumers.get(input).copied().unwrap_or(0) == 1 {
-                        // Fusible! Mark intermediate as fused
-                        fused[input.0] = true;
+                        // Already marked as fused in Pass 1
 
                         // Remap input
                         let remapped_input = node_map.get(ew_input).copied().unwrap_or(*ew_input);
@@ -654,9 +677,9 @@ mod tests {
         });
         
         assert_eq!(plan.nodes.len(), 4, "Before optimization: 4 nodes");
-        
+
         let optimized = optimize(&plan);
-        
+
         assert_eq!(optimized.nodes.len(), 2, "After optimization: 2 nodes (source + fused)");
         
         // Verify fused node structure
@@ -702,11 +725,11 @@ mod tests {
             }),
             schema: SchemaInfo::unknown(),
         });
-        
+
         assert_eq!(plan.nodes.len(), 3);
-        
+
         let optimized = optimize(&plan);
-        
+
         assert_eq!(optimized.nodes.len(), 2, "Should fuse to 2 nodes");
         
         match &optimized.nodes[1].op {
