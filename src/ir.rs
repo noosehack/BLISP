@@ -150,6 +150,44 @@ pub enum UnaryOp {
         input: NodeId,
         func: NumericFunc,
     },
+
+    /// Fused chain of pure elementwise operations (PR4.1)
+    /// Example: abs → log → exp fused into single pass
+    FusedElementwise {
+        input: NodeId,
+        ops: Vec<NumericFunc>,
+    },
+
+    /// Fused cs1 ∘ elementwise chain (PR4.2a)
+    /// Example: abs → log → cs1 fused into single pass
+    FusedCs1Elementwise {
+        input: NodeId,
+        ops: Vec<NumericFunc>,
+    },
+
+    /// Fused cs1 ∘ dlog-ofs (PR4.2b)
+    FusedCs1DlogOfs {
+        input: NodeId,
+        lag: usize,
+    },
+
+    /// Fused cs1 ∘ dlog-obs (PR4.2b)
+    FusedCs1DlogObs {
+        input: NodeId,
+    },
+
+    /// Fused dlog-obs ∘ elementwise chain (PR4.3a - future)
+    FusedDlogObsElementwise {
+        input: NodeId,
+        ops: Vec<NumericFunc>,
+    },
+
+    /// Fused dlog-ofs ∘ elementwise chain (PR4.3a - future)
+    FusedDlogOfsElementwise {
+        input: NodeId,
+        lag: usize,
+        ops: Vec<NumericFunc>,
+    },
 }
 
 /// Numeric functions that can be mapped over columns
@@ -317,6 +355,19 @@ pub enum NumericFunc {
     ///
     /// Same contract as SHF_WIN_MIN2_LIN_AVG_EXCL but for standard deviation
     SHF_WIN_MIN2_NLN_SDV_EXCL { w: usize },
+}
+
+impl NumericFunc {
+    /// Returns true if this function is pure elementwise (no dependencies on other rows)
+    pub fn is_pure_elementwise(&self) -> bool {
+        matches!(self,
+            NumericFunc::ABS |
+            NumericFunc::LOG |
+            NumericFunc::EXP |
+            NumericFunc::SQRT |
+            NumericFunc::INV
+        )
+    }
 }
 
 /// Binary operations (element-wise combination of two inputs)
@@ -499,7 +550,13 @@ impl Plan {
                         }
                     }
                 }
-                Operation::Unary(UnaryOp::MapNumeric { input, .. }) => {
+                Operation::Unary(UnaryOp::MapNumeric { input, .. })
+                | Operation::Unary(UnaryOp::FusedElementwise { input, .. })
+                | Operation::Unary(UnaryOp::FusedCs1Elementwise { input, .. })
+                | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
+                | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
+                | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
+                | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
                     let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
 
                     // Verify I1-I3 invariants
