@@ -137,6 +137,13 @@ fn plan_expr(
                     "inv" => plan_unary(NumericFunc::INV, &elements[1..], plan, ctx, interner),
                     "locf" => plan_unary(NumericFunc::SHF_REC_NLN_LOCF, &elements[1..], plan, ctx, interner),
                     "wkd" => plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner),
+
+                    // DEPRECATED: Legacy alias for wkd
+                    "w5" => {
+                        eprintln!("Warning: 'w5' is deprecated, use 'wkd' instead");
+                        plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner)
+                    }
+
                     "cs1" => plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner),
 
                     // DEPRECATED: Legacy alias for cs1
