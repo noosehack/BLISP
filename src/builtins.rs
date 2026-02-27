@@ -337,10 +337,27 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
         // Mixed Frame/TableView - convert to TableView and multiply
         (Value::Frame(a), Value::TableView(b)) => {
-            use crate::frame::ColData;
-            // Convert Frame a to TableView
+            use crate::frame::{ColData, IndexColumn};
+            // Convert Frame a to TableView, preserving date index as first column
             let mut names_a = Vec::new();
             let mut cols_a = Vec::new();
+
+            // Check if Frame has Date index - if so, include it as first column
+            match a.tags.index.as_ref() {
+                IndexColumn::Date(dates) => {
+                    names_a.push(a.tags.index_name.clone());
+                    cols_a.push(blawktrust::Column::Date(dates.to_vec()));
+                }
+                IndexColumn::Timestamp(timestamps) => {
+                    names_a.push(a.tags.index_name.clone());
+                    cols_a.push(blawktrust::Column::Timestamp(timestamps.to_vec()));
+                }
+                _ => {
+                    // No date index, skip
+                }
+            }
+
+            // Add data columns
             for (i, colname) in a.tags.colnames.iter().enumerate() {
                 names_a.push(colname.clone());
                 if let ColData::Mat(col_arc) = &a.cols[i] {
@@ -365,11 +382,21 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let mut result_names = Vec::new();
             let mut result_columns = Vec::new();
 
+            // Preserve date column from tv_b (TableView argument) if it has one
+            if !b.table.columns.is_empty() {
+                if matches!(&b.table.columns[0], blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)) {
+                    result_names.push(b.table.names[0].clone());
+                    result_columns.push(b.table.columns[0].clone());
+                }
+            }
+
+            // Multiply numeric columns
             for (col_a, col_b) in cols_tv_a.iter().zip(cols_b.iter()) {
                 let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
                 result_columns.push(mul_result);
             }
 
+            // Get result names from tv_a numeric columns
             for (i, col) in tv_a.table.columns.iter().enumerate() {
                 if matches!(col, blawktrust::Column::F64(_)) {
                     result_names.push(tv_a.table.names[i].clone());
@@ -400,16 +427,25 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     cols_a.len(), cols_b.len()));
             }
 
-            // Multiply corresponding columns
+            // Build result, preserving date column from first table if present
             let mut result_names = Vec::new();
             let mut result_columns = Vec::new();
 
+            // Preserve date/timestamp column from first table if it has one
+            if !tv_a.table.columns.is_empty() {
+                if matches!(&tv_a.table.columns[0], blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)) {
+                    result_names.push(tv_a.table.names[0].clone());
+                    result_columns.push(tv_a.table.columns[0].clone());
+                }
+            }
+
+            // Multiply numeric columns
             for (col_a, col_b) in cols_a.iter().zip(cols_b.iter()) {
                 let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
                 result_columns.push(mul_result);
             }
 
-            // Use names from first table
+            // Get result names from first table (numeric columns only)
             for (i, col) in tv_a.table.columns.iter().enumerate() {
                 if matches!(col, blawktrust::Column::F64(_)) {
                     result_names.push(tv_a.table.names[i].clone());
