@@ -412,6 +412,16 @@ pub enum BinaryFunc {
     DIV,
     /// Greater than: x > y → 1.0 (true), 0.0 (false), NA (if either is NA)
     GTR,
+    /// Less than: x < y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    LSS,
+    /// Less than or equal: x <= y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    LTE,
+    /// Greater than or equal: x >= y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    GTE,
+    /// Equal: x == y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    EQL,
+    /// Not equal: x != y → 1.0 (true), 0.0 (false), NA (if either is NA)
+    NEQ,
 }
 
 /// Join operations

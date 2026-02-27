@@ -619,7 +619,14 @@ fn plan_expr(
                     "-" => plan_binary(BinaryFunc::SUB, &elements[1..], plan, ctx, interner),
                     "*" => plan_binary(BinaryFunc::MUL, &elements[1..], plan, ctx, interner),
                     "/" => plan_binary(BinaryFunc::DIV, &elements[1..], plan, ctx, interner),
+
+                    // Comparison operations (canonical IR extension)
                     ">" => plan_binary(BinaryFunc::GTR, &elements[1..], plan, ctx, interner),
+                    "<" => plan_binary(BinaryFunc::LSS, &elements[1..], plan, ctx, interner),
+                    "<=" => plan_binary(BinaryFunc::LTE, &elements[1..], plan, ctx, interner),
+                    ">=" => plan_binary(BinaryFunc::GTE, &elements[1..], plan, ctx, interner),
+                    "==" => plan_binary(BinaryFunc::EQL, &elements[1..], plan, ctx, interner),
+                    "!=" => plan_binary(BinaryFunc::NEQ, &elements[1..], plan, ctx, interner),
 
                     // Join operations
                     "mapr" => plan_join(JoinKind::MapR, &elements[1..], plan, ctx, interner),

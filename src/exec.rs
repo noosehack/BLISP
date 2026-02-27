@@ -2192,6 +2192,21 @@ fn binary_scalar_column(col: &Column, scalar: f64, func: BinaryFunc) -> Column {
                         BinaryFunc::GTR => {
                             if x > scalar { 1.0 } else { 0.0 }
                         }
+                        BinaryFunc::LSS => {
+                            if x < scalar { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::LTE => {
+                            if x <= scalar { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::GTE => {
+                            if x >= scalar { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::EQL => {
+                            if x == scalar { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::NEQ => {
+                            if x != scalar { 1.0 } else { 0.0 }
+                        }
                     }
                 }
             }).collect();
@@ -2287,6 +2302,21 @@ fn binary_column_column(lhs: &Column, rhs: &Column, func: BinaryFunc) -> Result<
                         }
                         BinaryFunc::GTR => {
                             if x > y { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::LSS => {
+                            if x < y { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::LTE => {
+                            if x <= y { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::GTE => {
+                            if x >= y { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::EQL => {
+                            if x == y { 1.0 } else { 0.0 }
+                        }
+                        BinaryFunc::NEQ => {
+                            if x != y { 1.0 } else { 0.0 }
                         }
                     }
                 }
