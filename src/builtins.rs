@@ -119,6 +119,9 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("mask-list", builtin_mask_list);
     rt.register_builtin("mask-stats", builtin_mask_stats);
     rt.register_builtin("mask-define", builtin_mask_define);
+    rt.register_builtin("wkd", builtin_wkd);          // Weekday filter (w5)
+    rt.register_builtin("w5", builtin_wkd);           // Alias for backward compat
+    rt.register_builtin("xminus", builtin_xminus);    // Pairwise spreads
     rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
     rt.register_builtin("cs1-col", builtin_cs1);       // Single-column kernel
     rt.register_builtin("ecs1", builtin_ecs1_cols);    // Surface name → table version
