@@ -129,6 +129,7 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("ecs1-col", builtin_ecs1);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
+    rt.register_builtin("mapr", builtin_mapr);       // LEFT JOIN by row key
     rt.register_builtin("ur-cols", builtin_ur_cols); // Explicit table version
     rt.register_builtin("ur-col", builtin_ur);       // Single-column kernel
     rt.register_builtin("wz0", builtin_wz0);
@@ -810,10 +811,63 @@ fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, S
 ///
 /// Assumes first column is Date type with days since epoch.
 fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    use crate::frame::{Frame, IndexColumn};
+
     if args.len() != 1 {
-        return Err(format!("wkd expects 1 argument (table), got {}", args.len()));
+        return Err(format!("wkd expects 1 argument (table/frame), got {}", args.len()));
     }
 
+    // Handle Frame directly (date is in index)
+    if let Value::Frame(frame) = &args[0] {
+        // Get date data from index
+        let date_data = match frame.tags.index.as_ref() {
+            IndexColumn::Date(dates) => dates,
+            _ => return Err("wkd: frame index must be Date type (got non-Date index)".to_string()),
+        };
+
+        // Build mask: (date + 5) % 7 > 1 (weekdays)
+        let mask: Vec<bool> = date_data.iter()
+            .map(|&days| {
+                if days == blawktrust::NULL_DATE {
+                    false // Exclude NULL dates
+                } else {
+                    let dow = (days + 5).rem_euclid(7);
+                    dow > 1
+                }
+            })
+            .collect();
+
+        // Filter index and all columns
+        let new_index_dates: Vec<i32> = date_data.iter()
+            .zip(&mask)
+            .filter_map(|(&date, &keep)| if keep { Some(date) } else { None })
+            .collect();
+
+        let new_index = IndexColumn::Date(Arc::new(new_index_dates));
+
+        let new_cols: Vec<Arc<blawktrust::Column>> = frame.cols.iter()
+            .map(|col_data| {
+                use crate::frame::ColData;
+                match col_data {
+                    ColData::Mat(col_arc) => {
+                        let filtered = filter_column(col_arc, &mask);
+                        Arc::new(filtered)
+                    }
+                }
+            })
+            .collect();
+
+        let new_tags = crate::frame::Tags::new(
+            frame.tags.index_name.clone(),
+            new_index,
+            (*frame.tags.colnames).clone()
+        );
+
+        let new_frame = Frame::new(new_tags, new_cols);
+        return Ok(Value::Frame(Arc::new(new_frame)));
+    }
+
+    // Fallback: Handle TableView (legacy path - date in first column)
     let tv = ensure_tableview(&args[0], rt)?;
 
     if tv.table.columns.is_empty() {
@@ -825,7 +879,7 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     let date_data = match date_col {
         blawktrust::Column::Date(data) => data,
-        _ => return Err("wkd: first column must be Date type".to_string()),
+        _ => return Err("wkd: first column must be Date type (use Frame with Date index, or TableView with Date first column)".to_string()),
     };
 
     // Build mask: (date + 5) % 7 > 1 (weekdays)

@@ -44,10 +44,10 @@
 ;; > now points to >-cols at the builtin level - no macro needed
 
 ;; --- Rolling operations ---
-;; wzs - Windowed z-score (expand to rolling-zscore planner form)
-;; Usage: (wzs window step x) → (rolling-zscore window x)
-;; Note: step parameter ignored for now (will add keep-shape later)
-(defmacro wzs (w l x) `(rolling-zscore ,w ,x))
+;; wzs - Windowed z-score (now a builtin, not a macro)
+;; Usage: (wzs window step x)
+;; Note: wzs is registered as builtin_wzs in src/builtins.rs
+;; (defmacro wzs (w l x) `(rolling-zscore ,w ,x))  ; OLD - builtin exists now
 (defmacro wavg (x w) `(wmean-cols ,x ,w))   ; CLISPI wavg → BLISP wmean-cols
 
 ;; --- Pairwise (temporary until reader supports x-) ---
