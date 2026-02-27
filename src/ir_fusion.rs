@@ -764,3 +764,407 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::exec;
+    use crate::ir::{Source, SchemaInfo};
+    use proptest::prelude::*;
+    use blawktrust::Column;
+
+        /// Pipeline operation grammar
+        #[derive(Debug, Clone)]
+        enum PipelineOp {
+            // Pure elementwise
+            Abs,
+            Log,    // Requires positive input (we add ABS automatically)
+            Exp,
+            Sqrt,   // Requires non-negative (we add ABS automatically)
+            Inv,
+
+            // Stateful
+            Cs1,
+            DlogObs,
+            // Note: DlogOfs with lag>1 not yet supported in unfused form
+            // ShiftObs/ShiftOfs not yet implemented
+        }
+
+        /// Strategy for generating a single operation
+        fn op_strategy() -> impl Strategy<Value = PipelineOp> {
+            prop_oneof![
+                // Elementwise (higher weight - common operations)
+                3 => Just(PipelineOp::Abs),
+                2 => Just(PipelineOp::Exp),
+                2 => Just(PipelineOp::Inv),
+
+                // LOG/SQRT need positive input - lower weight
+                1 => Just(PipelineOp::Log),
+                1 => Just(PipelineOp::Sqrt),
+
+                // Stateful operations
+                2 => Just(PipelineOp::Cs1),
+                2 => Just(PipelineOp::DlogObs),
+            ]
+        }
+
+        /// Strategy for generating a random pipeline (depth 1-7)
+        fn pipeline_strategy() -> impl Strategy<Value = Vec<PipelineOp>> {
+            prop::collection::vec(op_strategy(), 1..=7)
+        }
+
+        /// Sanitize pipeline to avoid LOG/SQRT on negative numbers
+        ///
+        /// Rules:
+        /// - Before LOG: ensure ABS is in the chain
+        /// - Before SQRT: ensure ABS is in the chain
+        fn sanitize_pipeline(mut ops: Vec<PipelineOp>) -> Vec<PipelineOp> {
+            let mut sanitized = Vec::new();
+            let mut has_abs = false;
+
+            for op in ops.drain(..) {
+                match op {
+                    PipelineOp::Log | PipelineOp::Sqrt => {
+                        // Ensure we have ABS before dangerous ops
+                        if !has_abs {
+                            sanitized.push(PipelineOp::Abs);
+                            has_abs = true;
+                        }
+                        sanitized.push(op);
+                        // After LOG/SQRT, might go negative again
+                        has_abs = false;
+                    }
+                    PipelineOp::Abs => {
+                        sanitized.push(op);
+                        has_abs = true;
+                    }
+                    PipelineOp::Exp => {
+                        sanitized.push(op);
+                        has_abs = true; // exp is always positive
+                    }
+                    _ => {
+                        sanitized.push(op);
+                        // Other ops don't guarantee positivity
+                        has_abs = false;
+                    }
+                }
+            }
+
+            sanitized
+        }
+
+        /// Build an IR plan from a pipeline of operations
+        fn build_plan(ops: &[PipelineOp]) -> (Plan, NodeId) {
+            let mut plan = Plan::new();
+
+            // Source node
+            let mut current = plan.add_node(Node {
+                id: NodeId(0),
+                op: Operation::Source(Source::Variable {
+                    name: crate::ast::SymbolId(0),
+                }),
+                schema: SchemaInfo::unknown(),
+            });
+
+            // Apply each operation
+            for op in ops {
+                current = match op {
+                    PipelineOp::Abs => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::ABS,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Log => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::LOG,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Exp => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::EXP,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Sqrt => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SQRT,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Inv => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::INV,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Cs1 => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SHF_PFX_LIN_SUM,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::DlogObs => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                };
+            }
+
+            (plan, current)
+        }
+
+        /// Strategy for generating test data with random NA patterns
+        fn data_strategy() -> impl Strategy<Value = Vec<f64>> {
+            // Size: 50-200 elements (fast but large enough to catch bugs)
+            (50_usize..=200).prop_flat_map(|size| {
+                // NA density: 0-30%
+                (0_usize..=30).prop_flat_map(move |na_pct| {
+                    // Generate random floats in range [1.0, 100.0]
+                    prop::collection::vec(1.0_f64..=100.0, size).prop_map(move |mut data| {
+                        // Apply NA pattern by replacing every N-th element
+                        if na_pct > 0 {
+                            let stride = 100 / na_pct.max(1);
+                            for i in (0..data.len()).step_by(stride.max(1)) {
+                                data[i] = f64::NAN;
+                            }
+                        }
+                        data
+                    })
+                })
+            })
+        }
+
+        /// Compare two columns for NaN-aware equality
+        fn columns_equal(a: &Column, b: &Column) -> bool {
+            match (a, b) {
+                (Column::F64(a_data), Column::F64(b_data)) => {
+                    if a_data.len() != b_data.len() {
+                        return false;
+                    }
+                    for (a_val, b_val) in a_data.iter().zip(b_data.iter()) {
+                        match (a_val.is_nan(), b_val.is_nan()) {
+                            (true, true) => continue,
+                            (false, false) => {
+                                // Relative error for floating point comparison
+                                let diff = (a_val - b_val).abs();
+                                let magnitude = a_val.abs().max(b_val.abs());
+                                if magnitude > 1e-10 {
+                                    if diff / magnitude > 1e-9 {
+                                        return false;
+                                    }
+                                } else if diff > 1e-9 {
+                                    return false;
+                                }
+                            }
+                            _ => return false,
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        /// Helper: Execute a plan directly (simplified executor for testing)
+        ///
+        /// Returns the result of the last node in the plan (the output node).
+        fn execute_plan_direct(plan: &Plan, input: &Column) -> Result<Column, String> {
+            use std::collections::HashMap;
+
+            let mut results: HashMap<NodeId, Column> = HashMap::new();
+            let mut last_result: Option<Column> = None;
+
+            // Execute nodes in topological order
+            for node in &plan.nodes {
+                let result = match &node.op {
+                    Operation::Source(_) => input.clone(),
+
+                    Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+
+                        match func {
+                            NumericFunc::ABS => exec::abs_column(input_col),
+                            NumericFunc::LOG => exec::log_column(input_col),
+                            NumericFunc::EXP => exec::exp_column(input_col),
+                            NumericFunc::SQRT => exec::sqrt_column(input_col),
+                            NumericFunc::INV => exec::inv_column(input_col),
+                            NumericFunc::SHF_PFX_LIN_SUM => exec::cumsum_column(input_col),
+                            NumericFunc::SHF_PTW_OBS_NLN_DLOG => exec::dlog_obs_column(input_col, 1),
+                            _ => return Err(format!("Unsupported func: {:?}", func)),
+                        }
+                    }
+
+                    Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_elementwise_column(input_col, ops)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_elementwise_column(input_col, ops)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_dlog_ofs_column(input_col, *lag)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_dlog_obs_column(input_col)
+                    }
+
+                    _ => return Err(format!("Unsupported operation: {:?}", node.op)),
+                };
+
+                results.insert(node.id, result.clone());
+                last_result = Some(result);
+            }
+
+            last_result.ok_or_else(|| "Empty plan".to_string())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 100,  // 100 random test cases
+                max_shrink_iters: 1000,
+                .. ProptestConfig::default()
+            })]
+
+            /// Core property: Optimizer preserves semantics
+            ///
+            /// Property: execute(optimize(plan)) ≡ execute(plan)
+            ///
+            /// Generates random pipelines and verifies optimization correctness.
+            #[test]
+            fn prop_optimizer_preserves_semantics(
+                ops in pipeline_strategy(),
+                data in data_strategy(),
+            ) {
+                // Sanitize pipeline (add ABS before LOG/SQRT)
+                let ops = sanitize_pipeline(ops);
+
+                // Skip empty pipelines
+                if ops.is_empty() {
+                    return Ok(());
+                }
+
+                // Build IR plan
+                let (plan, output_node) = build_plan(&ops);
+
+                // Validate plan structure
+                if plan.validate().is_err() {
+                    return Ok(()); // Invalid plan - skip
+                }
+
+                // Execute unfused (baseline)
+                let col = Column::new_f64(data.clone());
+                let unfused_result = match execute_plan_direct(&plan, &col) {
+                    Ok(result) => result,
+                    Err(_) => return Ok(()), // Execution error - skip
+                };
+
+                // Apply all optimizations
+                let mut optimized = plan.clone();
+                optimized = optimize_elementwise_fusion(&optimized);
+                optimized = optimize_cs1_elementwise_fusion(&optimized);
+                optimized = optimize_cs1_dlog_fusion(&optimized);
+
+                // Execute fused
+                let fused_result = match execute_plan_direct(&optimized, &col) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // Fused execution failed but unfused succeeded - BUG!
+                        prop_assert!(false, "Optimizer broke execution: unfused OK, fused FAILED\nPipeline: {:?}", ops);
+                        return Ok(());
+                    }
+                };
+
+                // Verify equivalence
+                prop_assert!(
+                    columns_equal(&unfused_result, &fused_result),
+                    "Optimizer changed semantics!\nPipeline: {:?}\nData length: {}\nFirst 10 unfused: {:?}\nFirst 10 fused: {:?}",
+                    ops,
+                    data.len(),
+                    unfused_result,
+                    fused_result
+                );
+            }
+
+            /// Property: Optimizer is idempotent
+            ///
+            /// Property: optimize(optimize(plan)) ≡ optimize(plan)
+            #[test]
+            fn prop_optimizer_is_idempotent(
+                ops in pipeline_strategy(),
+            ) {
+                let ops = sanitize_pipeline(ops);
+                if ops.is_empty() {
+                    return Ok(());
+                }
+
+                let (plan, _) = build_plan(&ops);
+                if plan.validate().is_err() {
+                    return Ok(());
+                }
+
+                // Apply optimizations once
+                let mut opt1 = plan.clone();
+                opt1 = optimize_elementwise_fusion(&opt1);
+                opt1 = optimize_cs1_elementwise_fusion(&opt1);
+                opt1 = optimize_cs1_dlog_fusion(&opt1);
+
+                // Apply optimizations again
+                let mut opt2 = opt1.clone();
+                opt2 = optimize_elementwise_fusion(&opt2);
+                opt2 = optimize_cs1_elementwise_fusion(&opt2);
+                opt2 = optimize_cs1_dlog_fusion(&opt2);
+
+                // Both should have same number of nodes (idempotent)
+                prop_assert_eq!(
+                    opt1.nodes.len(),
+                    opt2.nodes.len(),
+                    "Optimizer is not idempotent! First pass: {} nodes, second pass: {} nodes",
+                    opt1.nodes.len(),
+                    opt2.nodes.len()
+                );
+            }
+        }
+    }

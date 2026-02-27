@@ -1544,7 +1544,7 @@ fn rolling_std_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::m
 /// This is NOT the same as positional lag dlog (OFS). See dlog_ofs_column().
 /// - OBS: [100,NA,NA,110] → [NA,NA,NA,ln(110/100)] (skipped NAs)
 /// - OFS: [100,NA,NA,110] → [NA,NA,NA,NA] (used x[i-1]=NA)
-fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
+pub(crate) fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(data.len());
@@ -1582,7 +1582,7 @@ fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
 /// - OBS: [100,NA,NA,110] → [NA,NA,NA,ln(110/100)] (skipped NAs)
 ///
 /// For financial time series with weekend masks, use dlog_obs_column() instead.
-fn dlog_ofs_column(col: &Column, lag: usize) -> Column {
+pub(crate) fn dlog_ofs_column(col: &Column, lag: usize) -> Column {
     blawktrust::builtins::ops::dlog_column(col, lag)
 }
 
@@ -1666,7 +1666,7 @@ fn locf_column(col: &Column) -> Column {
 ///   - Running sum maintained across NA positions
 /// - Compatible with masked time series (wkd)
 /// - O(n) single pass
-fn cumsum_column(col: &Column) -> Column {
+pub(crate) fn cumsum_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(data.len());
@@ -1813,7 +1813,7 @@ fn eligible_rows(mask: &crate::mask::ActiveMask, nrows: usize) -> (Vec<usize>, V
 }
 
 /// Calendar shift (positional): shift by k calendar rows
-fn shift_column(col: &Column, k: usize) -> Column {
+pub(crate) fn shift_column(col: &Column, k: usize) -> Column {
     match col {
         Column::F64(data) => {
             let nrows = data.len();
