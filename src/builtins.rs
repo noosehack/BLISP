@@ -60,28 +60,56 @@ fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, St
 
     let tv = ensure_tableview(v, rt)?;
 
-    // Create synthetic index (row numbers) - TableView doesn't have index
-    let nrows = if tv.table.columns.is_empty() {
-        0
-    } else {
-        match &tv.table.columns[0] {
-            blawktrust::Column::F64(v) => v.len(),
-            blawktrust::Column::Date(v) => v.len(),
-            blawktrust::Column::Timestamp(v) => v.len(),
+    if tv.table.columns.is_empty() {
+        let index = IndexColumn::String(Arc::new(vec![]));
+        let tags = Tags::new("ROW".to_string(), index, vec![]);
+        return Ok(Frame::new(tags, vec![]));
+    }
+
+    // Check if first column is Date - use it as index
+    let (index_name, index, data_cols, data_names) = match &tv.table.columns[0] {
+        blawktrust::Column::Date(dates) => {
+            // First column is Date - use as index, rest as data
+            let index = IndexColumn::Date(Arc::new(dates.to_vec()));
+            let index_name = tv.table.names[0].clone();
+            let data_cols: Vec<Arc<blawktrust::Column>> = tv.table.columns[1..]
+                .iter()
+                .map(|col| Arc::new(col.clone()))
+                .collect();
+            let data_names: Vec<String> = tv.table.names[1..].to_vec();
+            (index_name, index, data_cols, data_names)
+        }
+        blawktrust::Column::Timestamp(timestamps) => {
+            // First column is Timestamp - use as index, rest as data
+            let index = IndexColumn::Timestamp(Arc::new(timestamps.to_vec()));
+            let index_name = tv.table.names[0].clone();
+            let data_cols: Vec<Arc<blawktrust::Column>> = tv.table.columns[1..]
+                .iter()
+                .map(|col| Arc::new(col.clone()))
+                .collect();
+            let data_names: Vec<String> = tv.table.names[1..].to_vec();
+            (index_name, index, data_cols, data_names)
+        }
+        _ => {
+            // No date/timestamp column - create synthetic string index
+            let nrows = match &tv.table.columns[0] {
+                blawktrust::Column::F64(v) => v.len(),
+                blawktrust::Column::Date(v) => v.len(),
+                blawktrust::Column::Timestamp(v) => v.len(),
+            };
+            let index_strings: Vec<String> = (0..nrows).map(|i| i.to_string()).collect();
+            let index = IndexColumn::String(Arc::new(index_strings));
+            let data_cols: Vec<Arc<blawktrust::Column>> = tv.table.columns
+                .iter()
+                .map(|col| Arc::new(col.clone()))
+                .collect();
+            let data_names: Vec<String> = tv.table.names.clone();
+            ("ROW".to_string(), index, data_cols, data_names)
         }
     };
 
-    let index_strings: Vec<String> = (0..nrows).map(|i| i.to_string()).collect();
-    let index = IndexColumn::String(Arc::new(index_strings));
-
-    // Convert columns
-    let colnames: Vec<String> = tv.table.names.clone();
-    let cols: Vec<Arc<blawktrust::Column>> = tv.table.columns.iter()
-        .map(|col| Arc::new(col.clone()))
-        .collect();
-
-    let tags = Tags::new("ROW".to_string(), index, colnames);
-    Ok(Frame::new(tags, cols))
+    let tags = Tags::new(index_name, index, data_names);
+    Ok(Frame::new(tags, data_cols))
 }
 
 /// Builtin function signature
