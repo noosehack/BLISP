@@ -1,662 +1,1193 @@
-//! IR Fusion Framework - Safe operation fusion with correctness guarantees
+//! IR Fusion Optimizer
 //!
-//! Purpose: Identify and fuse pipeline segments to reduce overhead
+//! Transforms linear operation chains into fused single-pass operations.
 //!
-//! Fusion Rules (conservative, correctness-preserving):
-//! 1. **Unary chain fusion**: Multiple MapNumeric ops on same input
-//!    - Fuse: (log (sqrt (abs x))) → FusedUnary([abs, sqrt, log], x)
-//!    - Safety: All preserve tags (I1-I3), composition is valid
-//!
-//! 2. **Binary-scalar chain fusion**: Multiple scalar binary ops
-//!    - Fuse: (+ (* x 2.0) 5.0) → FusedScalarBinary([(Mul, 2.0), (Add, 5.0)], x)
-//!    - Safety: Scalar broadcast preserves shape, composition is valid
-//!
-//! 3. **NOT FUSED** (for now):
-//!    - Join operations (complex alignment semantics)
-//!    - Binary frame-frame operations (compatibility checks)
-//!    - Rolling operations (already O(n), minimal fusion gain)
-//!
-//! Correctness guarantee: Differential testing (execute before/after, assert equivalence)
+//! PR4 Status:
+//! - PR4.1: Elementwise fusion ✅
+//! - PR4.2a: cs1 ∘ elementwise ✅
+//! - PR4.2b: cs1 ∘ dlog-obs/ofs ✅
 
-use crate::ir::{Plan, Node, NodeId, Operation, UnaryOp, BinaryOp, NumericFunc, BinaryFunc, ValueRef};
-use crate::frame::{Frame, map_numeric_preserve_tags};
-use blawktrust::Column;
+use crate::ir::{Plan, Node, NodeId, Operation, UnaryOp, BinaryOp, NumericFunc, ValueRef};
 use std::collections::HashMap;
-use std::sync::Arc;
 
-/// Fused operation types (extended IR)
-#[derive(Debug, Clone)]
-pub enum FusedOperation {
-    /// Fused unary chain: apply multiple numeric functions in sequence
-    FusedUnary {
-        input: NodeId,
-        funcs: Vec<NumericFunc>,  // Applied in order: funcs[0], then funcs[1], etc.
-    },
-    /// Fused binary-scalar chain: apply multiple scalar operations in sequence
-    FusedScalarBinary {
-        input: NodeId,
-        ops: Vec<(BinaryFunc, f64)>,  // Applied in order: (func, scalar_rhs)
-    },
+/// Main optimization entry point
+///
+/// Applies fusion passes in sequence. Order matters: later passes assume
+/// earlier canonicalization (elementwise chains collected first).
+pub fn optimize(plan: &Plan) -> Plan {
+    let mut optimized = plan.clone();
+    
+    // PR4 fusion pipeline (order matters!)
+    optimized = optimize_elementwise_fusion(&optimized);
+    optimized = optimize_cs1_elementwise_fusion(&optimized);
+    optimized = optimize_cs1_dlog_fusion(&optimized);
+    
+    optimized
 }
 
-/// Pipeline segment - a maximal fusible sequence
-#[derive(Debug, Clone)]
-pub struct Segment {
-    /// Nodes in this segment (in topological order)
-    pub nodes: Vec<NodeId>,
-    /// Segment type
-    pub kind: SegmentKind,
+/// Helper: Check if operation is pure elementwise (no state, no lookahead)
+fn is_pure_elementwise(func: &NumericFunc) -> bool {
+    matches!(func,
+        NumericFunc::ABS |
+        NumericFunc::LOG |
+        NumericFunc::EXP |
+        NumericFunc::SQRT |
+        NumericFunc::INV
+    )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SegmentKind {
-    /// Chain of unary MapNumeric operations
-    UnaryChain,
-    /// Chain of binary scalar operations
-    ScalarBinaryChain,
-    /// Single unfusible operation
-    Atomic,
-}
-
-/// Identify fusible segments in a plan
-pub fn identify_segments(plan: &Plan) -> Vec<Segment> {
-    let mut segments = Vec::new();
-    let mut visited = vec![false; plan.nodes.len()];
-
-    // Build dependency graph (who consumes each node)
-    let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+/// PR4.1: Optimize a plan by fusing chains of pure elementwise operations
+///
+/// Legality rules:
+/// 1. Only fuse pure elementwise ops (LOG, EXP, SQRT, ABS, INV)
+/// 2. Only fuse if intermediate result has single consumer (no work duplication)
+/// 3. Preserve all I1-I3 invariants (tags identity preserved)
+///
+/// Example transformation:
+/// ```
+/// Before:  x → ABS → LOG → EXP
+/// After:   x → FusedElementwise([ABS, LOG, EXP])
+/// ```
+///
+/// Benefits:
+/// - Reduces allocations from N intermediate arrays to 1 output
+/// - Better cache locality (single pass over data)
+/// - NaN propagation unchanged (flows through naturally)
+pub fn optimize_elementwise_fusion(plan: &Plan) -> Plan {
+    // Build consumer count map
+    let mut consumers: HashMap<NodeId, usize> = HashMap::new();
     for node in &plan.nodes {
         match &node.op {
-            Operation::Unary(UnaryOp::MapNumeric { input, .. }) => {
-                consumers.entry(*input).or_default().push(node.id);
+            Operation::Unary(UnaryOp::MapNumeric { input, .. }) |
+            Operation::Unary(UnaryOp::FusedElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+                *consumers.entry(*input).or_insert(0) += 1;
             }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
-                consumers.entry(*lhs).or_default().push(node.id);
+                *consumers.entry(*lhs).or_insert(0) += 1;
                 if let ValueRef::Frame(rhs_id) = rhs {
-                    consumers.entry(*rhs_id).or_default().push(node.id);
+                    *consumers.entry(*rhs_id).or_insert(0) += 1;
                 }
             }
-            Operation::Join(join_op) => {
-                // Handle join inputs
-                use crate::ir::JoinOp;
-                match join_op {
-                    JoinOp::ALIGN { x, y } | JoinOp::ASOF_ALIGN { x, y } => {
-                        consumers.entry(*x).or_default().push(node.id);
-                        consumers.entry(*y).or_default().push(node.id);
-                    }
-                }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) |
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                *consumers.entry(*x).or_insert(0) += 1;
+                *consumers.entry(*y).or_insert(0) += 1;
             }
             _ => {}
         }
     }
 
-    // Traverse in topological order, identifying segments
-    for node in &plan.nodes {
-        if visited[node.id.0] {
+    // PASS 1: Identify fusible chains (reverse order to find longest chains first)
+    // Maps chain head node → (input, ops)
+    let mut fusion_info: HashMap<NodeId, (NodeId, Vec<NumericFunc>)> = HashMap::new();
+    let mut fused = vec![false; plan.nodes.len()];
+
+    for (i, node) in plan.nodes.iter().enumerate().rev() {
+        if fused[i] {
             continue;
         }
 
-        match &node.op {
-            Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
-                // Check if this starts a unary chain
-                if is_fusible_unary(*func) {
-                    let segment = extract_unary_chain(plan, node.id, &consumers, &mut visited);
-                    if segment.nodes.len() > 1 {
-                        segments.push(segment);
-                    } else {
-                        visited[node.id.0] = true;
-                        segments.push(Segment {
-                            nodes: vec![node.id],
-                            kind: SegmentKind::Atomic,
-                        });
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if func.is_pure_elementwise() {
+                let mut ops = vec![*func];
+                let mut current_input = *input;
+                let mut chain_nodes = vec![node.id];
+
+                // Walk backwards to collect fusible ops
+                loop {
+                    let input_node = &plan.nodes[current_input.0];
+                    if let Operation::Unary(UnaryOp::MapNumeric { input: next_input, func: input_func }) = &input_node.op {
+                        if input_func.is_pure_elementwise() && consumers.get(&current_input).copied().unwrap_or(0) == 1 {
+                            ops.insert(0, *input_func);
+                            chain_nodes.insert(0, current_input);
+                            current_input = *next_input;
+                            continue;
+                        }
                     }
-                } else {
-                    visited[node.id.0] = true;
-                    segments.push(Segment {
-                        nodes: vec![node.id],
-                        kind: SegmentKind::Atomic,
-                    });
+                    break;
                 }
+
+                // Mark chain and store fusion info
+                if ops.len() > 1 {
+                    for &chain_node_id in &chain_nodes {
+                        fused[chain_node_id.0] = true;
+                    }
+                    fusion_info.insert(node.id, (current_input, ops));
+                }
+            }
+        }
+    }
+
+    // PASS 2: Build new plan (forward order)
+    let mut new_nodes = Vec::new();
+    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
+
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if fused[i] && !fusion_info.contains_key(&node.id) {
+            // This node was fused into another chain head - skip it
+            continue;
+        }
+
+        if let Some((input, ops)) = fusion_info.get(&node.id) {
+            // This is a fusion chain head - create fused node
+            let remapped_input = node_map.get(input).copied().unwrap_or(*input);
+            let new_id = NodeId(new_nodes.len());
+            node_map.insert(node.id, new_id);
+
+            new_nodes.push(Node {
+                id: new_id,
+                op: Operation::Unary(UnaryOp::FusedElementwise {
+                    input: remapped_input,
+                    ops: ops.clone(),
+                }),
+                schema: node.schema.clone(),
+            });
+        } else {
+            // Not fusible - copy node with remapped inputs
+            let new_id = NodeId(new_nodes.len());
+            node_map.insert(node.id, new_id);
+
+            let new_op = match &node.op {
+                Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::MapNumeric { input: remapped, func: *func })
+                }
+                Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedElementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
+                    let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
+                    let remapped_rhs = match rhs {
+                        ValueRef::Scalar(s) => ValueRef::Scalar(*s),
+                        ValueRef::Frame(id) => ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id)),
+                    };
+                    Operation::Binary(BinaryOp::MapNumeric2 { lhs: remapped_lhs, rhs: remapped_rhs, func: *func })
+                }
+                Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
+                    let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                    let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                    Operation::Join(crate::ir::JoinOp::ALIGN { x: remapped_x, y: remapped_y })
+                }
+                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                    let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                    let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                    Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: remapped_x, y: remapped_y })
+                }
+                Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1Elementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1DlogOfs { input: remapped, lag: *lag })
+                }
+                Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
+                }
+                Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedDlogObsElementwise { input: remapped, ops: ops.clone() })
+                }
+                Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input: remapped, lag: *lag, ops: ops.clone() })
+                }
+                Operation::Source(s) => Operation::Source(s.clone()),
+                Operation::Schema(s) => Operation::Schema(s.clone()),
+            };
+
+            new_nodes.push(Node {
+                id: new_id,
+                op: new_op,
+                schema: node.schema.clone(),
+            });
+        }
+    }
+
+    Plan { nodes: new_nodes }
+}
+
+
+pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
+    // Build consumer count map
+    let mut consumers: HashMap<NodeId, usize> = HashMap::new();
+    for node in &plan.nodes {
+        match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, .. }) |
+            Operation::Unary(UnaryOp::FusedElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+                *consumers.entry(*input).or_insert(0) += 1;
+            }
+            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
+                *consumers.entry(*lhs).or_insert(0) += 1;
+                if let ValueRef::Frame(rhs_id) = rhs {
+                    *consumers.entry(*rhs_id).or_insert(0) += 1;
+                }
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) |
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                *consumers.entry(*x).or_insert(0) += 1;
+                *consumers.entry(*y).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let mut new_nodes = Vec::new();
+    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut fused = vec![false; plan.nodes.len()];
+
+    // PASS 1: Mark nodes that will be fused
+    for node in &plan.nodes {
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if matches!(func, NumericFunc::SHF_PFX_LIN_SUM) {
+                let input_node = &plan.nodes[input.0];
+
+                // Mark fusible inputs
+                if let Operation::Unary(UnaryOp::FusedElementwise { .. }) = &input_node.op {
+                    if consumers.get(input).copied().unwrap_or(0) == 1 {
+                        fused[input.0] = true;
+                    }
+                } else if let Operation::Unary(UnaryOp::MapNumeric { func: ew_func, .. }) = &input_node.op {
+                    if ew_func.is_pure_elementwise() && consumers.get(input).copied().unwrap_or(0) == 1 {
+                        fused[input.0] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // PASS 2: Build optimized plan
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if fused[i] {
+            continue;
+        }
+
+        // Try to fuse cs1 ∘ elementwise_chain
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if matches!(func, NumericFunc::SHF_PFX_LIN_SUM) {
+                // This is cs1 - check if input is a fusible elementwise chain
+                let input_node = &plan.nodes[input.0];
+
+                // Case 1: Input is FusedElementwise with single consumer
+                if let Operation::Unary(UnaryOp::FusedElementwise { input: chain_input, ops }) = &input_node.op {
+                    if consumers.get(input).copied().unwrap_or(0) == 1 {
+                        // Already marked as fused in Pass 1
+
+                        // Remap chain input
+                        let remapped_input = node_map.get(chain_input).copied().unwrap_or(*chain_input);
+
+                        // Create fused cs1+elementwise node
+                        let new_id = NodeId(new_nodes.len());
+                        node_map.insert(node.id, new_id);
+
+                        new_nodes.push(Node {
+                            id: new_id,
+                            op: Operation::Unary(UnaryOp::FusedCs1Elementwise {
+                                input: remapped_input,
+                                ops: ops.clone(),
+                            }),
+                            schema: node.schema.clone(),
+                        });
+
+                        continue;
+                    }
+                }
+
+                // Case 2: Input is single elementwise MapNumeric with single consumer
+                if let Operation::Unary(UnaryOp::MapNumeric { input: ew_input, func: ew_func }) = &input_node.op {
+                    if ew_func.is_pure_elementwise() && consumers.get(input).copied().unwrap_or(0) == 1 {
+                        // Already marked as fused in Pass 1
+
+                        // Remap input
+                        let remapped_input = node_map.get(ew_input).copied().unwrap_or(*ew_input);
+
+                        // Create fused cs1+elementwise node
+                        let new_id = NodeId(new_nodes.len());
+                        node_map.insert(node.id, new_id);
+
+                        new_nodes.push(Node {
+                            id: new_id,
+                            op: Operation::Unary(UnaryOp::FusedCs1Elementwise {
+                                input: remapped_input,
+                                ops: vec![*ew_func],
+                            }),
+                            schema: node.schema.clone(),
+                        });
+
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Not fusible - copy node with remapped inputs (reuse logic from optimize_elementwise_fusion)
+        let new_id = NodeId(new_nodes.len());
+        node_map.insert(node.id, new_id);
+
+        let new_op = match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::MapNumeric { input: remapped, func: *func })
+            }
+            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedElementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1Elementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogOfs { input: remapped, lag: *lag })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
+            }
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogObsElementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input: remapped, lag: *lag, ops: ops.clone() })
             }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
-                // Check if this starts a scalar binary chain
-                if let ValueRef::Scalar(_) = rhs {
-                    let segment = extract_scalar_binary_chain(plan, node.id, &consumers, &mut visited);
-                    if segment.nodes.len() > 1 {
-                        segments.push(segment);
-                    } else {
-                        visited[node.id.0] = true;
-                        segments.push(Segment {
-                            nodes: vec![node.id],
-                            kind: SegmentKind::Atomic,
+                let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
+                let remapped_rhs = match rhs {
+                    ValueRef::Scalar(s) => ValueRef::Scalar(*s),
+                    ValueRef::Frame(id) => ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id)),
+                };
+                Operation::Binary(BinaryOp::MapNumeric2 { lhs: remapped_lhs, rhs: remapped_rhs, func: *func })
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
+                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ALIGN { x: remapped_x, y: remapped_y })
+            }
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: remapped_x, y: remapped_y })
+            }
+            Operation::Source(s) => Operation::Source(s.clone()),
+            Operation::Schema(schema_op) => {
+                use crate::ir::SchemaOp;
+                match schema_op {
+                    SchemaOp::SHF_PTW_LIN_SPR { input, half } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input: remapped, half: *half })
+                    }
+                    SchemaOp::MSK_WKE_DEF { input, name } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::MSK_WKE_DEF { input: remapped, name: name.clone() })
+                    }
+                    SchemaOp::WTH_MSK { input, mask_expr } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::WTH_MSK { input: remapped, mask_expr: mask_expr.clone() })
+                    }
+                }
+            }
+        };
+
+        new_nodes.push(Node {
+            id: new_id,
+            op: new_op,
+            schema: node.schema.clone(),
+        });
+    }
+
+    Plan { nodes: new_nodes }
+}
+
+pub fn optimize_cs1_dlog_fusion(plan: &Plan) -> Plan {
+    // Build consumer count map
+    let mut consumers: HashMap<NodeId, usize> = HashMap::new();
+    for node in &plan.nodes {
+        match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, .. }) |
+            Operation::Unary(UnaryOp::FusedElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. }) |
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+                *consumers.entry(*input).or_insert(0) += 1;
+            }
+            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
+                *consumers.entry(*lhs).or_insert(0) += 1;
+                if let ValueRef::Frame(rhs_id) = rhs {
+                    *consumers.entry(*rhs_id).or_insert(0) += 1;
+                }
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) |
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                *consumers.entry(*x).or_insert(0) += 1;
+                *consumers.entry(*y).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let mut new_nodes = Vec::new();
+    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut fused = vec![false; plan.nodes.len()];
+
+    // First pass (reverse): Identify fusible cs1 ∘ dlog patterns
+    for node in plan.nodes.iter().rev() {
+        if fused[node.id.0] {
+            continue;
+        }
+
+        // Detect cs1 node
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if matches!(func, NumericFunc::SHF_PFX_LIN_SUM) {
+                let input_node = &plan.nodes[input.0];
+
+                // Case 1: cs1(dlog-ofs) - always fusible
+                if let Operation::Unary(UnaryOp::MapNumeric { func: dlog_func, .. }) = &input_node.op {
+                    if matches!(dlog_func, NumericFunc::SHF_PTW_OFS_NLN_DLOG) &&
+                       consumers.get(input).copied().unwrap_or(0) == 1 {
+                        fused[input.0] = true; // Mark dlog-ofs as fused
+                    }
+                }
+
+                // Case 2: cs1(dlog-obs) - only fusible if lag==1 (HARD CHECK)
+                if let Operation::Unary(UnaryOp::MapNumeric { func: dlog_func, .. }) = &input_node.op {
+                    if matches!(dlog_func, NumericFunc::SHF_PTW_OBS_NLN_DLOG) &&
+                       consumers.get(input).copied().unwrap_or(0) == 1 {
+                        // CRITICAL: OBS only supports lag=1 intrinsically
+                        // dlog-obs currently ignores lag param, but we must be defensive
+                        // For now, always fuse (dlog_obs_column ignores lag anyway)
+                        // Future: When planner is fixed to reject k≠1, this becomes trivial
+                        fused[input.0] = true; // Mark dlog-obs as fused
+                    }
+                }
+            }
+        }
+    }
+
+    // Second pass (forward): Build optimized plan
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if fused[i] {
+            continue;
+        }
+
+        // Try to fuse cs1 ∘ dlog
+        if let Operation::Unary(UnaryOp::MapNumeric { input, func }) = &node.op {
+            if matches!(func, NumericFunc::SHF_PFX_LIN_SUM) {
+                let input_node = &plan.nodes[input.0];
+
+                // Case 1: cs1(dlog-ofs) → FusedCs1DlogOfs
+                if let Operation::Unary(UnaryOp::MapNumeric { input: dlog_input, func: dlog_func }) = &input_node.op {
+                    if matches!(dlog_func, NumericFunc::SHF_PTW_OFS_NLN_DLOG) &&
+                       consumers.get(input).copied().unwrap_or(0) == 1 {
+                        // Remap input
+                        let remapped_input = node_map.get(dlog_input).copied().unwrap_or(*dlog_input);
+
+                        // Create fused node (OFS uses fixed lag=1 for now; blawktrust supports arbitrary k)
+                        let new_id = NodeId(new_nodes.len());
+                        node_map.insert(node.id, new_id);
+
+                        new_nodes.push(Node {
+                            id: new_id,
+                            op: Operation::Unary(UnaryOp::FusedCs1DlogOfs {
+                                input: remapped_input,
+                                lag: 1, // Fixed lag for now; TODO: extract from planner if needed
+                            }),
+                            schema: node.schema.clone(),
                         });
-                    }
-                } else {
-                    visited[node.id.0] = true;
-                    segments.push(Segment {
-                        nodes: vec![node.id],
-                        kind: SegmentKind::Atomic,
-                    });
-                }
-            }
-            _ => {
-                visited[node.id.0] = true;
-                segments.push(Segment {
-                    nodes: vec![node.id],
-                    kind: SegmentKind::Atomic,
-                });
-            }
-        }
-    }
 
-    segments
-}
-
-/// Check if a unary function is fusible
-fn is_fusible_unary(func: NumericFunc) -> bool {
-    match func {
-        // Simple pointwise functions - fusible
-        NumericFunc::LOG | NumericFunc::EXP | NumericFunc::SQRT |
-        NumericFunc::ABS | NumericFunc::INV => true,
-
-        // Temporal functions - NOT fusible (different semantics)
-        NumericFunc::SHF_PTW_OBS_NLN_DLOG | NumericFunc::SHF_PTW_OFS_NLN_DLOG | NumericFunc::RET => false,
-
-        // Locf - NOT fusible (stateful, maintains last_valid)
-        NumericFunc::SHF_REC_NLN_LOCF => false,
-
-        // Wkd - NOT fusible (requires index access for weekday determination)
-        NumericFunc::MSK_WKE => false,
-
-        // CumSum - NOT fusible (stateful, maintains running sum)
-        NumericFunc::SHF_PFX_LIN_SUM => false,
-
-        // Shift - NOT fusible (stateful)
-        NumericFunc::SHF_PTW_LIN_SHF { .. } => false,
-
-        // Shift-obs - NOT fusible (stateful, requires mask access)
-        NumericFunc::LAG_OBS { .. } => false,
-
-        // Keep - NOT fusible (row-dependent operation)
-        NumericFunc::KEEP { .. } => false,
-
-        // Rolling - NOT fusible (already O(n), complex state)
-        NumericFunc::SHF_WIN_LIN_AVG { .. } | NumericFunc::SHF_WIN_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { .. } => false,
-    }
-}
-
-/// Extract a maximal unary chain starting from a node
-fn extract_unary_chain(
-    plan: &Plan,
-    start: NodeId,
-    consumers: &HashMap<NodeId, Vec<NodeId>>,
-    visited: &mut [bool],
-) -> Segment {
-    let mut chain = vec![start];
-    visited[start.0] = true;
-
-    let mut current = start;
-    loop {
-        // Check if current node has exactly one consumer that's a fusible unary
-        let consumer_list = consumers.get(&current).map(|v| v.as_slice()).unwrap_or(&[]);
-        if consumer_list.len() != 1 {
-            break;  // Multiple consumers or no consumers - end chain
-        }
-
-        let next_id = consumer_list[0];
-        if visited[next_id.0] {
-            break;  // Already processed
-        }
-
-        let next_node = plan.get_node(next_id).unwrap();
-        match &next_node.op {
-            Operation::Unary(UnaryOp::MapNumeric { input, func }) if *input == current => {
-                if is_fusible_unary(*func) {
-                    chain.push(next_id);
-                    visited[next_id.0] = true;
-                    current = next_id;
-                } else {
-                    break;  // Not fusible
-                }
-            }
-            _ => break,  // Not a unary op or wrong input
-        }
-    }
-
-    Segment {
-        nodes: chain,
-        kind: SegmentKind::UnaryChain,
-    }
-}
-
-/// Extract a maximal scalar binary chain starting from a node
-fn extract_scalar_binary_chain(
-    plan: &Plan,
-    start: NodeId,
-    consumers: &HashMap<NodeId, Vec<NodeId>>,
-    visited: &mut [bool],
-) -> Segment {
-    let mut chain = vec![start];
-    visited[start.0] = true;
-
-    let mut current = start;
-    loop {
-        // Check if current node has exactly one consumer that's a scalar binary
-        let consumer_list = consumers.get(&current).map(|v| v.as_slice()).unwrap_or(&[]);
-        if consumer_list.len() != 1 {
-            break;
-        }
-
-        let next_id = consumer_list[0];
-        if visited[next_id.0] {
-            break;
-        }
-
-        let next_node = plan.get_node(next_id).unwrap();
-        match &next_node.op {
-            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) if *lhs == current => {
-                if let ValueRef::Scalar(_) = rhs {
-                    chain.push(next_id);
-                    visited[next_id.0] = true;
-                    current = next_id;
-                } else {
-                    break;  // Not a scalar binary
-                }
-            }
-            _ => break,
-        }
-    }
-
-    Segment {
-        nodes: chain,
-        kind: SegmentKind::ScalarBinaryChain,
-    }
-}
-
-/// Build a fused operation from a segment
-pub fn fuse_segment(plan: &Plan, segment: &Segment) -> Option<FusedOperation> {
-    match segment.kind {
-        SegmentKind::UnaryChain if segment.nodes.len() > 1 => {
-            let mut funcs = Vec::new();
-            let mut input = None;
-
-            for &node_id in &segment.nodes {
-                let node = plan.get_node(node_id).unwrap();
-                match &node.op {
-                    Operation::Unary(UnaryOp::MapNumeric { input: inp, func }) => {
-                        if input.is_none() {
-                            input = Some(*inp);
-                        }
-                        funcs.push(*func);
-                    }
-                    _ => return None,  // Shouldn't happen
-                }
-            }
-
-            Some(FusedOperation::FusedUnary {
-                input: input.unwrap(),
-                funcs,
-            })
-        }
-        SegmentKind::ScalarBinaryChain if segment.nodes.len() > 1 => {
-            let mut ops = Vec::new();
-            let mut input = None;
-
-            for &node_id in &segment.nodes {
-                let node = plan.get_node(node_id).unwrap();
-                match &node.op {
-                    Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
-                        if input.is_none() {
-                            input = Some(*lhs);
-                        }
-                        if let ValueRef::Scalar(scalar) = rhs {
-                            ops.push((*func, *scalar));
-                        } else {
-                            return None;  // Shouldn't happen
-                        }
-                    }
-                    _ => return None,
-                }
-            }
-
-            Some(FusedOperation::FusedScalarBinary {
-                input: input.unwrap(),
-                ops,
-            })
-        }
-        _ => None,  // Not fusible or single node
-    }
-}
-
-/// Execute a fused unary operation
-///
-/// Applies multiple numeric functions in sequence, reducing overhead from
-/// intermediate frame allocations and Arc cloning.
-pub fn execute_fused_unary(
-    input: &Arc<Frame>,
-    funcs: &[NumericFunc],
-) -> Arc<Frame> {
-    let result = map_numeric_preserve_tags(input, |col| {
-        let mut current = col.clone();
-        for func in funcs {
-            current = apply_numeric_func(&current, *func);
-        }
-        current
-    });
-    Arc::new(result)
-}
-
-/// Execute a fused scalar binary operation
-///
-/// Applies multiple scalar operations in sequence, reducing overhead from
-/// intermediate frame allocations.
-pub fn execute_fused_scalar_binary(
-    input: &Arc<Frame>,
-    ops: &[(BinaryFunc, f64)],
-) -> Arc<Frame> {
-    let result = map_numeric_preserve_tags(input, |col| {
-        let mut current = col.clone();
-        for (func, scalar) in ops {
-            current = apply_scalar_binary(&current, *func, *scalar);
-        }
-        current
-    });
-    Arc::new(result)
-}
-
-/// Apply a single numeric function to a column
-fn apply_numeric_func(col: &Column, func: NumericFunc) -> Column {
-    use crate::exec::{log_column, exp_column, sqrt_column, abs_column, inv_column};
-
-    match func {
-        NumericFunc::LOG => log_column(col),
-        NumericFunc::EXP => exp_column(col),
-        NumericFunc::SQRT => sqrt_column(col),
-        NumericFunc::ABS => abs_column(col),
-        NumericFunc::INV => inv_column(col),
-
-        // These should not be fused (filtered by is_fusible_unary)
-        NumericFunc::SHF_PTW_OBS_NLN_DLOG | NumericFunc::SHF_PTW_OFS_NLN_DLOG | NumericFunc::RET |
-        NumericFunc::SHF_REC_NLN_LOCF | NumericFunc::MSK_WKE | NumericFunc::SHF_PFX_LIN_SUM |
-        NumericFunc::SHF_PTW_LIN_SHF { .. } | NumericFunc::LAG_OBS { .. } | NumericFunc::KEEP { .. } |
-        NumericFunc::SHF_WIN_LIN_AVG { .. } | NumericFunc::SHF_WIN_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV { .. } |
-        NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { .. } | NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { .. } => {
-            panic!("Attempted to fuse non-fusible operation: {:?}", func)
-        }
-    }
-}
-
-/// Apply a scalar binary operation to a column
-fn apply_scalar_binary(col: &Column, func: BinaryFunc, scalar: f64) -> Column {
-    match col {
-        Column::F64(data) => {
-            let result: Vec<f64> = data.iter().map(|&x| {
-                if x.is_nan() {
-                    f64::NAN
-                } else {
-                    match func {
-                        BinaryFunc::ADD => x + scalar,
-                        BinaryFunc::SUB => x - scalar,
-                        BinaryFunc::MUL => x * scalar,
-                        BinaryFunc::DIV => {
-                            if scalar == 0.0 {
-                                f64::NAN  // Division by zero
-                            } else {
-                                x / scalar
-                            }
-                        }
-                        BinaryFunc::GTR => {
-                            if x > scalar { 1.0 } else { 0.0 }
-                        }
+                        continue;
                     }
                 }
-            }).collect();
-            Column::F64(result)
+
+                // Case 2: cs1(dlog-obs) → FusedCs1DlogObs (only if semantically lag=1)
+                if let Operation::Unary(UnaryOp::MapNumeric { input: dlog_input, func: dlog_func }) = &input_node.op {
+                    if matches!(dlog_func, NumericFunc::SHF_PTW_OBS_NLN_DLOG) &&
+                       consumers.get(input).copied().unwrap_or(0) == 1 {
+                        // HARD CHECK: OBS intrinsically lag=1 in observation space
+                        // Current dlog_obs_column ignores _lag param, so always fusible
+                        // Future: When planner tracks lag, check lag==1 here
+
+                        // Remap input
+                        let remapped_input = node_map.get(dlog_input).copied().unwrap_or(*dlog_input);
+
+                        // Create fused node (OBS has no lag param - semantic truth!)
+                        let new_id = NodeId(new_nodes.len());
+                        node_map.insert(node.id, new_id);
+
+                        new_nodes.push(Node {
+                            id: new_id,
+                            op: Operation::Unary(UnaryOp::FusedCs1DlogObs {
+                                input: remapped_input,
+                            }),
+                            schema: node.schema.clone(),
+                        });
+
+                        continue;
+                    }
+                }
+            }
         }
-        _ => col.clone(),
+
+        // Not fusible - copy node with remapped inputs (reuse logic)
+        let new_id = NodeId(new_nodes.len());
+        node_map.insert(node.id, new_id);
+
+        let new_op = match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::MapNumeric { input: remapped, func: *func })
+            }
+            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedElementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1Elementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogOfs { input: remapped, lag: *lag })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
+            }
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogObsElementwise { input: remapped, ops: ops.clone() })
+            }
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input: remapped, lag: *lag, ops: ops.clone() })
+            }
+            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
+                let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
+                let remapped_rhs = match rhs {
+                    ValueRef::Scalar(s) => ValueRef::Scalar(*s),
+                    ValueRef::Frame(id) => ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id)),
+                };
+                Operation::Binary(BinaryOp::MapNumeric2 { lhs: remapped_lhs, rhs: remapped_rhs, func: *func })
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
+                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ALIGN { x: remapped_x, y: remapped_y })
+            }
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                let remapped_x = node_map.get(x).copied().unwrap_or(*x);
+                let remapped_y = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: remapped_x, y: remapped_y })
+            }
+            Operation::Source(s) => Operation::Source(s.clone()),
+            Operation::Schema(schema_op) => {
+                use crate::ir::SchemaOp;
+                match schema_op {
+                    SchemaOp::SHF_PTW_LIN_SPR { input, half } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input: remapped, half: *half })
+                    }
+                    SchemaOp::MSK_WKE_DEF { input, name } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::MSK_WKE_DEF { input: remapped, name: name.clone() })
+                    }
+                    SchemaOp::WTH_MSK { input, mask_expr } => {
+                        let remapped = node_map.get(input).copied().unwrap_or(*input);
+                        Operation::Schema(SchemaOp::WTH_MSK { input: remapped, mask_expr: mask_expr.clone() })
+                    }
+                }
+            }
+        };
+
+        new_nodes.push(Node {
+            id: new_id,
+            op: new_op,
+            schema: node.schema.clone(),
+        });
     }
+
+    Plan { nodes: new_nodes }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{SchemaInfo, IndexType};
+    use crate::ir::*;
 
+    /// Tripwire 1: Elementwise chain fusion (PR4.1)
+    /// 
+    /// Test that x → ABS → LOG → EXP fuses into FusedElementwise
+    /// Before: 4 nodes (source + 3 ops)
+    /// After: 2 nodes (source + 1 fused)
     #[test]
-    fn test_identify_unary_chain() {
-        // Plan: x -> abs -> sqrt -> log
-        let mut plan = Plan::new();
-
-        let x_id = plan.add_node(Node {
+    fn test_tripwire_elementwise_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        // source
+        let src = plan.add_node(Node {
             id: NodeId(0),
-            op: Operation::Source(crate::ir::Source::Variable {
-                name: crate::ast::SymbolId(0),
-            }),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
             schema: SchemaInfo::unknown(),
         });
-
-        let abs_id = plan.add_node(Node {
+        
+        // ABS
+        let abs_node = plan.add_node(Node {
             id: NodeId(1),
             op: Operation::Unary(UnaryOp::MapNumeric {
-                input: x_id,
+                input: src,
                 func: NumericFunc::ABS,
             }),
             schema: SchemaInfo::unknown(),
         });
-
-        let sqrt_id = plan.add_node(Node {
+        
+        // LOG
+        let log_node = plan.add_node(Node {
             id: NodeId(2),
             op: Operation::Unary(UnaryOp::MapNumeric {
-                input: abs_id,
-                func: NumericFunc::SQRT,
+                input: abs_node,
+                func: NumericFunc::LOG,
             }),
             schema: SchemaInfo::unknown(),
         });
-
-        let log_id = plan.add_node(Node {
+        
+        // EXP
+        plan.add_node(Node {
             id: NodeId(3),
             op: Operation::Unary(UnaryOp::MapNumeric {
-                input: sqrt_id,
+                input: log_node,
+                func: NumericFunc::EXP,
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        assert_eq!(plan.nodes.len(), 4, "Before optimization: 4 nodes");
+
+        let optimized = optimize(&plan);
+
+        assert_eq!(optimized.nodes.len(), 2, "After optimization: 2 nodes (source + fused)");
+        
+        // Verify fused node structure
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                assert_eq!(input.0, 0, "Fused node should point to source");
+                assert_eq!(ops.len(), 3, "Should have 3 fused ops");
+                assert!(matches!(ops[0], NumericFunc::ABS));
+                assert!(matches!(ops[1], NumericFunc::LOG));
+                assert!(matches!(ops[2], NumericFunc::EXP));
+            }
+            _ => panic!("Expected FusedElementwise, got {:?}", optimized.nodes[1].op),
+        }
+    }
+
+    /// Tripwire 2: cs1 ∘ elementwise fusion (PR4.2a)
+    ///
+    /// Test that x → LOG → cs1 fuses into FusedCs1Elementwise
+    #[test]
+    fn test_tripwire_cs1_elementwise_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        let src = plan.add_node(Node {
+            id: NodeId(0),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        let log_node = plan.add_node(Node {
+            id: NodeId(1),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: src,
                 func: NumericFunc::LOG,
             }),
             schema: SchemaInfo::unknown(),
         });
-
-        let segments = identify_segments(&plan);
-
-        // Should identify: [source (atomic), unary chain (abs->sqrt->log)]
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].kind, SegmentKind::Atomic);  // source
-        assert_eq!(segments[1].kind, SegmentKind::UnaryChain);
-        assert_eq!(segments[1].nodes.len(), 3);  // abs, sqrt, log
-    }
-
-    #[test]
-    fn test_identify_scalar_binary_chain() {
-        // Plan: x -> (*2.0) -> (+5.0)
-        let mut plan = Plan::new();
-
-        let x_id = plan.add_node(Node {
-            id: NodeId(0),
-            op: Operation::Source(crate::ir::Source::Variable {
-                name: crate::ast::SymbolId(0),
-            }),
-            schema: SchemaInfo::unknown(),
-        });
-
-        let mul_id = plan.add_node(Node {
-            id: NodeId(1),
-            op: Operation::Binary(BinaryOp::MapNumeric2 {
-                lhs: x_id,
-                rhs: ValueRef::Scalar(2.0),
-                func: BinaryFunc::MUL,
-            }),
-            schema: SchemaInfo::unknown(),
-        });
-
-        let add_id = plan.add_node(Node {
-            id: NodeId(2),
-            op: Operation::Binary(BinaryOp::MapNumeric2 {
-                lhs: mul_id,
-                rhs: ValueRef::Scalar(5.0),
-                func: BinaryFunc::ADD,
-            }),
-            schema: SchemaInfo::unknown(),
-        });
-
-        let segments = identify_segments(&plan);
-
-        // Should identify: [source (atomic), scalar binary chain (mul->add)]
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].kind, SegmentKind::Atomic);  // source
-        assert_eq!(segments[1].kind, SegmentKind::ScalarBinaryChain);
-        assert_eq!(segments[1].nodes.len(), 2);  // mul, add
-    }
-
-    #[test]
-    fn test_non_fusible_operations() {
-        // Plan: x -> dlog (not fusible) -> log (fusible but alone)
-        let mut plan = Plan::new();
-
-        let x_id = plan.add_node(Node {
-            id: NodeId(0),
-            op: Operation::Source(crate::ir::Source::Variable {
-                name: crate::ast::SymbolId(0),
-            }),
-            schema: SchemaInfo::unknown(),
-        });
-
-        let dlog_id = plan.add_node(Node {
-            id: NodeId(1),
-            op: Operation::Unary(UnaryOp::MapNumeric {
-                input: x_id,
-                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
-            }),
-            schema: SchemaInfo::unknown(),
-        });
-
-        let log_id = plan.add_node(Node {
+        
+        plan.add_node(Node {
             id: NodeId(2),
             op: Operation::Unary(UnaryOp::MapNumeric {
-                input: dlog_id,
-                func: NumericFunc::LOG,
+                input: log_node,
+                func: NumericFunc::SHF_PFX_LIN_SUM, // cs1
             }),
             schema: SchemaInfo::unknown(),
         });
 
-        let segments = identify_segments(&plan);
+        assert_eq!(plan.nodes.len(), 3);
 
-        // Should identify: [source (atomic), dlog (atomic), log (atomic)]
-        // dlog breaks the chain because it's not fusible
-        assert_eq!(segments.len(), 3);
-        assert!(segments.iter().all(|s| s.kind == SegmentKind::Atomic));
+        let optimized = optimize(&plan);
+
+        assert_eq!(optimized.nodes.len(), 2, "Should fuse to 2 nodes");
+        
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                assert_eq!(input.0, 0);
+                assert_eq!(ops.len(), 1);
+                assert!(matches!(ops[0], NumericFunc::LOG));
+            }
+            _ => panic!("Expected FusedCs1Elementwise"),
+        }
     }
 
+    /// Tripwire 3: cs1 ∘ dlog fusion (PR4.2b)
+    ///
+    /// Test that x → dlog-obs → cs1 fuses into FusedCs1DlogObs
     #[test]
-    fn test_fused_unary_equivalence() {
-        // Test: (log (sqrt (abs x))) fused vs unfused produces same result
-        use crate::frame::{Tags, IndexColumn};
-        use blawktrust::Column;
+    fn test_tripwire_cs1_dlog_fusion() {
+        let mut plan = Plan { nodes: vec![] };
+        
+        let src = plan.add_node(Node {
+            id: NodeId(0),
+            op: Operation::Source(Source::File { path: "x".to_string() }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        let dlog_node = plan.add_node(Node {
+            id: NodeId(1),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: src,
+                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG, // dlog-obs
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        plan.add_node(Node {
+            id: NodeId(2),
+            op: Operation::Unary(UnaryOp::MapNumeric {
+                input: dlog_node,
+                func: NumericFunc::SHF_PFX_LIN_SUM, // cs1
+            }),
+            schema: SchemaInfo::unknown(),
+        });
+        
+        assert_eq!(plan.nodes.len(), 3);
+        
+        let optimized = optimize(&plan);
+        
+        assert_eq!(optimized.nodes.len(), 2, "Should fuse to 2 nodes");
+        
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                assert_eq!(input.0, 0, "Should point to source");
+            }
+            _ => panic!("Expected FusedCs1DlogObs"),
+        }
+    }
+}
 
-        // Create test frame
-        let data = vec![1.0, 4.0, 9.0, 16.0, 25.0];
-        let col = Arc::new(Column::new_f64(data.clone()));
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::exec;
+    use crate::ir::{Source, SchemaInfo};
+    use proptest::prelude::*;
+    use blawktrust::Column;
 
-        let index = IndexColumn::Date(Arc::new(vec![1, 2, 3, 4, 5]));
-        let tags = Tags::new("DATE".to_string(), index, vec!["x".to_string()]);
-        let frame = Arc::new(Frame::new(tags, vec![Arc::clone(&col)]));
+        /// Pipeline operation grammar
+        #[derive(Debug, Clone)]
+        enum PipelineOp {
+            // Pure elementwise
+            Abs,
+            Log,    // Requires positive input (we add ABS automatically)
+            Exp,
+            Sqrt,   // Requires non-negative (we add ABS automatically)
+            Inv,
 
-        // Execute unfused (step by step)
-        let abs_result = crate::exec::abs_column(&col);
-        let sqrt_result = crate::exec::sqrt_column(&abs_result);
-        let log_result = crate::exec::log_column(&sqrt_result);
+            // Stateful
+            Cs1,
+            DlogObs,
+            // Note: DlogOfs with lag>1 not yet supported in unfused form
+            // ShiftObs/ShiftOfs not yet implemented
+        }
 
-        // Execute fused
-        let funcs = vec![NumericFunc::ABS, NumericFunc::SQRT, NumericFunc::LOG];
-        let fused_result = execute_fused_unary(&frame, &funcs);
+        /// Strategy for generating a single operation
+        fn op_strategy() -> impl Strategy<Value = PipelineOp> {
+            prop_oneof![
+                // Elementwise (higher weight - common operations)
+                3 => Just(PipelineOp::Abs),
+                2 => Just(PipelineOp::Exp),
+                2 => Just(PipelineOp::Inv),
 
-        // Compare results
-        let unfused_col = &log_result;
-        let fused_col = fused_result.get_col(0).unwrap();
+                // LOG/SQRT need positive input - lower weight
+                1 => Just(PipelineOp::Log),
+                1 => Just(PipelineOp::Sqrt),
 
-        match (unfused_col, &**fused_col) {
-            (Column::F64(unfused_data), Column::F64(fused_data)) => {
-                assert_eq!(unfused_data.len(), fused_data.len());
-                for (i, (&u, &f)) in unfused_data.iter().zip(fused_data.iter()).enumerate() {
-                    if u.is_nan() && f.is_nan() {
-                        // Both NA - OK
-                    } else {
-                        assert!((u - f).abs() < 1e-10, "Mismatch at index {}: {} vs {}", i, u, f);
+                // Stateful operations
+                2 => Just(PipelineOp::Cs1),
+                2 => Just(PipelineOp::DlogObs),
+            ]
+        }
+
+        /// Strategy for generating a random pipeline (depth 1-7)
+        fn pipeline_strategy() -> impl Strategy<Value = Vec<PipelineOp>> {
+            prop::collection::vec(op_strategy(), 1..=7)
+        }
+
+        /// Sanitize pipeline to avoid LOG/SQRT on negative numbers
+        ///
+        /// Rules:
+        /// - Before LOG: ensure ABS is in the chain
+        /// - Before SQRT: ensure ABS is in the chain
+        fn sanitize_pipeline(mut ops: Vec<PipelineOp>) -> Vec<PipelineOp> {
+            let mut sanitized = Vec::new();
+            let mut has_abs = false;
+
+            for op in ops.drain(..) {
+                match op {
+                    PipelineOp::Log | PipelineOp::Sqrt => {
+                        // Ensure we have ABS before dangerous ops
+                        if !has_abs {
+                            sanitized.push(PipelineOp::Abs);
+                            has_abs = true;
+                        }
+                        sanitized.push(op);
+                        // After LOG/SQRT, might go negative again
+                        has_abs = false;
+                    }
+                    PipelineOp::Abs => {
+                        sanitized.push(op);
+                        has_abs = true;
+                    }
+                    PipelineOp::Exp => {
+                        sanitized.push(op);
+                        has_abs = true; // exp is always positive
+                    }
+                    _ => {
+                        sanitized.push(op);
+                        // Other ops don't guarantee positivity
+                        has_abs = false;
                     }
                 }
             }
-            _ => panic!("Expected F64 columns"),
+
+            sanitized
         }
-    }
 
-    #[test]
-    fn test_fused_scalar_binary_equivalence() {
-        // Test: (+ (* x 2.0) 5.0) fused vs unfused produces same result
-        use crate::frame::{Tags, IndexColumn};
-        use blawktrust::Column;
+        /// Build an IR plan from a pipeline of operations
+        fn build_plan(ops: &[PipelineOp]) -> (Plan, NodeId) {
+            let mut plan = Plan::new();
 
-        // Create test frame
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let col = Arc::new(Column::new_f64(data.clone()));
+            // Source node
+            let mut current = plan.add_node(Node {
+                id: NodeId(0),
+                op: Operation::Source(Source::Variable {
+                    name: crate::ast::SymbolId(0),
+                }),
+                schema: SchemaInfo::unknown(),
+            });
 
-        let index = IndexColumn::Date(Arc::new(vec![1, 2, 3, 4, 5]));
-        let tags = Tags::new("DATE".to_string(), index, vec!["x".to_string()]);
-        let frame = Arc::new(Frame::new(tags, vec![Arc::clone(&col)]));
-
-        // Execute unfused (step by step)
-        let mul_result = apply_scalar_binary(&col, BinaryFunc::MUL, 2.0);
-        let add_result = apply_scalar_binary(&mul_result, BinaryFunc::ADD, 5.0);
-
-        // Execute fused
-        let ops = vec![(BinaryFunc::MUL, 2.0), (BinaryFunc::ADD, 5.0)];
-        let fused_result = execute_fused_scalar_binary(&frame, &ops);
-
-        // Compare results
-        let unfused_col = &add_result;
-        let fused_col = fused_result.get_col(0).unwrap();
-
-        match (unfused_col, &**fused_col) {
-            (Column::F64(unfused_data), Column::F64(fused_data)) => {
-                assert_eq!(unfused_data.len(), fused_data.len());
-                for (i, (&u, &f)) in unfused_data.iter().zip(fused_data.iter()).enumerate() {
-                    assert!((u - f).abs() < 1e-10, "Mismatch at index {}: {} vs {}", i, u, f);
-                }
+            // Apply each operation
+            for op in ops {
+                current = match op {
+                    PipelineOp::Abs => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::ABS,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Log => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::LOG,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Exp => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::EXP,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Sqrt => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SQRT,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Inv => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::INV,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::Cs1 => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SHF_PFX_LIN_SUM,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                    PipelineOp::DlogObs => {
+                        plan.add_node(Node {
+                            id: NodeId(plan.nodes.len()),
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: current,
+                                func: NumericFunc::SHF_PTW_OBS_NLN_DLOG,
+                            }),
+                            schema: SchemaInfo::unknown(),
+                        })
+                    }
+                };
             }
-            _ => panic!("Expected F64 columns"),
+
+            (plan, current)
+        }
+
+        /// Strategy for generating test data with random NA patterns
+        fn data_strategy() -> impl Strategy<Value = Vec<f64>> {
+            // Size: 50-200 elements (fast but large enough to catch bugs)
+            (50_usize..=200).prop_flat_map(|size| {
+                // NA density: 0-30%
+                (0_usize..=30).prop_flat_map(move |na_pct| {
+                    // Generate random floats in range [1.0, 100.0]
+                    prop::collection::vec(1.0_f64..=100.0, size).prop_map(move |mut data| {
+                        // Apply NA pattern by replacing every N-th element
+                        if na_pct > 0 {
+                            let stride = 100 / na_pct.max(1);
+                            for i in (0..data.len()).step_by(stride.max(1)) {
+                                data[i] = f64::NAN;
+                            }
+                        }
+                        data
+                    })
+                })
+            })
+        }
+
+        /// Compare two columns for NaN-aware equality
+        fn columns_equal(a: &Column, b: &Column) -> bool {
+            match (a, b) {
+                (Column::F64(a_data), Column::F64(b_data)) => {
+                    if a_data.len() != b_data.len() {
+                        return false;
+                    }
+                    for (a_val, b_val) in a_data.iter().zip(b_data.iter()) {
+                        match (a_val.is_nan(), b_val.is_nan()) {
+                            (true, true) => continue,
+                            (false, false) => {
+                                // Relative error for floating point comparison
+                                let diff = (a_val - b_val).abs();
+                                let magnitude = a_val.abs().max(b_val.abs());
+                                if magnitude > 1e-10 {
+                                    if diff / magnitude > 1e-9 {
+                                        return false;
+                                    }
+                                } else if diff > 1e-9 {
+                                    return false;
+                                }
+                            }
+                            _ => return false,
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        /// Helper: Execute a plan directly (simplified executor for testing)
+        ///
+        /// Returns the result of the last node in the plan (the output node).
+        fn execute_plan_direct(plan: &Plan, input: &Column) -> Result<Column, String> {
+            use std::collections::HashMap;
+
+            let mut results: HashMap<NodeId, Column> = HashMap::new();
+            let mut last_result: Option<Column> = None;
+
+            // Execute nodes in topological order
+            for node in &plan.nodes {
+                let result = match &node.op {
+                    Operation::Source(_) => input.clone(),
+
+                    Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+
+                        match func {
+                            NumericFunc::ABS => exec::abs_column(input_col),
+                            NumericFunc::LOG => exec::log_column(input_col),
+                            NumericFunc::EXP => exec::exp_column(input_col),
+                            NumericFunc::SQRT => exec::sqrt_column(input_col),
+                            NumericFunc::INV => exec::inv_column(input_col),
+                            NumericFunc::SHF_PFX_LIN_SUM => exec::cumsum_column(input_col),
+                            NumericFunc::SHF_PTW_OBS_NLN_DLOG => exec::dlog_obs_column(input_col, 1),
+                            _ => return Err(format!("Unsupported func: {:?}", func)),
+                        }
+                    }
+
+                    Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_elementwise_column(input_col, ops)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_elementwise_column(input_col, ops)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_dlog_ofs_column(input_col, *lag)
+                    }
+
+                    Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                        let input_col = results.get(input)
+                            .ok_or_else(|| format!("Missing input for node {:?}", node.id))?;
+                        exec::fused_cs1_dlog_obs_column(input_col)
+                    }
+
+                    _ => return Err(format!("Unsupported operation: {:?}", node.op)),
+                };
+
+                results.insert(node.id, result.clone());
+                last_result = Some(result);
+            }
+
+            last_result.ok_or_else(|| "Empty plan".to_string())
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 100,  // 100 random test cases
+                max_shrink_iters: 1000,
+                .. ProptestConfig::default()
+            })]
+
+            /// Core property: Optimizer preserves semantics
+            ///
+            /// Property: execute(optimize(plan)) ≡ execute(plan)
+            ///
+            /// Generates random pipelines and verifies optimization correctness.
+            #[test]
+            fn prop_optimizer_preserves_semantics(
+                ops in pipeline_strategy(),
+                data in data_strategy(),
+            ) {
+                // Sanitize pipeline (add ABS before LOG/SQRT)
+                let ops = sanitize_pipeline(ops);
+
+                // Skip empty pipelines
+                if ops.is_empty() {
+                    return Ok(());
+                }
+
+                // Build IR plan
+                let (plan, output_node) = build_plan(&ops);
+
+                // Validate plan structure
+                if plan.validate().is_err() {
+                    return Ok(()); // Invalid plan - skip
+                }
+
+                // Execute unfused (baseline)
+                let col = Column::new_f64(data.clone());
+                let unfused_result = match execute_plan_direct(&plan, &col) {
+                    Ok(result) => result,
+                    Err(_) => return Ok(()), // Execution error - skip
+                };
+
+                // Apply all optimizations
+                let mut optimized = plan.clone();
+                optimized = optimize_elementwise_fusion(&optimized);
+                optimized = optimize_cs1_elementwise_fusion(&optimized);
+                optimized = optimize_cs1_dlog_fusion(&optimized);
+
+                // Execute fused
+                let fused_result = match execute_plan_direct(&optimized, &col) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        // Fused execution failed but unfused succeeded - BUG!
+                        prop_assert!(false, "Optimizer broke execution: unfused OK, fused FAILED\nPipeline: {:?}", ops);
+                        return Ok(());
+                    }
+                };
+
+                // Verify equivalence
+                prop_assert!(
+                    columns_equal(&unfused_result, &fused_result),
+                    "Optimizer changed semantics!\nPipeline: {:?}\nData length: {}\nFirst 10 unfused: {:?}\nFirst 10 fused: {:?}",
+                    ops,
+                    data.len(),
+                    unfused_result,
+                    fused_result
+                );
+            }
+
+            /// Property: Optimizer is idempotent
+            ///
+            /// Property: optimize(optimize(plan)) ≡ optimize(plan)
+            #[test]
+            fn prop_optimizer_is_idempotent(
+                ops in pipeline_strategy(),
+            ) {
+                let ops = sanitize_pipeline(ops);
+                if ops.is_empty() {
+                    return Ok(());
+                }
+
+                let (plan, _) = build_plan(&ops);
+                if plan.validate().is_err() {
+                    return Ok(());
+                }
+
+                // Apply optimizations once
+                let mut opt1 = plan.clone();
+                opt1 = optimize_elementwise_fusion(&opt1);
+                opt1 = optimize_cs1_elementwise_fusion(&opt1);
+                opt1 = optimize_cs1_dlog_fusion(&opt1);
+
+                // Apply optimizations again
+                let mut opt2 = opt1.clone();
+                opt2 = optimize_elementwise_fusion(&opt2);
+                opt2 = optimize_cs1_elementwise_fusion(&opt2);
+                opt2 = optimize_cs1_dlog_fusion(&opt2);
+
+                // Both should have same number of nodes (idempotent)
+                prop_assert_eq!(
+                    opt1.nodes.len(),
+                    opt2.nodes.len(),
+                    "Optimizer is not idempotent! First pass: {} nodes, second pass: {} nodes",
+                    opt1.nodes.len(),
+                    opt2.nodes.len()
+                );
+            }
         }
     }
-
-    #[test]
-    fn test_fused_preserves_arc_identity() {
-        // Test: Fused operations preserve Arc identity (I1-I3)
-        use crate::frame::{Tags, IndexColumn};
-        use blawktrust::Column;
-
-        let data = vec![1.0, 2.0, 3.0];
-        let col = Arc::new(Column::new_f64(data));
-
-        let index = IndexColumn::Date(Arc::new(vec![1, 2, 3]));
-        let tags = Tags::new("DATE".to_string(), index, vec!["x".to_string()]);
-        let frame = Arc::new(Frame::new(tags, vec![col]));
-
-        // Execute fused operation
-        let funcs = vec![NumericFunc::ABS, NumericFunc::SQRT];
-        let result = execute_fused_unary(&frame, &funcs);
-
-        // Verify Arc identity (I1-I3)
-        assert!(Arc::ptr_eq(&frame.tags.index, &result.tags.index),
-            "I1: Index Arc identity not preserved");
-        assert!(Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
-            "I2: Colnames Arc identity not preserved");
-        assert_eq!(frame.nrows, result.nrows,
-            "I3: Row count not preserved");
-    }
-}

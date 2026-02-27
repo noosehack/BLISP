@@ -1,1 +1,6 @@
 /target
+
+# Local backups
+*.pr1_backup
+*.backup
+*_backup
