@@ -1,11 +1,13 @@
 # BLISP Dispatch Map - Authoritative Reference
 
-**Version:** 1.1
-**Date:** 2026-02-27 (Updated post-Level1 migration)
+**Version:** 1.2
+**Date:** 2026-02-27 (Updated post-comparison operators extension)
 **Repository:** /home/ubuntu/blisp
 **Branch:** reconstruct/tableview-only
 **Status:** Ground Truth - Single Source of Authority
-**Last Migration:** Level 1 - Added 4 deprecated -col aliases to IR planner (commit 2141d00)
+**Last Changes:**
+- Level 1 Migration: Added 5 deprecated aliases (dlog-col, shift-col, cs1-col, ur-col, w5) to IR planner (commits 2141d00, b3849ed)
+- Canonical Extension: Added 5 comparison operators (<, <=, >=, ==, !=) to IR system (commit 56a8d18)
 
 ---
 
@@ -200,7 +202,7 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 | `locf` | No | planner.rs:131 | NumericFunc::SHF_REC_NLN_LOCF | locf_column (exec.rs:165) | **MISSING** | **MISSING** | **IR-only** | ⚠️ No fallback |
 | `locf-cols` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:176 | builtin_locf_cols | **Legacy-only** | Multi-column |
 | `wkd` | No | planner.rs:132 | NumericFunc::MSK_WKE | wkd_mask_weekends (exec.rs:134) | builtins.rs:186 | builtin_wkd | **Dual** | IR wins |
-| `w5` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:187 | builtin_wkd | **Legacy-only** | ⚠️ Alias breaks IR trees |
+| `w5` | No | planner.rs:142 | NumericFunc::MSK_WKE | wkd_mask_weekends (exec.rs:134) | builtins.rs:187 | builtin_wkd | **Dual (DEPRECATED)** | ✅ Alias for wkd |
 | `cs1` | No | planner.rs:133 | NumericFunc::SHF_PFX_LIN_SUM | cumsum_column (exec.rs:166) | **MISSING** | **MISSING** | **IR-only** | ⚠️ No fallback |
 | `cs1-col` | No | planner.rs:143 | NumericFunc::SHF_PFX_LIN_SUM | cumsum_column (exec.rs:166) | builtins.rs:190 | builtin_cs1 | **Dual (DEPRECATED)** | ✅ Alias for cs1 |
 | `cs1-cols` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:189 | builtin_cs1_cols | **Legacy-only** | Multi-column |
@@ -220,11 +222,11 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 | `*` | No | planner.rs:522 | BinaryFunc::MUL | mul_scalar/mul_columns (exec.rs:350) | builtins.rs:123 | builtin_mul | **Dual** | IR wins |
 | `/` | No | planner.rs:523 | BinaryFunc::DIV | div_scalar/div_columns (exec.rs:350) | builtins.rs:124 | builtin_div | **Dual** | IR wins |
 | `>` | No | planner.rs:524 | BinaryFunc::GTR | gt_columns (exec.rs:350) | builtins.rs:125 | builtin_gt | **Dual** | IR wins |
-| `<` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:169 | builtin_lt | **Legacy-only** | Comparison |
-| `>=` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:170 | builtin_gte | **Legacy-only** | Comparison |
-| `<=` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:171 | builtin_lte | **Legacy-only** | Comparison |
-| `==` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:172 | builtin_eq | **Legacy-only** | Comparison |
-| `!=` | No | **MISSING** | **MISSING** | **MISSING** | builtins.rs:173 | builtin_neq | **Legacy-only** | Comparison |
+| `<` | No | planner.rs:618 | BinaryFunc::LSS | binary_scalar_column/binary_column_column (exec.rs:2174) | builtins.rs:169 | builtin_lt | **Dual** | IR wins |
+| `>=` | No | planner.rs:620 | BinaryFunc::GTE | binary_scalar_column/binary_column_column (exec.rs:2174) | builtins.rs:170 | builtin_gte | **Dual** | IR wins |
+| `<=` | No | planner.rs:619 | BinaryFunc::LTE | binary_scalar_column/binary_column_column (exec.rs:2174) | builtins.rs:171 | builtin_lte | **Dual** | IR wins |
+| `==` | No | planner.rs:621 | BinaryFunc::EQL | binary_scalar_column/binary_column_column (exec.rs:2174) | builtins.rs:172 | builtin_eq | **Dual** | IR wins |
+| `!=` | No | planner.rs:622 | BinaryFunc::NEQ | binary_scalar_column/binary_column_column (exec.rs:2174) | builtins.rs:173 | builtin_neq | **Dual** | IR wins |
 | `mapr` | No | planner.rs:527 | JoinOp::ALIGN | reindex_by (exec.rs:420) | builtins.rs:196 | builtin_mapr | **Dual** | IR wins |
 | `asofr` | No | planner.rs:528 | JoinOp::ASOF_ALIGN | asofr (exec.rs:446) | **MISSING** | **MISSING** | **IR-only** | ASOF join |
 | `xminus` | No | planner.rs:531 | SchemaOp::SHF_PTW_LIN_SPR{half} | xminus_columns (exec.rs:507) | builtins.rs:188 | builtin_xminus | **Dual** | IR wins |
@@ -245,24 +247,26 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 
 **Critical Mismatches:**
 - **7 IR-only operations with NO fallback:** dlog, locf, cs1, shift, ur, ret, log
-- **1 Legacy-only alias that breaks IR trees:** w5 ⚠️
-- **4 Deprecated dual-routing aliases (Level 1 migration):** dlog-col, shift-col, cs1-col, ur-col ✅
-- **9 Dual-routing tokens where builtin is shadowed:** +, -, *, /, >, mapr, stdin, wkd, xminus
+- **0 Legacy-only aliases that break IR trees:** ✅ (w5 fixed in commit b3849ed)
+- **5 Deprecated dual-routing aliases (Level 1 migration):** dlog-col, shift-col, cs1-col, ur-col, w5 ✅
+- **15 Dual-routing tokens where builtin is shadowed:** +, -, *, /, >, <, <=, >=, ==, !=, mapr, stdin, wkd, xminus, file
 
 ---
 
 ## Part D: Gotchas - Ways Expressions Can Double-Fail
 
-### Gotcha 1: IR-Only Outer + Legacy-Only Inner
+### Gotcha 1: IR-Only Outer + Legacy-Only Inner (FIXED)
 
 **Problem:** Nesting IR-only operation with legacy-only alias
 
-**Example 1:**
+**Status:** ✅ RESOLVED - All Level 1 migrations complete (commits 2141d00, b3849ed)
+
+**Example 1 (FIXED in commit b3849ed):**
 ```lisp
 (dlog (w5 20 PRC))
 ```
 
-**Failure sequence:**
+**Before fix - Failed:**
 1. IR tries to plan outer `dlog` → Success (planner.rs:123)
 2. IR recurses to plan inner `(w5 20 PRC)`
 3. IR tries to match `w5` → **FAIL** (planner.rs:640 "Unknown function: w5")
@@ -270,14 +274,21 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 5. Legacy tries to eval outer `dlog` → **FAIL** (eval.rs:94 "Undefined variable: dlog")
 6. **RESULT:** Both paths fail!
 
-**Fix:** Use consistent naming: `(dlog (wkd 20 PRC))`
+**After fix - Works:**
+1. IR tries to plan outer `dlog` → Success
+2. IR recurses to plan inner `(w5 20 PRC)`
+3. IR matches `w5` → Success (planner.rs:142, emits deprecation warning)
+4. Expression evaluates through IR path
+5. **RESULT:** ✅ SUCCESS (with warning: "w5 is deprecated, use wkd instead")
 
-**Example 2:**
+**Recommended:** Use canonical naming: `(dlog (wkd 20 PRC))` to avoid warnings
+
+**Example 2 (FIXED in commit b3849ed):**
 ```lisp
 (ur 250 1 (w5 RET))
 ```
 
-**Failure sequence:**
+**Before fix - Failed:**
 1. IR tries to plan outer `ur` → Success (planner.rs:408)
 2. IR recurses to plan inner `(w5 RET)`
 3. IR tries to match `w5` → **FAIL** "Unknown function: w5"
@@ -285,9 +296,16 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 5. Legacy tries to eval outer `ur` → **FAIL** "Undefined variable: ur"
 6. **RESULT:** Both paths fail!
 
-**Fix:** Use consistent naming: `(ur 250 1 (wkd RET))`
+**After fix - Works:**
+1. IR tries to plan outer `ur` → Success
+2. IR recurses to plan inner `(w5 RET)`
+3. IR matches `w5` → Success (planner.rs:142, emits deprecation warning)
+4. Expression evaluates through IR path
+5. **RESULT:** ✅ SUCCESS (with warning: "w5 is deprecated, use wkd instead")
 
-**Example 3 (FIXED in Level 1 migration):**
+**Recommended:** Use canonical naming: `(ur 250 1 (wkd RET))` to avoid warnings
+
+**Example 3 (FIXED in Level 1 migration commit 2141d00):**
 ```lisp
 (shift 1 (dlog-col PRC))
 ```
@@ -331,16 +349,18 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 
 **Workaround:** Force legacy mode: `BLISP_LEGACY=1 blisp -e '(dlog-col 42)'`
 
-### Gotcha 3: Legacy-Only Operation in IR Tree
+### Gotcha 3: Legacy-Only Operation in IR Tree (FIXED)
 
 **Problem:** Legacy operation nested inside IR-recognized tree
 
-**Example:**
+**Status:** ✅ RESOLVED - w5 alias fixed in commit b3849ed
+
+**Example (FIXED):**
 ```lisp
 (mapr LHS (w5 RHS))
 ```
 
-**Failure sequence:**
+**Before fix - Bypassed IR path:**
 1. IR tries to plan outer `mapr` → Success (planner.rs:527)
 2. IR recurses to plan second arg `(w5 RHS)`
 3. IR tries to match `w5` → **FAIL** "Unknown function: w5"
@@ -348,6 +368,15 @@ quote, progn, if, let*, defparameter, setf, define, lambda, defmacro, ->
 5. Legacy tries to eval entire tree starting with outer `mapr`
 6. Legacy CAN handle `mapr` (builtins.rs:196)
 7. **SUCCESS** via legacy path (but slower, no schema validation)
+
+**After fix - Works in IR:**
+1. IR tries to plan outer `mapr` → Success (planner.rs:527)
+2. IR recurses to plan second arg `(w5 RHS)`
+3. IR matches `w5` → Success (planner.rs:142, emits deprecation warning)
+4. Expression evaluates through IR path with full schema validation
+5. **RESULT:** ✅ SUCCESS through IR (faster, type-safe)
+
+**Recommended:** Use canonical naming: `(mapr LHS (wkd RHS))` to avoid warnings
 
 **Fix:** Use IR name: `(mapr LHS (wkd RHS))`
 
@@ -421,11 +450,15 @@ BLISP_IR_ONLY=1 blisp -e '(print "hello")'
 
 ### IR Planner Coverage
 
-**Total recognized:** 36 tokens (planner.rs:86-641)
+**Total recognized:** 42 tokens (planner.rs:86-641)
 
 **Verified reachable in HYBRID mode:**
-- ✅ All 36 tokens route to IR when input is Frame/TableView
+- ✅ All 42 tokens route to IR when input is Frame/TableView
 - ✅ Fallback to legacy only on "Unknown function" error
+
+**Recent additions:**
+- w5 (commit b3849ed) - deprecated alias for wkd
+- <, <=, >=, ==, != (commit 56a8d18) - canonical comparison operators
 
 **Unreachable builtins (shadowed by IR):**
 - builtin_add (builtins.rs:121) - shadowed by planner.rs:520
@@ -433,6 +466,11 @@ BLISP_IR_ONLY=1 blisp -e '(print "hello")'
 - builtin_mul (builtins.rs:123) - shadowed by planner.rs:522
 - builtin_div (builtins.rs:124) - shadowed by planner.rs:523
 - builtin_gt (builtins.rs:125) - shadowed by planner.rs:524
+- builtin_lt (builtins.rs:169) - shadowed by planner.rs:618 (added commit 56a8d18)
+- builtin_gte (builtins.rs:170) - shadowed by planner.rs:620 (added commit 56a8d18)
+- builtin_lte (builtins.rs:171) - shadowed by planner.rs:619 (added commit 56a8d18)
+- builtin_eq (builtins.rs:172) - shadowed by planner.rs:621 (added commit 56a8d18)
+- builtin_neq (builtins.rs:173) - shadowed by planner.rs:622 (added commit 56a8d18)
 - builtin_mapr (builtins.rs:196) - shadowed by planner.rs:527
 - builtin_wkd (builtins.rs:186) - shadowed by planner.rs:132
 - builtin_xminus (builtins.rs:188) - shadowed by planner.rs:531
@@ -449,24 +487,24 @@ BLISP_IR_ONLY=1 blisp -e '(print "hello")'
 - ❌ 9 dual-routing builtins (unreachable, IR wins)
 
 **Dangerous Aliases (break IR trees):**
-- `w5` (builtins.rs:187) - IR knows only `wkd` ⚠️ STILL BROKEN
-- ~~`dlog-col` (builtins.rs:133)~~ - ✅ FIXED in Level 1 migration (planner.rs:127)
-- ~~`shift-col` (builtins.rs:134)~~ - ✅ FIXED in Level 1 migration (planner.rs:166)
-- ~~`ur-col` (builtins.rs:198)~~ - ✅ FIXED in Level 1 migration (planner.rs:498)
-- ~~`cs1-col` (builtins.rs:190)~~ - ✅ FIXED in Level 1 migration (planner.rs:143)
+- ~~`w5` (builtins.rs:187)~~ - ✅ FIXED in Level 1 migration (planner.rs:142, commit b3849ed)
+- ~~`dlog-col` (builtins.rs:133)~~ - ✅ FIXED in Level 1 migration (planner.rs:127, commit 2141d00)
+- ~~`shift-col` (builtins.rs:134)~~ - ✅ FIXED in Level 1 migration (planner.rs:166, commit 2141d00)
+- ~~`ur-col` (builtins.rs:198)~~ - ✅ FIXED in Level 1 migration (planner.rs:498, commit 2141d00)
+- ~~`cs1-col` (builtins.rs:190)~~ - ✅ FIXED in Level 1 migration (planner.rs:143, commit 2141d00)
 
 **Missing IR mappings (high value):**
-- `<`, `>=`, `<=`, `==`, `!=` - comparison operators (should add to IR)
+- ~~`<`, `>=`, `<=`, `==`, `!=`~~ - ✅ FIXED: Comparison operators added to IR (commit 56a8d18)
 
 ### Mismatches Summary
 
 | Category | Count | Examples |
 |----------|-------|----------|
 | IR-only (no builtin) | 24 | dlog, shift, locf, cs1, ur, ret, log, exp, sqrt, abs |
-| Legacy-only (no IR) | 58 | print, save, type-of, len, w5, <, >=, <=, wstd, diff |
-| Dual-routing (IR shadows builtin) | 13 | +, -, *, /, >, mapr, stdin, wkd, xminus, **dlog-col, shift-col, cs1-col, ur-col** |
-| Dangerous aliases (unfixed) | 1 | w5 ⚠️ |
-| Deprecated aliases (Level 1) | 4 | dlog-col ✅, shift-col ✅, cs1-col ✅, ur-col ✅ |
+| Legacy-only (no IR) | 52 | print, save, type-of, len, wstd, diff, dlog-cols, locf-cols |
+| Dual-routing (IR shadows builtin) | 20 | +, -, *, /, >, <, <=, >=, ==, !=, mapr, stdin, wkd, xminus, file, **w5, dlog-col, shift-col, cs1-col, ur-col** |
+| Dangerous aliases (unfixed) | 0 | ✅ All fixed |
+| Deprecated aliases (Level 1) | 5 | w5 ✅, dlog-col ✅, shift-col ✅, cs1-col ✅, ur-col ✅ |
 
 **BROKEN ROUTES:**
 - Nesting IR-only with legacy-only alias → double-fail
