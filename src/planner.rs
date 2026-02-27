@@ -122,6 +122,13 @@ fn plan_expr(
                     // Unary numeric operations
                     "dlog" => plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // default: OBS (NA-skipping)
                     "dlog-ofs" => plan_unary(NumericFunc::SHF_PTW_OFS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // explicit OFS (positional)
+
+                    // DEPRECATED: Legacy alias for dlog
+                    "dlog-col" => {
+                        eprintln!("Warning: 'dlog-col' is deprecated, use 'dlog' instead");
+                        plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner)
+                    }
+
                     "ret" => plan_unary(NumericFunc::RET, &elements[1..], plan, ctx, interner),
                     "log" => plan_unary(NumericFunc::LOG, &elements[1..], plan, ctx, interner),
                     "exp" => plan_unary(NumericFunc::EXP, &elements[1..], plan, ctx, interner),
@@ -131,6 +138,12 @@ fn plan_expr(
                     "locf" => plan_unary(NumericFunc::SHF_REC_NLN_LOCF, &elements[1..], plan, ctx, interner),
                     "wkd" => plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner),
                     "cs1" => plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner),
+
+                    // DEPRECATED: Legacy alias for cs1
+                    "cs1-col" => {
+                        eprintln!("Warning: 'cs1-col' is deprecated, use 'cs1' instead");
+                        plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner)
+                    }
 
                     // Shift operation: (shift k x) where k is non-negative integer
                     "shift" => {
@@ -144,6 +157,24 @@ fn plan_expr(
                             Expr::Int(i) => return Err(format!("shift k must be non-negative, got {}", i)),
                             Expr::Float(_) => return Err("shift k must be integer, not float".to_string()),
                             _ => return Err("shift k must be integer literal".to_string()),
+                        };
+
+                        plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
+                    }
+
+                    // DEPRECATED: Legacy alias for shift
+                    "shift-col" => {
+                        eprintln!("Warning: 'shift-col' is deprecated, use 'shift' instead");
+                        if elements.len() != 3 {
+                            return Err("shift-col expects 2 arguments: (shift-col k x)".to_string());
+                        }
+
+                        // Parse k as non-negative integer
+                        let k = match &elements[1] {
+                            Expr::Int(i) if *i >= 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("shift-col k must be non-negative, got {}", i)),
+                            Expr::Float(_) => return Err("shift-col k must be integer, not float".to_string()),
+                            _ => return Err("shift-col k must be integer literal".to_string()),
                         };
 
                         plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
@@ -416,6 +447,66 @@ fn plan_expr(
                             Expr::Int(i) => return Err(format!("ur w must be positive, got {}", i)),
                             Expr::Float(_) => return Err("ur w must be integer, not float".to_string()),
                             _ => return Err("ur w must be integer literal".to_string()),
+                        };
+
+                        // step param (elements[2]) is ignored for compatibility
+
+                        // Plan input x ONCE
+                        let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
+                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+
+                        // Create rolling-std (min2/relaxed) node for CLISPI compatibility
+                        let std_node_id = NodeId(plan.nodes.len());
+                        let std_node = Node {
+                            id: std_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::SHF_WIN_MIN2_NLN_SDV { w },
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let std_node_id = plan.add_node(std_node);
+
+                        // Create scalar node for 1587.4507866
+                        let scalar_node_id = NodeId(plan.nodes.len());
+                        let scalar_node = Node {
+                            id: scalar_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: std_node_id,
+                                rhs: ValueRef::Scalar(1587.4507866),
+                                func: BinaryFunc::MUL,
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let scalar_node_id = plan.add_node(scalar_node);
+
+                        // Create division node: x / (1587.45... * rolling-std)
+                        let div_node_id = NodeId(plan.nodes.len());
+                        let div_node = Node {
+                            id: div_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: x_node,
+                                rhs: ValueRef::Frame(scalar_node_id),
+                                func: BinaryFunc::DIV,
+                            }),
+                            schema: x_schema,
+                        };
+                        Ok(plan.add_node(div_node))
+                    }
+
+                    // DEPRECATED: Legacy alias for ur
+                    "ur-col" => {
+                        eprintln!("Warning: 'ur-col' is deprecated, use 'ur' instead");
+                        if elements.len() != 4 {
+                            return Err("ur-col expects 3 arguments: (ur-col w step x)".to_string());
+                        }
+
+                        // Parse w as positive integer
+                        let w = match &elements[1] {
+                            Expr::Int(i) if *i > 0 => *i as usize,
+                            Expr::Int(i) => return Err(format!("ur-col w must be positive, got {}", i)),
+                            Expr::Float(_) => return Err("ur-col w must be integer, not float".to_string()),
+                            _ => return Err("ur-col w must be integer literal".to_string()),
                         };
 
                         // step param (elements[2]) is ignored for compatibility
