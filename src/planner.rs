@@ -120,7 +120,8 @@ fn plan_expr(
                     }
 
                     // Unary numeric operations
-                    "dlog" => plan_unary(NumericFunc::SHF_PTW_NLN_DLOG, &elements[1..], plan, ctx, interner),
+                    "dlog" => plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // default: OBS (NA-skipping)
+                    "dlog-ofs" => plan_unary(NumericFunc::SHF_PTW_OFS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // explicit OFS (positional)
                     "ret" => plan_unary(NumericFunc::RET, &elements[1..], plan, ctx, interner),
                     "log" => plan_unary(NumericFunc::LOG, &elements[1..], plan, ctx, interner),
                     "exp" => plan_unary(NumericFunc::EXP, &elements[1..], plan, ctx, interner),
@@ -148,9 +149,9 @@ fn plan_expr(
                         plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
                     }
 
-                    // Mask-aware shift (observation-based lag): (lag-obs k x)
+                    // Mask-aware shift (observation-based lag): (lag-obs k x) or (shift-obs k x)
                     // Skips masked rows when computing lag - business-day lag when weekend mask active
-                    "lag-obs" => {
+                    "lag-obs" | "shift-obs" => {
                         if elements.len() != 3 {
                             return Err(format!("lag-obs expects 2 arguments: (lag-obs k x)"));
                         }
@@ -891,11 +892,11 @@ mod tests {
             _ => panic!("Expected file source"),
         }
 
-        // Node 1: dlog
+        // Node 1: dlog (should map to OBS variant)
         match &plan.nodes[1].op {
             Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
                 assert_eq!(*input, NodeId(0));
-                assert_eq!(*func, NumericFunc::SHF_PTW_NLN_DLOG);
+                assert_eq!(*func, NumericFunc::SHF_PTW_OBS_NLN_DLOG);
             }
             _ => panic!("Expected unary dlog"),
         }

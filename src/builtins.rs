@@ -60,19 +60,10 @@ pub type BuiltinFn = fn(&mut Runtime, &[Value]) -> Result<Value, String>;
 /// Register all builtin functions
 pub fn register_builtins(rt: &mut Runtime) {
     // Arithmetic
-    rt.register_builtin("+", builtin_add);
-    rt.register_builtin("-", builtin_sub);
-    rt.register_builtin("*", builtin_mul);
-    rt.register_builtin("/", builtin_div);
 
     // Math
-    rt.register_builtin("log", builtin_log);
-    rt.register_builtin("exp", builtin_exp);
-    rt.register_builtin("abs", builtin_abs);
 
     // Column Operations (Step 6) - Surface names point to table versions
-    rt.register_builtin("dlog", builtin_dlog_cols);   // Table version (default lag=1)
-    rt.register_builtin("shift", builtin_shift_cols); // Table version (default lag=1)
     rt.register_builtin("diff", builtin_diff_cols);   // Table version (default lag=1)
 
     // Single-column kernels (renamed to avoid collision)
@@ -91,7 +82,6 @@ pub fn register_builtins(rt: &mut Runtime) {
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
     rt.register_builtin("file-head", builtin_file_head);
-    rt.register_builtin("stdin", builtin_stdin);
     rt.register_builtin("save", builtin_save);
     rt.register_builtin("col", builtin_col);
     rt.register_builtin("setcol", builtin_setcol);
@@ -110,7 +100,6 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("diff-cols", builtin_diff_cols);
 
     // Comparison Operations (GLD_NUM Tier 1)
-    rt.register_builtin(">", builtin_gt_cols);      // Surface name → table version
     rt.register_builtin(">-cols", builtin_gt_cols); // Explicit table version
     rt.register_builtin(">-col", builtin_gt);       // Single-column kernel
     rt.register_builtin("<", builtin_lt);
@@ -120,22 +109,16 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("!=", builtin_neq);
 
     // GLD_NUM Tier 2: Shape/Null Operations
-    rt.register_builtin("locf", builtin_locf);
     rt.register_builtin("locf-cols", builtin_locf_cols);
     rt.register_builtin("keep-shape", builtin_keep_shape);
     rt.register_builtin("keep-shape-cols", builtin_keep_shape_cols);
 
     // GLD_NUM Tier 3: Table Transforms
-    rt.register_builtin("wkd", builtin_wkd);
-    rt.register_builtin("mask-weekend", builtin_mask_weekend);
-    rt.register_builtin("with-mask", builtin_with_mask);
     rt.register_builtin("mask-on", builtin_with_mask);  // Alias
     rt.register_builtin("mask-off", builtin_mask_off);
     rt.register_builtin("mask-list", builtin_mask_list);
     rt.register_builtin("mask-stats", builtin_mask_stats);
     rt.register_builtin("mask-define", builtin_mask_define);
-    rt.register_builtin("xminus", builtin_xminus);
-    rt.register_builtin("cs1", builtin_cs1_cols);      // Surface name → table version
     rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
     rt.register_builtin("cs1-col", builtin_cs1);       // Single-column kernel
     rt.register_builtin("ecs1", builtin_ecs1_cols);    // Surface name → table version
@@ -143,9 +126,6 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("ecs1-col", builtin_ecs1);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
-    rt.register_builtin("mapr", builtin_mapr);
-    rt.register_builtin("asofr", builtin_asofr);
-    rt.register_builtin("ur", builtin_ur_cols);      // Surface name → table version
     rt.register_builtin("ur-cols", builtin_ur_cols); // Explicit table version
     rt.register_builtin("ur-col", builtin_ur);       // Single-column kernel
     rt.register_builtin("wz0", builtin_wz0);
