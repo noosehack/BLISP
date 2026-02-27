@@ -23,10 +23,9 @@
 ;; =============================================================================
 
 ;; dlog, shift, diff now have optional lag arguments (default=1) at the builtin level
-;; No compat macros needed - use the builtins directly:
-;;   (dlog x)     → uses default lag=1
-;;   (shift x 2)  → uses explicit lag=2
-;;   (diff x)     → uses default lag=1
+;; TEMPORARY: Until builtins support optional args, use macros to provide defaults
+(defmacro dlog (x) `(dlog-cols ,x))           ; CLISPI dlog → BLISP dlog-cols
+(defmacro shift (x lag) `(shift-cols ,x ,lag))  ; CLISPI shift → BLISP shift-cols
 
 ;; =============================================================================
 ;; SECTION 2: NAME DIFFERENCES (need macro mapping)
@@ -37,11 +36,13 @@
 (defmacro std_dev (x) `(std ,x))        ; CLISPI std_dev → BLISP std
 
 ;; --- Cumulative operations ---
-;; cs1 - now in IR as NumericFunc::CumSum (Phase 2.2)
+;; cs1 - TEMPORARY: Until IR fully integrated, use cs1-cols
+(defmacro cs1 (x) `(cs1-cols ,x))             ; CLISPI cs1 → BLISP cs1-cols
 ;; ecs1 - implemented as macro: exp(cs1(dlog(x))) (Phase 3)
 
 ;; --- Comparison operations ---
-;; > now points to >-cols at the builtin level - no macro needed
+;; TEMPORARY: Until > builtin is polymorphic, use macro to route to >-cols
+(defmacro > (x threshold) `(>-cols ,x ,threshold))  ; CLISPI > → BLISP >-cols
 
 ;; --- Rolling operations ---
 ;; wzs - Windowed z-score (now a builtin, not a macro)
@@ -78,9 +79,9 @@
 ;; --- Unit Ratio (ur) ---
 ;; Unit ratio = value / (100 * sqrt(252) * rolling_std)
 ;; Used for risk-adjusted returns in GLD_NUM pipeline
-;; Note: step parameter ignored (for future keep-shape support)
-(defmacro ur (w step x)
-  `(/ ,x (* 100.0 (* 15.874507866 (rolling-std ,w ,x)))))  ; sqrt(252) ≈ 15.874507866
+;; Threading: (-> x (ur 250 5)) expands to (ur x 250 5), so x comes first
+(defmacro ur (x w step)
+  `(ur-cols ,w ,step ,x))  ; Call builtin with correct order
 
 ;; --- Exponential Cumulative Sum (ecs1) ---
 ;; Reconstruct price index from log returns: exp(cumsum(dlog(prices)))

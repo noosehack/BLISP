@@ -54,12 +54,47 @@ fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView
     }
 }
 
+/// Convert TableView to Frame (inverse of ensure_tableview)
+fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, String> {
+    use crate::frame::{Frame, IndexColumn, Tags, ColData};
+
+    let tv = ensure_tableview(v, rt)?;
+
+    // Create synthetic index (row numbers) - TableView doesn't have index
+    let nrows = if tv.table.columns.is_empty() {
+        0
+    } else {
+        match &tv.table.columns[0] {
+            blawktrust::Column::F64(v) => v.len(),
+            blawktrust::Column::Date(v) => v.len(),
+            blawktrust::Column::Timestamp(v) => v.len(),
+        }
+    };
+
+    let index_strings: Vec<String> = (0..nrows).map(|i| i.to_string()).collect();
+    let index = IndexColumn::String(Arc::new(index_strings));
+
+    // Convert columns
+    let colnames: Vec<String> = tv.table.names.clone();
+    let cols: Vec<Arc<blawktrust::Column>> = tv.table.columns.iter()
+        .map(|col| Arc::new(col.clone()))
+        .collect();
+
+    let tags = Tags::new("ROW".to_string(), index, colnames);
+    Ok(Frame::new(tags, cols))
+}
+
 /// Builtin function signature
 pub type BuiltinFn = fn(&mut Runtime, &[Value]) -> Result<Value, String>;
 
 /// Register all builtin functions
 pub fn register_builtins(rt: &mut Runtime) {
-    // Arithmetic
+    // Arithmetic operators (restored - were removed in 5d5e34d)
+    rt.register_builtin("+", builtin_add);
+    rt.register_builtin("-", builtin_sub);
+    rt.register_builtin("*", builtin_mul);
+    rt.register_builtin("/", builtin_div);
+    rt.register_builtin(">", builtin_gt);  // Greater than (for >-cols to find)
 
     // Math
 
@@ -82,6 +117,7 @@ pub fn register_builtins(rt: &mut Runtime) {
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
     rt.register_builtin("file-head", builtin_file_head);
+    rt.register_builtin("stdin", builtin_stdin);  // Read from stdin (restored from 5d5e34d)
     rt.register_builtin("save", builtin_save);
     rt.register_builtin("col", builtin_col);
     rt.register_builtin("setcol", builtin_setcol);
@@ -269,6 +305,56 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         (Value::Col(a), Value::Col(b)) => {
             let result = mul_columns(a, b)?;
             Ok(Value::Col(Arc::new(result)))
+        }
+
+        // Mixed Frame/TableView - convert to TableView and multiply
+        (Value::Frame(a), Value::TableView(b)) => {
+            use crate::frame::ColData;
+            // Convert Frame a to TableView
+            let mut names_a = Vec::new();
+            let mut cols_a = Vec::new();
+            for (i, colname) in a.tags.colnames.iter().enumerate() {
+                names_a.push(colname.clone());
+                if let ColData::Mat(col_arc) = &a.cols[i] {
+                    cols_a.push((**col_arc).clone());
+                }
+            }
+            let tv_a = blawktrust::TableView::new(blawktrust::Table::new(names_a, cols_a));
+
+            // Now multiply as TableView * TableView
+            let cols_tv_a: Vec<_> = tv_a.table.columns.iter()
+                .filter(|c| matches!(c, blawktrust::Column::F64(_)))
+                .collect();
+            let cols_b: Vec<_> = b.table.columns.iter()
+                .filter(|c| matches!(c, blawktrust::Column::F64(_)))
+                .collect();
+
+            if cols_tv_a.len() != cols_b.len() {
+                return Err(format!("* cannot multiply tables with different number of numeric columns: {} vs {}",
+                    cols_tv_a.len(), cols_b.len()));
+            }
+
+            let mut result_names = Vec::new();
+            let mut result_columns = Vec::new();
+
+            for (col_a, col_b) in cols_tv_a.iter().zip(cols_b.iter()) {
+                let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
+                result_columns.push(mul_result);
+            }
+
+            for (i, col) in tv_a.table.columns.iter().enumerate() {
+                if matches!(col, blawktrust::Column::F64(_)) {
+                    result_names.push(tv_a.table.names[i].clone());
+                }
+            }
+
+            let result_table = blawktrust::Table::new(result_names, result_columns);
+            Ok(Value::tableview(blawktrust::TableView::new(result_table)))
+        }
+
+        (Value::TableView(a), Value::Frame(b)) => {
+            // Swap arguments and call recursively
+            builtin_mul(_rt, &[args[1].clone(), args[0].clone()])
         }
 
         // TableView * TableView (element-wise, column-aligned)
@@ -1636,6 +1722,18 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         (Value::Frame(x), Value::Frame(y)) => {
             // mapr(x, y) = reindex x onto y's index
             let result = frame::reindex_by(x, Arc::clone(&y.tags.index));
+            Ok(Value::Frame(Arc::new(result)))
+        }
+        (Value::Frame(x), Value::TableView(_)) => {
+            // Mixed: Frame x, TableView y -> convert y to Frame
+            let y_frame = tableview_to_frame(&args[1], rt)?;
+            let result = frame::reindex_by(x, Arc::clone(&y_frame.tags.index));
+            Ok(Value::Frame(Arc::new(result)))
+        }
+        (Value::TableView(_), Value::Frame(y)) => {
+            // Mixed: TableView x, Frame y -> convert x to Frame
+            let x_frame = tableview_to_frame(&args[0], rt)?;
+            let result = frame::reindex_by(&x_frame, Arc::clone(&y.tags.index));
             Ok(Value::Frame(Arc::new(result)))
         }
         (Value::TableView(_), Value::TableView(_)) => {

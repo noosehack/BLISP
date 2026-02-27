@@ -1,0 +1,124 @@
+═══════════════════════════════════════════════════════════════════════════════
+  PR4 FUSION OPTIMIZATION - RELEASE MODE BENCHMARKS
+═══════════════════════════════════════════════════════════════════════════════
+
+Date: 2026-02-26
+Mode: cargo bench --release
+Tests: 162 passed (23 fusion tests, 0 regressions)
+
+───────────────────────────────────────────────────────────────────────────────
+  PR4.1: ELEMENTWISE CHAIN FUSION (5 ops → 1 pass)
+───────────────────────────────────────────────────────────────────────────────
+
+Pipeline: inv(sqrt(exp(log(abs(x)))))
+
+┌──────────┬─────────┬───────────┬──────────┬──────────┬─────────────┐
+│   Size   │ NA Rate │  Unfused  │  Fused   │ Speedup  │ Time Saved  │
+├──────────┼─────────┼───────────┼──────────┼──────────┼─────────────┤
+│   1M     │   0%    │  42.97 ms │ 28.74 ms │   1.50x  │  14.23 ms   │
+│   1M     │  15%    │  43.45 ms │ 25.76 ms │   1.69x  │  17.69 ms   │
+│  10M     │   0%    │ 404.70 ms │ 281.3 ms │   1.44x  │ 123.40 ms   │
+│  10M     │  15%    │ 409.20 ms │ 253.5 ms │   1.61x  │ 155.70 ms   │
+└──────────┴─────────┴───────────┴──────────┴──────────┴─────────────┘
+
+Allocations:  5 → 1  (80% reduction)
+Memory:       5×8n → 1×8n bytes
+
+Key Insight: NA-heavy data amplifies benefit (15% NA → 1.69x vs 1.50x)
+
+───────────────────────────────────────────────────────────────────────────────
+  PR4.2b: CS1 ∘ DLOG-OBS FUSION (observation-based lag, ~28% NA)
+───────────────────────────────────────────────────────────────────────────────
+
+Pipeline: cs1(dlog(x)) with weekend NA pattern
+
+┌──────────┬───────────┬──────────┬──────────┬─────────────┐
+│   Size   │  Unfused  │  Fused   │ Speedup  │ Time Saved  │
+├──────────┼───────────┼──────────┼──────────┼─────────────┤
+│   1M     │  25.69 ms │ 14.42 ms │   1.78x  │  11.27 ms   │
+└──────────┴───────────┴──────────┴──────────┴─────────────┘
+
+Allocations:  2 → 1  (50% reduction)
+Memory:       2×8n → 1×8n bytes
+
+Key Insight: Best performer (1.78x) due to complex observation-space state
+
+───────────────────────────────────────────────────────────────────────────────
+  PR4.2b: CS1 ∘ DLOG-OFS FUSION (fixed-offset lag)
+───────────────────────────────────────────────────────────────────────────────
+
+Pipeline: cs1(dlog-ofs(x, k))
+
+┌──────────┬───────────┬──────────┬──────────┬─────────────┐
+│  Lag k   │  Unfused  │  Fused   │ Speedup  │ Time Saved  │
+├──────────┼───────────┼──────────┼──────────┼─────────────┤
+│   k=1    │  26.08 ms │ 15.43 ms │   1.69x  │  10.65 ms   │
+│   k=2    │  26.04 ms │ 15.06 ms │   1.73x  │  10.98 ms   │
+│   k=5    │  25.92 ms │ 15.11 ms │   1.72x  │  10.81 ms   │
+└──────────┴───────────┴──────────┴──────────┴─────────────┘
+
+Allocations:  2 → 1  (50% reduction)
+Memory:       2×8n → 1×8n bytes
+
+Key Insight: Consistent speedup across all lag values (lag-independent)
+
+───────────────────────────────────────────────────────────────────────────────
+  OVERALL CONCLUSIONS
+───────────────────────────────────────────────────────────────────────────────
+
+✅ Performance Gains:
+   • 1.4-1.8x speedup across all scenarios
+   • Real-world finance pipelines: 1.7-1.8x improvement
+   • Zero regressions (all 162 tests pass)
+
+✅ Memory Efficiency:
+   • PR4.1: 80% fewer allocations (5 → 1)
+   • PR4.2b: 50% fewer allocations (2 → 1)
+   • 10M pipeline saves 80-320 MB of intermediate arrays
+
+✅ NA Resilience:
+   • Sparse data (15-28% NA) → best speedups
+   • Critical for finance: weekend gaps, halts, missing ticks
+   • Unfused: 5× redundant NA checks; Fused: 1× NA check
+
+✅ Production Ready:
+   • Transparent to users (automatic optimization)
+   • Semantic correctness verified (differential tests)
+   • Boundary cases covered (leading NA, gapped NA, all NA)
+
+───────────────────────────────────────────────────────────────────────────────
+  ALLOCATION IMPACT ON 10M ELEMENT PIPELINE
+───────────────────────────────────────────────────────────────────────────────
+
+PR4.1 (5-op chain):
+  Unfused: 5 × 80 MB = 400 MB total allocations
+  Fused:   1 × 80 MB =  80 MB total allocations
+  Savings: 320 MB (80% reduction)
+
+PR4.2b (cs1∘dlog):
+  Unfused: 2 × 80 MB = 160 MB total allocations
+  Fused:   1 × 80 MB =  80 MB total allocations
+  Savings:  80 MB (50% reduction)
+
+Impact: Reduces GC pressure, memory bandwidth, and cache misses
+
+───────────────────────────────────────────────────────────────────────────────
+  NEXT STEPS
+───────────────────────────────────────────────────────────────────────────────
+
+1. ✅ Ship PR4.1 and PR4.2b (substantial gains, zero regressions)
+
+2. Future optimizations (PR4.3+):
+   • cs1(ew_chain(x)) - generalize cs1 fusion to arbitrary chains
+   • wma(abs(x)) - fuse rolling windows with elementwise
+   • cs1(ret(x)), wstd(dlog(x)) - cross-operation fusion
+
+3. Property testing:
+   • Add proptest for random pipeline generation
+   • Verify optimizer never degrades performance
+   • Exhaustive NA pattern coverage
+
+───────────────────────────────────────────────────────────────────────────────
+
+Full report: /home/ubuntu/blisp/PR4_FUSION_PERFORMANCE_REPORT.md
+Raw output:  /tmp/claude-1000/-home-ubuntu-clispi-dev/tasks/bj5953swv.output
