@@ -309,9 +309,8 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                             return Err("dlog expects 1 argument".to_string());
                         }
                         let input = direct_eval(&elements[1], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            dlog_obs_column(col, 1)
-                        });
+                        let result =
+                            map_numeric_preserve_tags(&input, |col| dlog_obs_column(col, 1));
                         Ok(Arc::new(result))
                     }
 

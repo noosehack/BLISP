@@ -1079,7 +1079,10 @@ mod tests {
         if let Value::TableView(tv) = result {
             let table = &tv.table;
             // Check that headers were trimmed
-            assert_eq!(table.names[0], "ES2 Index", "Trailing space should be trimmed");
+            assert_eq!(
+                table.names[0], "ES2 Index",
+                "Trailing space should be trimmed"
+            );
             assert_eq!(
                 table.names[1], "SPY US Equity",
                 "Trailing space should be trimmed"
@@ -1119,7 +1122,11 @@ mod tests {
             }
 
             // Check numeric column with space in name
-            let spy_idx = table.names.iter().position(|n| n == "SPY US Equity").unwrap();
+            let spy_idx = table
+                .names
+                .iter()
+                .position(|n| n == "SPY US Equity")
+                .unwrap();
             match &table.columns[spy_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 145.438);
