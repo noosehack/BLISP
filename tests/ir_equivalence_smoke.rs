@@ -684,10 +684,7 @@ fn smoke_rolling_mean_handcrafted() {
     assert_eq!(result.nrows, 6);
     assert_eq!(result.cols.len(), 1);
 
-    let result_col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(col) => col,
-        _ => panic!("Expected Mat column"),
-    };
+    let blisp::frame::ColData::Mat(result_col) = &result.cols[0];
 
     let values = match &**result_col {
         blawktrust::Column::F64(v) => v,
@@ -763,10 +760,7 @@ fn smoke_rolling_std_constant_series() {
         _ => panic!("Expected Frame"),
     };
 
-    let col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(col) = &result.cols[0];
     let values = match col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
@@ -815,10 +809,7 @@ fn smoke_rolling_std_known_window() {
         _ => panic!("Expected Frame"),
     };
 
-    let col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(col) = &result.cols[0];
     let values = match col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
@@ -896,10 +887,7 @@ fn smoke_rolling_zscore_constant_series() {
         _ => panic!("Expected Frame"),
     };
 
-    let col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(col) = &result.cols[0];
     let values = match col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
@@ -949,10 +937,7 @@ fn smoke_rolling_zscore_known_window() {
         _ => panic!("Expected Frame"),
     };
 
-    let col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(col) = &result.cols[0];
     let values = match col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
@@ -1022,19 +1007,13 @@ fn smoke_ft_zscore_no_self_reference() {
         _ => panic!("Expected Frame"),
     };
 
-    let rz_col = match &rz_result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(rz_col) = &rz_result.cols[0];
     let rz_values = match rz_col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
     };
 
-    let ftz_col = match &ftz_result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(ftz_col) = &ftz_result.cols[0];
     let ftz_values = match ftz_col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),

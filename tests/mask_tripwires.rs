@@ -57,12 +57,9 @@ fn add_weekend_mask(frame: Frame, mask_name: &str) -> Frame {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     )
@@ -89,18 +86,16 @@ fn activate_mask(frame: Frame, expr: MaskExpr) -> Frame {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     )
 }
 
 /// Helper: Check if a row is NA in output column
+#[allow(dead_code)]
 fn is_na_at(frame: &Frame, col_idx: usize, row_idx: usize) -> bool {
     match frame.get_col(col_idx) {
         Some(col) => match &**col {
@@ -112,6 +107,7 @@ fn is_na_at(frame: &Frame, col_idx: usize, row_idx: usize) -> bool {
 }
 
 /// Helper: Get value at row in output column
+#[allow(dead_code)]
 fn get_value_at(frame: &Frame, col_idx: usize, row_idx: usize) -> Option<f64> {
     match frame.get_col(col_idx) {
         Some(col) => match &**col {
@@ -179,6 +175,7 @@ fn t1_masked_rows_are_na_for_all_unary_ops() {
 // ==================== T2: Rolling strict vs partial start dates ====================
 
 #[test]
+#[allow(clippy::needless_range_loop)] // Nested loop computes cumulative counts
 fn t2_rolling_strict_vs_partial_start_dates() {
     // Create 500 calendar days with weekends masked
     // Approximately 500 days ≈ 71 weeks ≈ 357 weekdays
@@ -230,6 +227,7 @@ fn t2_rolling_strict_vs_partial_start_dates() {
 // ==================== T3: Rolling with source NAs ====================
 
 #[test]
+#[allow(clippy::needless_range_loop)] // Nested loop computes eligible counts
 fn t3_rolling_with_source_nas() {
     // Create frame with weekends masked AND some weekday NAs
     let dates: Vec<i32> = (0..14).collect(); // 2 weeks
@@ -268,11 +266,7 @@ fn t3_rolling_with_source_nas() {
             );
         } else if values[i].is_nan() {
             // Source NA on weekday: this row is invalid, shouldn't be counted
-            assert!(
-                true,
-                "T3: Source NA on weekday row {} is correctly excluded from eligible count",
-                i
-            );
+            // (This branch documents the semantic - no assertion needed)
         } else {
             // Valid weekday: should be counted
             assert!(
@@ -293,8 +287,8 @@ fn t4_binary_ops_or_active_masks() {
     let values_x = vec![100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0];
     let values_y = vec![200.0, 201.0, 202.0, 203.0, 204.0, 205.0, 206.0];
 
-    let frame_x = make_test_frame(dates.clone(), values_x, "x");
-    let frame_y = make_test_frame(dates.clone(), values_y, "y");
+    let _frame_x = make_test_frame(dates.clone(), values_x, "x");
+    let _frame_y = make_test_frame(dates.clone(), values_y, "y");
 
     // X: mask days 2,3 (weekend)
     let mut mask_x = bitvec![0; 7];
@@ -368,7 +362,7 @@ fn t5_join_inherits_y_masks() {
     let values_x = vec![100.0, 101.0, 102.0, 103.0, 104.0];
     let values_y = vec![200.0, 201.0, 202.0, 203.0, 204.0, 205.0, 206.0];
 
-    let frame_x = make_test_frame(dates_x, values_x, "x");
+    let _frame_x = make_test_frame(dates_x, values_x, "x");
     let frame_y = make_test_frame(dates_y, values_y, "y");
 
     // Add weekend mask to Y only (days 2, 3)

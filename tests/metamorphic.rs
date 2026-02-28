@@ -622,13 +622,9 @@ fn meta_binary_absorption_law() {
     // Check each column
     for (i, result_col) in result.cols.iter().enumerate() {
         use blisp::frame::ColData;
-        let result_data = match result_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(result_data) = result_col;
 
-        let x_data = match &x.cols[i] {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(x_data) = &x.cols[i];
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
@@ -744,15 +740,9 @@ fn meta_binary_na_propagation() {
         .enumerate()
     {
         use blisp::frame::ColData;
-        let x_data = match x_col {
-            ColData::Mat(col) => col,
-        };
-        let y_data = match y_col {
-            ColData::Mat(col) => col,
-        };
-        let result_data = match result_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(x_data) = x_col;
+        let ColData::Mat(y_data) = y_col;
+        let ColData::Mat(result_data) = result_col;
 
         match (x_data.as_ref(), y_data.as_ref(), result_data.as_ref()) {
             (
@@ -884,19 +874,15 @@ fn meta_shift_mask_monotonic() {
     // Check each column: input NA → output NA (monotone)
     for (i, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
         use blisp::frame::ColData;
-        let x_data = match x_col {
-            ColData::Mat(col) => col,
-        };
-        let result_data = match result_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(x_data) = x_col;
+        let ColData::Mat(result_data) = result_col;
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
                 // First 2 rows must be NA (shift introduces)
-                for j in 0..2 {
+                for &val in result_vals.iter().take(2) {
                     assert!(
-                        result_vals[j].is_nan(),
+                        val.is_nan(),
                         "shift 2: First {} rows must be NA (col {})",
                         2,
                         i
@@ -991,9 +977,7 @@ fn meta_shift_all_na_when_k_exceeds_nrows() {
     // All cells must be NA
     for (i, result_col) in result.cols.iter().enumerate() {
         use blisp::frame::ColData;
-        let result_data = match result_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(result_data) = result_col;
 
         match result_data.as_ref() {
             blawktrust::Column::F64(vals) => {
@@ -1119,12 +1103,8 @@ fn meta_dlog_identity_positive_domain() {
     // Layer 2: Mask equivalence (NA patterns must match exactly)
     for (col_idx, (lhs_col, rhs_col)) in lhs.cols.iter().zip(rhs.cols.iter()).enumerate() {
         use blisp::frame::ColData;
-        let lhs_data = match lhs_col {
-            ColData::Mat(col) => col,
-        };
-        let rhs_data = match rhs_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(lhs_data) = lhs_col;
+        let ColData::Mat(rhs_data) = rhs_col;
 
         match (lhs_data.as_ref(), rhs_data.as_ref()) {
             (blawktrust::Column::F64(lhs_vals), blawktrust::Column::F64(rhs_vals)) => {
@@ -1208,6 +1188,7 @@ fn meta_rolling_mean_window_one_identity() {
 }
 
 #[test]
+#[allow(clippy::needless_range_loop)] // Loop needs i for error message
 fn meta_rolling_mean_constant_series() {
     // L2: If x[i] = c (constant), then rolling_mean(w,x)[i] = c for i >= w-1
 
@@ -1240,10 +1221,7 @@ fn meta_rolling_mean_constant_series() {
     };
 
     // Verify: prefix [0,1] is NA, then all rows >= 2 should be 5.0
-    let col = match &result.cols[0] {
-        blisp::frame::ColData::Mat(c) => c,
-        _ => panic!("Expected Mat"),
-    };
+    let blisp::frame::ColData::Mat(col) = &result.cols[0];
     let values = match col.as_ref() {
         blawktrust::Column::F64(v) => v,
         _ => panic!("Expected F64"),
@@ -1333,14 +1311,8 @@ fn meta_rolling_mean_mask_monotone() {
 
     // Verify: for each cell, if x[i,j] is NA, then result[i,j] must also be NA
     for (col_idx, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
-        let x_data = match x_col {
-            blisp::frame::ColData::Mat(c) => c,
-            _ => panic!("Expected Mat"),
-        };
-        let result_data = match result_col {
-            blisp::frame::ColData::Mat(c) => c,
-            _ => panic!("Expected Mat"),
-        };
+        let blisp::frame::ColData::Mat(x_data) = x_col;
+        let blisp::frame::ColData::Mat(result_data) = result_col;
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
@@ -1436,10 +1408,7 @@ fn meta_rolling_std_non_negativity() {
 
     // Verify: all non-NA values are >= 0.0
     for (col_idx, result_col) in result.cols.iter().enumerate() {
-        let result_data = match result_col {
-            blisp::frame::ColData::Mat(c) => c,
-            _ => panic!("Expected Mat"),
-        };
+        let blisp::frame::ColData::Mat(result_data) = result_col;
 
         match result_data.as_ref() {
             blawktrust::Column::F64(result_vals) => {
@@ -1630,14 +1599,8 @@ fn meta_rolling_std_mask_monotone() {
 
     // Verify: for each cell, if x[i,j] is NA, then result[i,j] must also be NA
     for (col_idx, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
-        let x_data = match x_col {
-            blisp::frame::ColData::Mat(c) => c,
-            _ => panic!("Expected Mat"),
-        };
-        let result_data = match result_col {
-            blisp::frame::ColData::Mat(c) => c,
-            _ => panic!("Expected Mat"),
-        };
+        let blisp::frame::ColData::Mat(x_data) = x_col;
+        let blisp::frame::ColData::Mat(result_data) = result_col;
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {

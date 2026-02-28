@@ -276,8 +276,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                 .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
-            let result =
-                map_numeric_preserve_tags(&input_frame, fused_cs1_dlog_obs_column);
+            let result = map_numeric_preserve_tags(&input_frame, fused_cs1_dlog_obs_column);
 
             debug_assert!(
                 Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),

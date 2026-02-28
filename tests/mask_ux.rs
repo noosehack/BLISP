@@ -5,7 +5,7 @@
 use bitvec::prelude::*;
 use blisp::builtins::register_builtins;
 use blisp::frame::{Frame, IndexColumn, Tags};
-use blisp::mask::{ActiveMask, MaskExpr, MaskSet};
+use blisp::mask::{ActiveMask, MaskExpr};
 use blisp::runtime::Runtime;
 use blisp::value::Value;
 use std::sync::Arc;
@@ -46,12 +46,9 @@ fn make_frame_with_weekend_mask() -> (Frame, Runtime) {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -277,12 +274,9 @@ fn test_mask_off_clears_active_mask() {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );

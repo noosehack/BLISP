@@ -628,6 +628,7 @@ impl Runtime {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // Test literals, not actual PI
 mod tests {
     use super::*;
     use crate::reader::Reader;

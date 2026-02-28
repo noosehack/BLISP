@@ -3778,7 +3778,6 @@ fn map_column_by_keys(
     source_col: &blawktrust::Column,
     key_map: &std::collections::HashMap<String, usize>,
 ) -> Result<blawktrust::Column, String> {
-
     // Extract target keys as strings
     let target_key_strs: Vec<String> = match target_keys {
         blawktrust::Column::Date(data) => data.iter().map(|k| k.to_string()).collect(),
@@ -4333,6 +4332,7 @@ fn builtin_ro(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // Test literals, not actual PI
 mod tests {
     use super::*;
 

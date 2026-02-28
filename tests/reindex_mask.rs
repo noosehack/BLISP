@@ -5,7 +5,7 @@
 
 use bitvec::prelude::*;
 use blisp::frame::{Frame, IndexColumn, Tags};
-use blisp::mask::{reindex_active_mask, reindex_maskset, ActiveMask, MaskExpr, MaskSet};
+use blisp::mask::{ActiveMask, MaskExpr};
 use std::sync::Arc;
 
 /// Helper: Create test frame
@@ -38,12 +38,9 @@ fn add_mask(frame: Frame, mask_name: &str, mask_bits: BitVec) -> Frame {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     )
@@ -70,12 +67,9 @@ fn activate_mask(frame: Frame, expr: MaskExpr) -> Frame {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     )
@@ -94,7 +88,7 @@ fn reindex_preserves_named_masks_on_overlap() {
     let source_frame = make_frame(source_dates, source_values, "price");
 
     // Add "custom" mask: positions 1 and 3 (dates 11 and 13)
-    let mut mask_bits = bitvec![0, 1, 0, 1, 0]; // 5 rows
+    let mask_bits = bitvec![0, 1, 0, 1, 0]; // 5 rows
     let source_frame = add_mask(source_frame, "custom", mask_bits);
 
     // Reindex onto target
@@ -122,20 +116,20 @@ fn reindex_preserves_named_masks_on_overlap() {
     // date 15 → new row (not in source) → false (default)
 
     assert_eq!(reindexed_mask.len(), 4, "Reindexed mask should have 4 rows");
-    assert_eq!(
-        reindexed_mask[0], true,
+    assert!(
+        reindexed_mask[0],
         "Date 11 should be masked (was in source)"
     );
-    assert_eq!(
-        reindexed_mask[1], false,
+    assert!(
+        !reindexed_mask[1],
         "Date 12 should be unmasked (was in source)"
     );
-    assert_eq!(
-        reindexed_mask[2], true,
+    assert!(
+        reindexed_mask[2],
         "Date 13 should be masked (was in source)"
     );
-    assert_eq!(
-        reindexed_mask[3], false,
+    assert!(
+        !reindexed_mask[3],
         "Date 15 should be unmasked (new row, default false)"
     );
 }
@@ -174,18 +168,18 @@ fn reindex_defaults_false_for_new_rows() {
     // date 13, 14, 15 → new rows → false (default)
 
     assert_eq!(reindexed_mask.len(), 5);
-    assert_eq!(reindexed_mask[0], true, "Date 11 should be masked");
-    assert_eq!(reindexed_mask[1], true, "Date 12 should be masked");
-    assert_eq!(
-        reindexed_mask[2], false,
+    assert!(reindexed_mask[0], "Date 11 should be masked");
+    assert!(reindexed_mask[1], "Date 12 should be masked");
+    assert!(
+        !reindexed_mask[2],
         "Date 13 should be unmasked (new row, default)"
     );
-    assert_eq!(
-        reindexed_mask[3], false,
+    assert!(
+        !reindexed_mask[3],
         "Date 14 should be unmasked (new row, default)"
     );
-    assert_eq!(
-        reindexed_mask[4], false,
+    assert!(
+        !reindexed_mask[4],
         "Date 15 should be unmasked (new row, default)"
     );
 
@@ -218,9 +212,9 @@ fn reindex_preserves_active_mask_via_expr() {
 
     // Verify source active mask
     // (not odds) on [10, 11, 12, 13, 14] = [1, 0, 1, 0, 1]
-    assert_eq!(source_frame.tags.active_mask.is_masked(0), true); // 10: not odd
-    assert_eq!(source_frame.tags.active_mask.is_masked(1), false); // 11: odd
-    assert_eq!(source_frame.tags.active_mask.is_masked(2), true); // 12: not odd
+    assert!(source_frame.tags.active_mask.is_masked(0)); // 10: not odd
+    assert!(!source_frame.tags.active_mask.is_masked(1)); // 11: odd
+    assert!(source_frame.tags.active_mask.is_masked(2)); // 12: not odd
 
     // Reindex onto target
     let target_dates = vec![11, 12, 13, 15];
@@ -238,24 +232,20 @@ fn reindex_preserves_active_mask_via_expr() {
     // "odds" reindexed on [11, 12, 13, 15] = [1, 0, 1, 0] (dates 11,13 are odd; 15 is new→false)
     // (not odds) = [0, 1, 0, 1]
 
-    assert_eq!(
-        result.tags.active_mask.is_masked(0),
-        false,
+    assert!(
+        !result.tags.active_mask.is_masked(0),
         "Date 11 is odd → not masked"
     );
-    assert_eq!(
+    assert!(
         result.tags.active_mask.is_masked(1),
-        true,
         "Date 12 is not odd → masked"
     );
-    assert_eq!(
-        result.tags.active_mask.is_masked(2),
-        false,
+    assert!(
+        !result.tags.active_mask.is_masked(2),
         "Date 13 is odd → not masked"
     );
-    assert_eq!(
+    assert!(
         result.tags.active_mask.is_masked(3),
-        true,
         "Date 15 is new (default false) → (not false) = true"
     );
 }
@@ -288,12 +278,9 @@ fn reindex_active_mask_without_expr_uses_bitvec() {
         source_frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -313,19 +300,16 @@ fn reindex_active_mask_without_expr_uses_bitvec() {
     // Verify reindexed bitvec
     // Original: [10→0, 11→1, 12→0]
     // Target:   [11→1, 12→0, 13→0(new)]
-    assert_eq!(
+    assert!(
         result.tags.active_mask.is_masked(0),
-        true,
         "Date 11 should be masked"
     );
-    assert_eq!(
-        result.tags.active_mask.is_masked(1),
-        false,
+    assert!(
+        !result.tags.active_mask.is_masked(1),
         "Date 12 should be unmasked"
     );
-    assert_eq!(
-        result.tags.active_mask.is_masked(2),
-        false,
+    assert!(
+        !result.tags.active_mask.is_masked(2),
         "Date 13 should be unmasked (new)"
     );
 }

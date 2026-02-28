@@ -720,6 +720,7 @@ impl Default for Table {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // Test literals, not actual PI
 mod tests {
     use super::*;
 

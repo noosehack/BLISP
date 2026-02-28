@@ -1014,7 +1014,6 @@ mod proptests {
                     // Ensure we have ABS before dangerous ops
                     if !has_abs {
                         sanitized.push(PipelineOp::Abs);
-                        has_abs = true;
                     }
                     sanitized.push(op);
                     // After LOG/SQRT, might go negative again

@@ -7,7 +7,7 @@
 
 use bitvec::prelude::*;
 use blisp::frame::{Frame, IndexColumn, Tags};
-use blisp::mask::{ActiveMask, MaskSet};
+use blisp::mask::ActiveMask;
 use std::sync::Arc;
 
 /// Helper: Create test frame with Date index and single F64 column
@@ -63,18 +63,16 @@ fn add_and_activate_weekend_mask(frame: Frame) -> Frame {
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let blisp::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let blisp::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     )
 }
 
 /// Helper: Get column data as Vec<f64>
+#[allow(dead_code)]
 fn get_column_data(frame: &Frame, col_idx: usize) -> Vec<f64> {
     match frame.get_col(col_idx) {
         Some(col) => match &**col {
@@ -86,6 +84,7 @@ fn get_column_data(frame: &Frame, col_idx: usize) -> Vec<f64> {
 }
 
 /// Helper: Compare two f64 vectors with NaN-aware equality
+#[allow(dead_code)]
 fn vectors_match(a: &[f64], b: &[f64], tolerance: f64) -> bool {
     if a.len() != b.len() {
         return false;
@@ -157,7 +156,7 @@ fn test_streaming_correctness_mean_strict() {
     // Mean = (100+101+104+105+106)/5 = 516/5 = 103.2
 
     let active_mask = &frame_with_mask.tags.active_mask;
-    let nrows = frame_with_mask.nrows();
+    let _nrows = frame_with_mask.nrows();
 
     // Manually verify weekend mask
     assert!(active_mask.is_masked(2)); // Sat
@@ -170,7 +169,7 @@ fn test_streaming_correctness_mean_strict() {
 fn test_streaming_performance_benefit() {
     // Create large dataset: 1000 calendar days ≈ 715 weekdays
     let nrows = 1000;
-    let dates: Vec<i32> = (10000..10000 + nrows as i32).collect();
+    let dates: Vec<i32> = (10000..10000 + nrows).collect();
     let values: Vec<f64> = (0..nrows).map(|i| 100.0 + (i as f64) * 0.1).collect();
 
     let frame = make_test_frame(dates, values, "price");
@@ -200,6 +199,7 @@ fn test_streaming_performance_benefit() {
 }
 
 #[test]
+#[allow(clippy::needless_range_loop)] // Needs j for both indexing and mask check
 fn test_streaming_with_source_nas() {
     // Test with both weekend mask AND source NAs
     let dates: Vec<i32> = (0..14).collect();

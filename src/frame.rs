@@ -903,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)] // Test uses collection of function pointers
     fn property_arc_preservation_numeric_ops() {
         // Property: map_numeric_preserve_tags MUST preserve tag Arcs (I1-I2)
 

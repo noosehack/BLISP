@@ -77,7 +77,6 @@ dependencies = [
 [[package]]
 name = "blawktrust"
 version = "0.1.0"
-source = "git+https://github.com/noosehack/blawktrust?tag=v0.1.0-orientation-stable#eef2b235dc4353473d4a32528123a8c379faac09"
 
 [[package]]
 name = "blisp"

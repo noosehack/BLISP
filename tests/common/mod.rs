@@ -7,12 +7,10 @@
 //! - Expression generators (well-typed, join-safe)
 
 use blawktrust::Column;
-use blisp::ast::{Expr, Interner, SymbolId};
+use blisp::ast::{Expr, Interner};
 use blisp::frame::{
     asofr, map_numeric_preserve_tags, reindex_by, ColData, Frame, IndexColumn, Tags,
 };
-use blisp::runtime::Runtime;
-use blisp::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -218,6 +216,7 @@ pub fn build_date_frame(
 }
 
 /// Build a Timestamp-indexed frame
+#[allow(dead_code)]
 pub fn build_timestamp_frame(
     seed: u64,
     name: &str,
@@ -229,7 +228,7 @@ pub fn build_timestamp_frame(
     let mut rng = seed;
 
     // Generate sorted timestamp index (nanoseconds)
-    let base_ts = 1577836800_000_000_000i64; // 2020-01-01 00:00:00 UTC
+    let base_ts = 1_577_836_800_000_000_000_i64; // 2020-01-01 00:00:00 UTC
     let mut timestamps: Vec<i64> = (0..nrows)
         .map(|i| {
             rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
@@ -330,7 +329,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                             return Err("log expects 1 argument".to_string());
                         }
                         let input = direct_eval(&elements[1], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| log_column(col));
+                        let result = map_numeric_preserve_tags(&input, log_column);
                         Ok(Arc::new(result))
                     }
 
@@ -464,11 +463,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
 
                         // (x - mean) / std
                         let result = map_numeric_preserve_tags(&input, |col| {
-                            match (
-                                col,
-                                mean_result.cols.iter().next(),
-                                std_result.cols.iter().next(),
-                            ) {
+                            match (col, mean_result.cols.first(), std_result.cols.first()) {
                                 (
                                     Column::F64(x_data),
                                     Some(blisp::frame::ColData::Mat(mean_col)),
@@ -531,7 +526,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
 
                         // (x - ft_mean) / ft_std
                         let result = map_numeric_preserve_tags(&input, |col| {
-                            match (col, ft_mean.cols.iter().next(), ft_std.cols.iter().next()) {
+                            match (col, ft_mean.cols.first(), ft_std.cols.first()) {
                                 (
                                     Column::F64(x_data),
                                     Some(blisp::frame::ColData::Mat(mean_col)),
@@ -722,6 +717,7 @@ fn shift_column(col: &Column, k: usize) -> Column {
     }
 }
 
+#[allow(clippy::needless_range_loop)] // Loop computes window boundaries from i
 fn rolling_mean_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
@@ -754,6 +750,7 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
     }
 }
 
+#[allow(clippy::needless_range_loop)] // Loop computes window boundaries from i
 fn rolling_std_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
@@ -850,12 +847,8 @@ fn binary_frame_frame(lhs: &Frame, rhs: &Frame, op: &str) -> Result<Arc<Frame>, 
     let mut result_cols = Vec::with_capacity(lhs.cols.len());
 
     for (lhs_col, rhs_col) in lhs.cols.iter().zip(rhs.cols.iter()) {
-        let lhs_data = match lhs_col {
-            ColData::Mat(col) => col,
-        };
-        let rhs_data = match rhs_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(lhs_data) = lhs_col;
+        let ColData::Mat(rhs_data) = rhs_col;
 
         let result_col = binary_column_column(lhs_data, rhs_data, op)?;
         result_cols.push(ColData::Mat(Arc::new(result_col)));
@@ -922,7 +915,7 @@ fn binary_column_column(lhs: &Column, rhs: &Column, op: &str) -> Result<Column, 
 /// - All bound expressions reference ONLY outer variables (x, y, z)
 /// - Body references ONLY bound symbols
 /// - This ensures type safety and prevents scope confusion
-fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
+fn gen_let_expr(mut rng: u64, _depth: usize, interner: &mut Interner) -> Expr {
     rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
 
     // Generate 1-2 bindings for simplicity
@@ -949,7 +942,7 @@ fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
         };
 
         // Optionally apply a simple unary operation
-        let bound_expr = if (rng % 2) == 0 {
+        let bound_expr = if rng.is_multiple_of(2) {
             // Just the variable
             Expr::Sym(interner.intern(var_name))
         } else {
@@ -968,7 +961,7 @@ fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
     let which_sym = (rng % bound_symbols.len() as u64) as usize;
     let body = if num_bindings == 1 {
         // Single binding: just return it or apply unary
-        if (rng % 2) == 0 {
+        if rng.is_multiple_of(2) {
             Expr::Sym(bound_symbols[0])
         } else {
             Expr::List(vec![
@@ -978,7 +971,7 @@ fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
         }
     } else {
         // Multiple bindings: join them or return one
-        if (rng % 2) == 0 {
+        if rng.is_multiple_of(2) {
             // Join two bound symbols
             Expr::List(vec![
                 Expr::Sym(interner.intern("mapr")),
@@ -1038,7 +1031,11 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
             Expr::List(vec![Expr::Sym(interner.intern(op_name)), sub])
         } else if choice < 8 {
             // Join operation (40% probability)
-            let join_op = if (rng % 2) == 0 { "mapr" } else { "asofr" };
+            let join_op = if rng.is_multiple_of(2) {
+                "mapr"
+            } else {
+                "asofr"
+            };
 
             let sub1 = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
             let sub2 = gen_expr_date(rng.wrapping_add(2), depth - 1, interner);
@@ -1058,6 +1055,7 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
 }
 
 /// Generate a well-typed Timestamp-indexed expression
+#[allow(dead_code)]
 pub fn gen_expr_ts(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
     // Same logic as Date (type system prevents cross-contamination)
     gen_expr_date(seed, depth, interner)

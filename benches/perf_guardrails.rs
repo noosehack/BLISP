@@ -4,7 +4,6 @@
 //! They detect accidental slowdowns in Phase 3+.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::sync::Arc;
 
 // Mock types to match blisp's structure (since it's a binary)
 // In real setup, would extract to lib.rs
