@@ -9,13 +9,13 @@
 
 mod common;
 
+use blisp::ast::Expr;
+use blisp::exec::execute;
 use blisp::normalize::normalize;
 use blisp::planner::plan;
-use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blisp::ast::Expr;
-use common::{assert_frame_equiv, direct_eval, Env, build_date_frame, build_timestamp_frame};
+use common::{assert_frame_equiv, build_date_frame, build_timestamp_frame, direct_eval, Env};
 use proptest::prelude::*;
 use std::sync::Arc;
 
@@ -34,10 +34,7 @@ fn diff_small_unary_dlog() {
     rt.define(x_sym, Value::Frame(x));
 
     let dlog_sym = rt.interner.intern("dlog");
-    let expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
 
     let ast_result = direct_eval(&expr, &env, &rt.interner).expect("AST eval failed");
 
@@ -139,10 +136,7 @@ fn diff_small_pipeline() {
     let dlog_sym = rt.interner.intern("dlog");
     let expr = Expr::List(vec![
         Expr::Sym(mapr_sym),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
         Expr::Sym(y_sym),
     ]);
 
@@ -186,10 +180,7 @@ fn diff_small_nested_pipeline() {
         Expr::Sym(asofr_sym),
         Expr::List(vec![
             Expr::Sym(mapr_sym),
-            Expr::List(vec![
-                Expr::Sym(dlog_sym),
-                Expr::Sym(x_sym),
-            ]),
+            Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
             Expr::Sym(y_sym),
         ]),
         Expr::Sym(z_sym),
@@ -230,15 +221,10 @@ fn diff_small_let_binding() {
 
     let expr = Expr::List(vec![
         Expr::Sym(let_sym),
-        Expr::List(vec![
-            Expr::List(vec![
-                Expr::Sym(a_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(x_sym),
-                ]),
-            ]),
-        ]),
+        Expr::List(vec![Expr::List(vec![
+            Expr::Sym(a_sym),
+            Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
+        ])]),
         Expr::List(vec![
             Expr::Sym(mapr_sym),
             Expr::Sym(a_sym),

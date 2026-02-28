@@ -2,17 +2,17 @@
 //!
 //! Verifies user-facing mask utilities for debugging and composition.
 
-use blisp::frame::{Frame, Tags, IndexColumn};
-use blisp::mask::{MaskSet, ActiveMask, MaskExpr};
+use bitvec::prelude::*;
+use blisp::builtins::register_builtins;
+use blisp::frame::{Frame, IndexColumn, Tags};
+use blisp::mask::{ActiveMask, MaskExpr, MaskSet};
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blisp::builtins::register_builtins;
 use std::sync::Arc;
-use bitvec::prelude::*;
 
 /// Helper: Create test frame with weekend mask
 fn make_frame_with_weekend_mask() -> (Frame, Runtime) {
-    let dates: Vec<i32> = (0..14).collect();  // 2 weeks
+    let dates: Vec<i32> = (0..14).collect(); // 2 weeks
     let values: Vec<f64> = (0..14).map(|i| 100.0 + i as f64).collect();
 
     let index = IndexColumn::Date(Arc::new(dates));
@@ -21,17 +21,17 @@ fn make_frame_with_weekend_mask() -> (Frame, Runtime) {
     let frame = Frame::new(tags, vec![col]);
 
     // Add weekend mask
-    let weekend_bitvec: BitVec = (0..14).map(|date| {
-        let day_of_week = (4 + date) % 7;
-        day_of_week == 0 || day_of_week == 6
-    }).collect();
+    let weekend_bitvec: BitVec = (0..14)
+        .map(|date| {
+            let day_of_week = (4 + date) % 7;
+            day_of_week == 0 || day_of_week == 6
+        })
+        .collect();
 
     let mut new_masks = frame.tags.masks.clone();
-    new_masks.insert(
-        "weekend".to_string(),
-        Arc::new(weekend_bitvec),
-        14
-    ).unwrap();
+    new_masks
+        .insert("weekend".to_string(), Arc::new(weekend_bitvec), 14)
+        .unwrap();
 
     let new_tags = Tags {
         index_name: frame.tags.index_name.clone(),
@@ -43,13 +43,17 @@ fn make_frame_with_weekend_mask() -> (Frame, Runtime) {
 
     let frame = Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let blisp::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let blisp::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     let mut rt = Runtime::new();
@@ -100,7 +104,11 @@ fn test_mask_list_contains_weekend() {
                     // Check pct_masked (4/14 ≈ 28.57%)
                     match &info[3] {
                         Value::Float(pct) => {
-                            assert!((*pct - 28.571).abs() < 0.01, "Expected ~28.57%, got {}", pct);
+                            assert!(
+                                (*pct - 28.571).abs() < 0.01,
+                                "Expected ~28.57%, got {}",
+                                pct
+                            );
                         }
                         _ => panic!("Expected float pct_masked"),
                     }
@@ -171,10 +179,9 @@ fn test_mask_define_or_equals_weekend() {
         weekend_sym,
     ]);
 
-    let result_frame = blisp::builtins::builtin_mask_define(
-        &mut rt,
-        &[frame_val, name_val, or_expr]
-    ).expect("mask-define should succeed");
+    let result_frame =
+        blisp::builtins::builtin_mask_define(&mut rt, &[frame_val, name_val, or_expr])
+            .expect("mask-define should succeed");
 
     // Verify new mask was added
     match result_frame {
@@ -187,7 +194,10 @@ fn test_mask_define_or_equals_weekend() {
             let same_mask = frame_arc.tags.masks.get("same_as_weekend").unwrap();
 
             assert_eq!(weekend_mask.count_ones(), same_mask.count_ones());
-            assert_eq!(**weekend_mask, **same_mask, "OR of same mask should equal original");
+            assert_eq!(
+                **weekend_mask, **same_mask,
+                "OR of same mask should equal original"
+            );
         }
         _ => panic!("Expected frame from mask-define"),
     }
@@ -204,8 +214,9 @@ fn test_mask_define_collision_errors_deterministically() {
 
     let result1 = blisp::builtins::builtin_mask_define(
         &mut rt,
-        &[frame_val.clone(), name_val.clone(), expr1]
-    ).expect("First define should succeed");
+        &[frame_val.clone(), name_val.clone(), expr1],
+    )
+    .expect("First define should succeed");
 
     // Try to redefine with same expression → should succeed (same bits)
     let expr2 = Value::Sym(rt.interner.intern("weekend"));
@@ -215,10 +226,8 @@ fn test_mask_define_collision_errors_deterministically() {
     };
 
     let frame1_val = Value::Frame(frame1.clone());
-    let result2 = blisp::builtins::builtin_mask_define(
-        &mut rt,
-        &[frame1_val, name_val.clone(), expr2]
-    );
+    let result2 =
+        blisp::builtins::builtin_mask_define(&mut rt, &[frame1_val, name_val.clone(), expr2]);
     assert!(result2.is_ok(), "Redefining with same bits should succeed");
 
     // Try to redefine with DIFFERENT expression → should error
@@ -229,12 +238,12 @@ fn test_mask_define_collision_errors_deterministically() {
     ]);
 
     let frame1_val2 = Value::Frame(frame1);
-    let result3 = blisp::builtins::builtin_mask_define(
-        &mut rt,
-        &[frame1_val2, name_val, not_expr]
-    );
+    let result3 = blisp::builtins::builtin_mask_define(&mut rt, &[frame1_val2, name_val, not_expr]);
 
-    assert!(result3.is_err(), "Redefining with different bits should error");
+    assert!(
+        result3.is_err(),
+        "Redefining with different bits should error"
+    );
 
     let err_msg = result3.unwrap_err();
     assert!(
@@ -265,13 +274,17 @@ fn test_mask_off_clears_active_mask() {
 
     let frame_with_active = Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let blisp::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let blisp::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     // Verify active mask has 4 masked rows
@@ -279,17 +292,28 @@ fn test_mask_off_clears_active_mask() {
 
     // Call mask-off
     let frame_val = Value::Frame(Arc::new(frame_with_active));
-    let result = blisp::builtins::builtin_mask_off(&mut rt, &[frame_val])
-        .expect("mask-off should succeed");
+    let result =
+        blisp::builtins::builtin_mask_off(&mut rt, &[frame_val]).expect("mask-off should succeed");
 
     // Verify active mask is now empty
     match result {
         Value::Frame(frame_arc) => {
-            assert_eq!(frame_arc.tags.active_mask.count_masked(), 0, "Active mask should be cleared");
-            assert_eq!(frame_arc.tags.active_mask.count_unmasked(), 14, "All rows should be unmasked");
+            assert_eq!(
+                frame_arc.tags.active_mask.count_masked(),
+                0,
+                "Active mask should be cleared"
+            );
+            assert_eq!(
+                frame_arc.tags.active_mask.count_unmasked(),
+                14,
+                "All rows should be unmasked"
+            );
 
             // Named masks should still exist
-            assert!(frame_arc.tags.masks.contains("weekend"), "Named masks should be preserved");
+            assert!(
+                frame_arc.tags.masks.contains("weekend"),
+                "Named masks should be preserved"
+            );
         }
         _ => panic!("Expected frame from mask-off"),
     }

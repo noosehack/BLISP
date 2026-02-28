@@ -1,9 +1,9 @@
 //! Runtime: combines lexical and global environments with symbol interner
 
 use crate::ast::{Interner, SymbolId};
-use crate::env::{LexicalEnv, GlobalEnv};
-use crate::value::Value;
 use crate::builtins::BuiltinFn;
+use crate::env::{GlobalEnv, LexicalEnv};
+use crate::value::Value;
 use std::collections::HashMap;
 
 /// Runtime state for blisp evaluation

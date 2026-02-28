@@ -1,3 +1,6 @@
+#![allow(clippy::derive_partial_eq_without_eq)]
+use crate::ast::SymbolId;
+use crate::frame::{IndexColumn, Tags};
 /// BLADE Phase 3: Intermediate Representation v1
 ///
 /// Purpose: Minimal IR for pipeline compilation and optimization
@@ -12,10 +15,7 @@
 /// - Easy to validate against contracts.md
 /// - Easy to execute using frozen primitives
 /// - Easy to extend with optimizations (future phases)
-
 use std::sync::Arc;
-use crate::frame::{Tags, IndexColumn};
-use crate::ast::SymbolId;
 
 /// IR node ID (unique within a plan)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,15 +129,11 @@ pub enum Operation {
 #[derive(Debug, Clone)]
 pub enum Source {
     /// Load from CSV file
-    File {
-        path: String,
-    },
+    File { path: String },
     /// Read from stdin
     Stdin,
     /// Reference a variable in the environment
-    Variable {
-        name: SymbolId,
-    },
+    Variable { name: SymbolId },
 }
 
 /// Unary operations (all preserve tags via map_numeric_preserve_tags)
@@ -146,10 +142,7 @@ pub enum Source {
 #[derive(Debug, Clone)]
 pub enum UnaryOp {
     /// Map numeric function over columns
-    MapNumeric {
-        input: NodeId,
-        func: NumericFunc,
-    },
+    MapNumeric { input: NodeId, func: NumericFunc },
 
     /// Fused chain of pure elementwise operations (PR4.1)
     /// Example: abs → log → exp fused into single pass
@@ -166,15 +159,10 @@ pub enum UnaryOp {
     },
 
     /// Fused cs1 ∘ dlog-ofs (PR4.2b)
-    FusedCs1DlogOfs {
-        input: NodeId,
-        lag: usize,
-    },
+    FusedCs1DlogOfs { input: NodeId, lag: usize },
 
     /// Fused cs1 ∘ dlog-obs (PR4.2b)
-    FusedCs1DlogObs {
-        input: NodeId,
-    },
+    FusedCs1DlogObs { input: NodeId },
 
     /// Fused dlog-obs ∘ elementwise chain (PR4.3a - future)
     FusedDlogObsElementwise {
@@ -360,12 +348,13 @@ pub enum NumericFunc {
 impl NumericFunc {
     /// Returns true if this function is pure elementwise (no dependencies on other rows)
     pub fn is_pure_elementwise(&self) -> bool {
-        matches!(self,
-            NumericFunc::ABS |
-            NumericFunc::LOG |
-            NumericFunc::EXP |
-            NumericFunc::SQRT |
-            NumericFunc::INV
+        matches!(
+            self,
+            NumericFunc::ABS
+                | NumericFunc::LOG
+                | NumericFunc::EXP
+                | NumericFunc::SQRT
+                | NumericFunc::INV
         )
     }
 }
@@ -439,8 +428,8 @@ pub enum JoinOp {
     /// - Output nrows = y's nrows
     /// - Missing rows → NA
     ALIGN {
-        x: NodeId,  // Source frame (provides data columns)
-        y: NodeId,  // Target frame (provides index)
+        x: NodeId, // Source frame (provides data columns)
+        y: NodeId, // Target frame (provides index)
     },
 
     /// As-of join (RIGHT OUTER ASOF JOIN)
@@ -452,8 +441,8 @@ pub enum JoinOp {
     /// - Output nrows = y's nrows
     /// - At-or-before matching (no forward-looking)
     ASOF_ALIGN {
-        x: NodeId,  // Source frame (provides data columns)
-        y: NodeId,  // Target frame (provides index)
+        x: NodeId, // Source frame (provides data columns)
+        y: NodeId, // Target frame (provides index)
     },
 }
 
@@ -478,7 +467,7 @@ pub enum SchemaOp {
     /// - Output colnames: newly generated Arc (deterministic order)
     SHF_PTW_LIN_SPR {
         input: NodeId,
-        half: bool,  // false = all pairs, true = upper triangle only
+        half: bool, // false = all pairs, true = upper triangle only
     },
 
     /// Create weekend mask: (mask-weekend frame [name])
@@ -497,7 +486,7 @@ pub enum SchemaOp {
     /// - Does NOT activate the mask
     MSK_WKE_DEF {
         input: NodeId,
-        name: Option<String>,  // default: "weekend"
+        name: Option<String>, // default: "weekend"
     },
 
     /// Activate mask: (with-mask frame mask-expr)
@@ -531,12 +520,15 @@ impl Plan {
     pub fn validate(&self) -> Result<(), String> {
         for node in &self.nodes {
             match &node.op {
-                Operation::Join(JoinOp::ALIGN { x, y }) | Operation::Join(JoinOp::ASOF_ALIGN { x, y }) => {
+                Operation::Join(JoinOp::ALIGN { x, y })
+                | Operation::Join(JoinOp::ASOF_ALIGN { x, y }) => {
                     let x_node = self.get_node(*x).ok_or("Invalid x node reference")?;
                     let y_node = self.get_node(*y).ok_or("Invalid y node reference")?;
 
                     // Check index type compatibility
-                    if let (Some(x_idx), Some(y_idx)) = (&x_node.schema.index_type, &y_node.schema.index_type) {
+                    if let (Some(x_idx), Some(y_idx)) =
+                        (&x_node.schema.index_type, &y_node.schema.index_type)
+                    {
                         if x_idx != y_idx {
                             return Err(format!(
                                 "Index type mismatch in join: {:?} vs {:?} (no coercion allowed)",
@@ -567,7 +559,9 @@ impl Plan {
                 | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
                 | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
                 | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
-                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+                    let input_node = self
+                        .get_node(*input)
+                        .ok_or("Invalid input node reference")?;
 
                     // Verify I1-I3 invariants
                     if node.schema.index_type != input_node.schema.index_type {
@@ -591,11 +585,13 @@ impl Plan {
 
                     // If RHS is a frame, enforce strict compatibility
                     if let ValueRef::Frame(rhs_id) = rhs {
-                        let rhs_node = self.get_node(*rhs_id).ok_or("Invalid RHS node reference")?;
+                        let rhs_node =
+                            self.get_node(*rhs_id).ok_or("Invalid RHS node reference")?;
 
                         // Same index type (no coercion)
                         if let (Some(lhs_idx), Some(rhs_idx)) =
-                            (&lhs_node.schema.index_type, &rhs_node.schema.index_type) {
+                            (&lhs_node.schema.index_type, &rhs_node.schema.index_type)
+                        {
                             if lhs_idx != rhs_idx {
                                 return Err(format!(
                                     "Binary op requires compatible index types: {:?} vs {:?}. Use mapr/asofr for alignment.",
@@ -606,7 +602,8 @@ impl Plan {
 
                         // Same nrows (strict shape match)
                         if let (Some(lhs_nrows), Some(rhs_nrows)) =
-                            (lhs_node.schema.nrows, rhs_node.schema.nrows) {
+                            (lhs_node.schema.nrows, rhs_node.schema.nrows)
+                        {
                             if lhs_nrows != rhs_nrows {
                                 return Err(format!(
                                     "Binary op requires compatible shapes: {} vs {} rows. Use mapr/asofr for alignment.",
@@ -617,11 +614,13 @@ impl Plan {
 
                         // Same colnames (strict compatibility)
                         if let (Some(lhs_cols), Some(rhs_cols)) =
-                            (&lhs_node.schema.colnames, &rhs_node.schema.colnames) {
+                            (&lhs_node.schema.colnames, &rhs_node.schema.colnames)
+                        {
                             if lhs_cols.len() != rhs_cols.len() {
                                 return Err(format!(
                                     "Binary op requires same number of columns: {} vs {}",
-                                    lhs_cols.len(), rhs_cols.len()
+                                    lhs_cols.len(),
+                                    rhs_cols.len()
                                 ));
                             }
                         }
@@ -631,7 +630,9 @@ impl Plan {
                     // Sources have no inputs to validate
                 }
                 Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input, .. }) => {
-                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+                    let input_node = self
+                        .get_node(*input)
+                        .ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I3 preserved (I2_schema allows colname rebuild)
                     if node.schema.index_type != input_node.schema.index_type {
@@ -644,7 +645,9 @@ impl Plan {
                 }
 
                 Operation::Schema(SchemaOp::MSK_WKE_DEF { input, .. }) => {
-                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+                    let input_node = self
+                        .get_node(*input)
+                        .ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
                     if node.schema.index_type != input_node.schema.index_type {
@@ -657,7 +660,9 @@ impl Plan {
                 }
 
                 Operation::Schema(SchemaOp::WTH_MSK { input, .. }) => {
-                    let input_node = self.get_node(*input).ok_or("Invalid input node reference")?;
+                    let input_node = self
+                        .get_node(*input)
+                        .ok_or("Invalid input node reference")?;
 
                     // Verify I1 + I2 + I3 all preserved (mask ops only modify Tags metadata)
                     if node.schema.index_type != input_node.schema.index_type {
@@ -764,7 +769,7 @@ mod tests {
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),
                 colnames: None,
-                nrows: Some(20),  // y's nrows
+                nrows: Some(20), // y's nrows
             },
         });
 
@@ -796,7 +801,7 @@ mod tests {
                 path: "y.csv".to_string(),
             }),
             schema: SchemaInfo {
-                index_type: Some(IndexType::Timestamp),  // MISMATCH
+                index_type: Some(IndexType::Timestamp), // MISMATCH
                 colnames: None,
                 nrows: Some(20),
             },
@@ -844,7 +849,7 @@ mod tests {
             schema: SchemaInfo {
                 index_type: Some(IndexType::Date),
                 colnames: None,
-                nrows: Some(99),  // WRONG - should be 100
+                nrows: Some(99), // WRONG - should be 100
             },
         });
 

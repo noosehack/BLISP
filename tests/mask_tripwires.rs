@@ -10,10 +10,10 @@
 //! T5: Join semantics explicit (asofr mask inheritance)
 //! T6: Mask name collision is deterministic
 
-use blisp::frame::{Frame, Tags, IndexColumn, ColData};
-use blisp::mask::{MaskSet, ActiveMask, MaskExpr, compile_mask_expr, or_active_masks};
-use std::sync::Arc;
 use bitvec::prelude::*;
+use blisp::frame::{ColData, Frame, IndexColumn, Tags};
+use blisp::mask::{compile_mask_expr, or_active_masks, ActiveMask, MaskExpr, MaskSet};
+use std::sync::Arc;
 
 /// Helper: Create test frame with Date index and single F64 column
 fn make_test_frame(dates: Vec<i32>, values: Vec<f64>, colname: &str) -> Frame {
@@ -29,21 +29,20 @@ fn add_weekend_mask(frame: Frame, mask_name: &str) -> Frame {
 
     // Compute weekend bitmask from index (Saturday=6, Sunday=0)
     let weekend_bitvec: BitVec = match &*frame.tags.index {
-        IndexColumn::Date(dates) => {
-            dates.iter().map(|&date| {
+        IndexColumn::Date(dates) => dates
+            .iter()
+            .map(|&date| {
                 let day_of_week = (4 + date).rem_euclid(7);
                 day_of_week == 0 || day_of_week == 6
-            }).collect()
-        }
+            })
+            .collect(),
         _ => panic!("Expected Date index"),
     };
 
     let mut new_masks = frame.tags.masks.clone();
-    new_masks.insert(
-        mask_name.to_string(),
-        Arc::new(weekend_bitvec),
-        nrows
-    ).expect("Failed to insert mask");
+    new_masks
+        .insert(mask_name.to_string(), Arc::new(weekend_bitvec), nrows)
+        .expect("Failed to insert mask");
 
     let new_tags = Tags {
         index_name: frame.tags.index_name.clone(),
@@ -55,13 +54,17 @@ fn add_weekend_mask(frame: Frame, mask_name: &str) -> Frame {
 
     Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     )
 }
 
@@ -83,13 +86,17 @@ fn activate_mask(frame: Frame, expr: MaskExpr) -> Frame {
 
     Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     )
 }
 
@@ -97,9 +104,7 @@ fn activate_mask(frame: Frame, expr: MaskExpr) -> Frame {
 fn is_na_at(frame: &Frame, col_idx: usize, row_idx: usize) -> bool {
     match frame.get_col(col_idx) {
         Some(col) => match &**col {
-            blawktrust::Column::F64(data) => {
-                row_idx < data.len() && data[row_idx].is_nan()
-            }
+            blawktrust::Column::F64(data) => row_idx < data.len() && data[row_idx].is_nan(),
             _ => false,
         },
         None => false,
@@ -130,7 +135,7 @@ fn t1_masked_rows_are_na_for_all_unary_ops() {
     // Create 7-day week (Mon-Sun) with known weekend dates
     // 2024-01-01 was Monday, so:
     // Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
-    let dates: Vec<i32> = (0..7).collect();  // Days 0-6 from epoch
+    let dates: Vec<i32> = (0..7).collect(); // Days 0-6 from epoch
     let values: Vec<f64> = vec![100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0];
 
     let frame = make_test_frame(dates, values, "price");
@@ -147,14 +152,15 @@ fn t1_masked_rows_are_na_for_all_unary_ops() {
     // day 5: (4+5)%7 = 2 (Tue) - not weekend
     // day 6: (4+6)%7 = 3 (Wed) - not weekend
 
-    let weekend_indices = vec![2, 3];  // Days 2 and 3 are Sat/Sun
+    let weekend_indices = vec![2, 3]; // Days 2 and 3 are Sat/Sun
 
     // Test operations that should respect mask (will be implemented when we integrate with exec)
     // For now, verify that the active_mask is set correctly
     for &idx in &weekend_indices {
         assert!(
             frame.tags.active_mask.is_masked(idx),
-            "T1 VIOLATION: Weekend row {} should be masked", idx
+            "T1 VIOLATION: Weekend row {} should be masked",
+            idx
         );
     }
 
@@ -163,7 +169,8 @@ fn t1_masked_rows_are_na_for_all_unary_ops() {
         if !weekend_indices.contains(&i) {
             assert!(
                 !frame.tags.active_mask.is_masked(i),
-                "T1 VIOLATION: Weekday row {} should NOT be masked", i
+                "T1 VIOLATION: Weekday row {} should NOT be masked",
+                i
             );
         }
     }
@@ -175,7 +182,7 @@ fn t1_masked_rows_are_na_for_all_unary_ops() {
 fn t2_rolling_strict_vs_partial_start_dates() {
     // Create 500 calendar days with weekends masked
     // Approximately 500 days ≈ 71 weeks ≈ 357 weekdays
-    let dates: Vec<i32> = (19000..19500).collect();  // 500 calendar days
+    let dates: Vec<i32> = (19000..19500).collect(); // 500 calendar days
     let values: Vec<f64> = (0..500).map(|i| 100.0 + i as f64).collect();
 
     let frame = make_test_frame(dates, values.clone(), "price");
@@ -225,10 +232,10 @@ fn t2_rolling_strict_vs_partial_start_dates() {
 #[test]
 fn t3_rolling_with_source_nas() {
     // Create frame with weekends masked AND some weekday NAs
-    let dates: Vec<i32> = (0..14).collect();  // 2 weeks
+    let dates: Vec<i32> = (0..14).collect(); // 2 weeks
     let mut values = vec![
-        100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0,  // Week 1
-        107.0, 108.0, 109.0, 110.0, 111.0, 112.0, 113.0,  // Week 2
+        100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, // Week 1
+        107.0, 108.0, 109.0, 110.0, 111.0, 112.0, 113.0, // Week 2
     ];
 
     // Add some weekday NAs (indices 1, 4, 8)
@@ -255,7 +262,7 @@ fn t3_rolling_with_source_nas() {
         if frame.tags.active_mask.is_masked(i) {
             // Masked rows: eligible_count should not include this row
             assert!(
-                !values[i].is_nan() || values[i].is_nan(),  // Can be NA or not
+                !values[i].is_nan() || values[i].is_nan(), // Can be NA or not
                 "T3: Masked row {} can have any value (will be overwritten to NA)",
                 i
             );
@@ -305,19 +312,48 @@ fn t4_binary_ops_or_active_masks() {
     let result_mask = or_active_masks(&active_x, &active_y);
 
     // Result should mask: 1, 2, 3, 5 (union)
-    assert!(result_mask.is_masked(1), "T4 VIOLATION: Row 1 should be masked (from Y)");
-    assert!(result_mask.is_masked(2), "T4 VIOLATION: Row 2 should be masked (from X)");
-    assert!(result_mask.is_masked(3), "T4 VIOLATION: Row 3 should be masked (from X)");
-    assert!(result_mask.is_masked(5), "T4 VIOLATION: Row 5 should be masked (from Y)");
+    assert!(
+        result_mask.is_masked(1),
+        "T4 VIOLATION: Row 1 should be masked (from Y)"
+    );
+    assert!(
+        result_mask.is_masked(2),
+        "T4 VIOLATION: Row 2 should be masked (from X)"
+    );
+    assert!(
+        result_mask.is_masked(3),
+        "T4 VIOLATION: Row 3 should be masked (from X)"
+    );
+    assert!(
+        result_mask.is_masked(5),
+        "T4 VIOLATION: Row 5 should be masked (from Y)"
+    );
 
     // Non-masked rows: 0, 4, 6
-    assert!(!result_mask.is_masked(0), "T4 VIOLATION: Row 0 should NOT be masked");
-    assert!(!result_mask.is_masked(4), "T4 VIOLATION: Row 4 should NOT be masked");
-    assert!(!result_mask.is_masked(6), "T4 VIOLATION: Row 6 should NOT be masked");
+    assert!(
+        !result_mask.is_masked(0),
+        "T4 VIOLATION: Row 0 should NOT be masked"
+    );
+    assert!(
+        !result_mask.is_masked(4),
+        "T4 VIOLATION: Row 4 should NOT be masked"
+    );
+    assert!(
+        !result_mask.is_masked(6),
+        "T4 VIOLATION: Row 6 should NOT be masked"
+    );
 
     // Count masked vs unmasked
-    assert_eq!(result_mask.count_masked(), 4, "T4 VIOLATION: Should have 4 masked rows");
-    assert_eq!(result_mask.count_unmasked(), 3, "T4 VIOLATION: Should have 3 unmasked rows");
+    assert_eq!(
+        result_mask.count_masked(),
+        4,
+        "T4 VIOLATION: Should have 4 masked rows"
+    );
+    assert_eq!(
+        result_mask.count_unmasked(),
+        3,
+        "T4 VIOLATION: Should have 3 unmasked rows"
+    );
 }
 
 // ==================== T5: Join semantics (asofr mask inheritance) ====================
@@ -326,8 +362,8 @@ fn t4_binary_ops_or_active_masks() {
 fn t5_join_inherits_y_masks() {
     // This test documents the policy: asofr output has Y's index → inherits Y's masks
 
-    let dates_x = vec![0, 1, 2, 3, 4];  // X frame: 5 days
-    let dates_y = vec![0, 1, 2, 3, 4, 5, 6];  // Y frame: 7 days
+    let dates_x = vec![0, 1, 2, 3, 4]; // X frame: 5 days
+    let dates_y = vec![0, 1, 2, 3, 4, 5, 6]; // Y frame: 7 days
 
     let values_x = vec![100.0, 101.0, 102.0, 103.0, 104.0];
     let values_y = vec![200.0, 201.0, 202.0, 203.0, 204.0, 205.0, 206.0];
@@ -345,8 +381,14 @@ fn t5_join_inherits_y_masks() {
     // - Mask metadata follows index ownership
 
     // Verify Y has the weekend mask active
-    assert!(frame_y.tags.active_mask.is_masked(2), "T5: Y should have day 2 masked");
-    assert!(frame_y.tags.active_mask.is_masked(3), "T5: Y should have day 3 masked");
+    assert!(
+        frame_y.tags.active_mask.is_masked(2),
+        "T5: Y should have day 2 masked"
+    );
+    assert!(
+        frame_y.tags.active_mask.is_masked(3),
+        "T5: Y should have day 3 masked"
+    );
 
     // When asofr is implemented, it should preserve Y's active_mask
     // For now, just document the policy in this test
@@ -366,20 +408,27 @@ fn t6_mask_name_collision_deterministic() {
     let mut maskset_b = MaskSet::new();
 
     // Both have "weekend" mask with SAME bitset
-    let weekend_mask = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]);  // Sat, Sun
-    maskset_a.insert("weekend".to_string(), Arc::clone(&weekend_mask), 7).unwrap();
-    maskset_b.insert("weekend".to_string(), Arc::clone(&weekend_mask), 7).unwrap();
+    let weekend_mask = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]); // Sat, Sun
+    maskset_a
+        .insert("weekend".to_string(), Arc::clone(&weekend_mask), 7)
+        .unwrap();
+    maskset_b
+        .insert("weekend".to_string(), Arc::clone(&weekend_mask), 7)
+        .unwrap();
 
     // Merge should succeed (same mask)
     let result = maskset_a.merge(&maskset_b);
-    assert!(result.is_ok(), "T6 VIOLATION: Merging identical masks should succeed");
+    assert!(
+        result.is_ok(),
+        "T6 VIOLATION: Merging identical masks should succeed"
+    );
 
     // Now test collision: different bitsets with same name
     let mut maskset_c = MaskSet::new();
     let mut maskset_d = MaskSet::new();
 
-    let mask1 = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]);  // Weekend
-    let mask2 = Arc::new(bitvec![0, 1, 0, 0, 0, 0, 0]);  // Holiday
+    let mask1 = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]); // Weekend
+    let mask2 = Arc::new(bitvec![0, 1, 0, 0, 0, 0, 0]); // Holiday
 
     maskset_c.insert("special".to_string(), mask1, 7).unwrap();
     maskset_d.insert("special".to_string(), mask2, 7).unwrap();
@@ -425,7 +474,7 @@ fn perf_rolling_strict_is_not_quadratic() {
 
     for i in 0..nrows {
         if frame.tags.active_mask.is_masked(i) {
-            continue;  // O(1)
+            continue; // O(1)
         }
 
         // Naive: scan backwards w positions
@@ -433,7 +482,7 @@ fn perf_rolling_strict_is_not_quadratic() {
         let mut eligible = 0;
         let mut j = i as isize;
         while eligible < w && j >= 0 {
-            op_count += 1;  // Count this operation
+            op_count += 1; // Count this operation
             let idx = j as usize;
             if !frame.tags.active_mask.is_masked(idx) {
                 eligible += 1;

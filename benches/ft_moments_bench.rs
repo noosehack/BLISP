@@ -75,11 +75,7 @@ fn benchmark_just_mean_std() {
     let _ = rolling_moments_past_only_f64(&data, window, None, mask, None);
     let elapsed = start.elapsed();
 
-    println!(
-        "Just mean+std: {:?} for {} elements",
-        elapsed,
-        data.len()
-    );
+    println!("Just mean+std: {:?} for {} elements", elapsed, data.len());
 }
 
 fn main() {

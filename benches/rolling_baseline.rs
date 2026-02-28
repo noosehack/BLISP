@@ -13,20 +13,19 @@
 //! - Time should scale linearly in n, not n·w
 //! - Memory allocations should be O(n), not O(n·w)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
-use blisp::frame::{Frame, Tags, IndexColumn};
-use blisp::runtime::Runtime;
+use blawktrust::Column;
 use blisp::ast::Expr;
+use blisp::exec::execute;
+use blisp::frame::{Frame, IndexColumn, Tags};
 use blisp::normalize::normalize;
 use blisp::planner::plan;
-use blisp::exec::execute;
+use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blawktrust::Column;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::Arc;
 
 /// Generate test frame with specified properties
 fn make_test_frame(nrows: usize, ncols: usize, na_rate: f64, seed: u64) -> Arc<Frame> {
-
     // Simple LCG for reproducible randomness
     let mut rng_state = seed;
     let mut next_rand = || {
@@ -48,7 +47,7 @@ fn make_test_frame(nrows: usize, ncols: usize, na_rate: f64, seed: u64) -> Arc<F
                 .map(|row_idx| {
                     let rand_val = next_rand() as f64 / 32768.0;
                     if rand_val < na_rate {
-                        f64::NAN  // NA
+                        f64::NAN // NA
                     } else {
                         // Generate value: sin wave + column offset
                         ((row_idx as f64 * 0.01).sin() + col_idx as f64) * 100.0

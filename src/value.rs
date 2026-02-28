@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::single_match)]
 //! Runtime values for blisp
 //!
 //! Step 4: Full implementation with Col and Table types.

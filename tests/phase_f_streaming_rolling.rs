@@ -5,10 +5,10 @@
 //!
 //! This ensures semantic preservation while gaining performance.
 
-use blisp::frame::{Frame, Tags, IndexColumn};
-use blisp::mask::{MaskSet, ActiveMask};
-use std::sync::Arc;
 use bitvec::prelude::*;
+use blisp::frame::{Frame, IndexColumn, Tags};
+use blisp::mask::{ActiveMask, MaskSet};
+use std::sync::Arc;
 
 /// Helper: Create test frame with Date index and single F64 column
 fn make_test_frame(dates: Vec<i32>, values: Vec<f64>, colname: &str) -> Frame {
@@ -24,27 +24,30 @@ fn add_and_activate_weekend_mask(frame: Frame) -> Frame {
 
     // Compute weekend bitmask
     let weekend_bitvec: BitVec = match &*frame.tags.index {
-        IndexColumn::Date(dates) => {
-            dates.iter().map(|&date| {
+        IndexColumn::Date(dates) => dates
+            .iter()
+            .map(|&date| {
                 let day_of_week = (4 + date).rem_euclid(7);
                 day_of_week == 0 || day_of_week == 6
-            }).collect()
-        }
+            })
+            .collect(),
         _ => panic!("Expected Date index"),
     };
 
     // Add mask
     let mut new_masks = frame.tags.masks.clone();
-    new_masks.insert(
-        "weekend".to_string(),
-        Arc::new(weekend_bitvec.clone()),
-        nrows
-    ).expect("Failed to insert mask");
+    new_masks
+        .insert(
+            "weekend".to_string(),
+            Arc::new(weekend_bitvec.clone()),
+            nrows,
+        )
+        .expect("Failed to insert mask");
 
     // Activate mask
     let active_mask = ActiveMask::from_bitvec(
         weekend_bitvec,
-        Some(blisp::mask::MaskExpr::Name("weekend".to_string()))
+        Some(blisp::mask::MaskExpr::Name("weekend".to_string())),
     );
 
     let new_tags = Tags {
@@ -57,13 +60,17 @@ fn add_and_activate_weekend_mask(frame: Frame) -> Frame {
 
     Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let blisp::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let blisp::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     )
 }
 
@@ -89,10 +96,16 @@ fn vectors_match(a: &[f64], b: &[f64], tolerance: f64) -> bool {
         let both_valid = !av.is_nan() && !bv.is_nan();
 
         if both_nan {
-            continue;  // NaN == NaN for our purposes
+            continue; // NaN == NaN for our purposes
         } else if both_valid {
             if (av - bv).abs() > tolerance {
-                println!("Mismatch at index {}: {} vs {} (diff: {})", i, av, bv, (av - bv).abs());
+                println!(
+                    "Mismatch at index {}: {} vs {} (diff: {})",
+                    i,
+                    av,
+                    bv,
+                    (av - bv).abs()
+                );
                 return false;
             }
         } else {
@@ -118,7 +131,7 @@ fn test_streaming_matches_legacy_simple_case() {
     // The streaming implementation should produce identical results to legacy
     // This test mainly verifies the setup is correct
     assert_eq!(frame_with_mask.nrows(), 14);
-    assert_eq!(frame_with_mask.tags.active_mask.count_masked(), 4);  // 4 weekend days
+    assert_eq!(frame_with_mask.tags.active_mask.count_masked(), 4); // 4 weekend days
 }
 
 #[test]
@@ -126,10 +139,10 @@ fn test_streaming_correctness_mean_strict() {
     // Test rolling mean strict with known values
     let dates: Vec<i32> = (0..20).collect();
     let values: Vec<f64> = vec![
-        100.0, 101.0, 102.0, 103.0, 104.0,  // 0-4 (Thu-Mon, includes Sat-Sun)
-        105.0, 106.0, 107.0, 108.0, 109.0,  // 5-9
-        110.0, 111.0, 112.0, 113.0, 114.0,  // 10-14
-        115.0, 116.0, 117.0, 118.0, 119.0,  // 15-19
+        100.0, 101.0, 102.0, 103.0, 104.0, // 0-4 (Thu-Mon, includes Sat-Sun)
+        105.0, 106.0, 107.0, 108.0, 109.0, // 5-9
+        110.0, 111.0, 112.0, 113.0, 114.0, // 10-14
+        115.0, 116.0, 117.0, 118.0, 119.0, // 15-19
     ];
 
     let frame = make_test_frame(dates, values, "price");
@@ -147,8 +160,8 @@ fn test_streaming_correctness_mean_strict() {
     let nrows = frame_with_mask.nrows();
 
     // Manually verify weekend mask
-    assert!(active_mask.is_masked(2));  // Sat
-    assert!(active_mask.is_masked(3));  // Sun
+    assert!(active_mask.is_masked(2)); // Sat
+    assert!(active_mask.is_masked(3)); // Sun
     assert!(!active_mask.is_masked(0)); // Thu
     assert!(!active_mask.is_masked(1)); // Fri
 }
@@ -180,7 +193,9 @@ fn test_streaming_performance_benefit() {
     assert!(
         weekdays >= w,
         "Need at least {} weekdays for w={}, have {}",
-        w, w, weekdays
+        w,
+        w,
+        weekdays
     );
 }
 
@@ -189,13 +204,13 @@ fn test_streaming_with_source_nas() {
     // Test with both weekend mask AND source NAs
     let dates: Vec<i32> = (0..14).collect();
     let mut values = vec![
-        100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0,  // Week 1
-        107.0, 108.0, 109.0, 110.0, 111.0, 112.0, 113.0,  // Week 2
+        100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, // Week 1
+        107.0, 108.0, 109.0, 110.0, 111.0, 112.0, 113.0, // Week 2
     ];
 
     // Add some weekday NAs
-    values[1] = f64::NAN;  // Fri (weekday NA)
-    values[5] = f64::NAN;  // Tue (weekday NA)
+    values[1] = f64::NAN; // Fri (weekday NA)
+    values[5] = f64::NAN; // Tue (weekday NA)
 
     let frame = make_test_frame(dates, values.clone(), "price");
     let frame_with_mask = add_and_activate_weekend_mask(frame);

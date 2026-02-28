@@ -25,12 +25,8 @@ impl Runtime {
 
             // Quasiquote (Phase 3)
             Expr::QuasiQuote(inner) => self.eval_quasiquote(inner, 1),
-            Expr::Unquote(_) => {
-                Err("unquote outside quasiquote".to_string())
-            }
-            Expr::UnquoteSplicing(_) => {
-                Err("unquote-splicing outside quasiquote".to_string())
-            }
+            Expr::Unquote(_) => Err("unquote outside quasiquote".to_string()),
+            Expr::UnquoteSplicing(_) => Err("unquote-splicing outside quasiquote".to_string()),
 
             // Lists are either special forms or function calls
             Expr::List(exprs) => self.eval_list(exprs),
@@ -48,8 +44,18 @@ impl Runtime {
             let head_name = self.interner.resolve(*head_sym);
 
             // Don't macroexpand special forms
-            let is_special_form = matches!(head_name,
-                "quote" | "progn" | "if" | "let*" | "defparameter" | "setf" | "define" | "lambda" | "defmacro" | "->"
+            let is_special_form = matches!(
+                head_name,
+                "quote"
+                    | "progn"
+                    | "if"
+                    | "let*"
+                    | "defparameter"
+                    | "setf"
+                    | "define"
+                    | "lambda"
+                    | "defmacro"
+                    | "->"
             );
 
             if !is_special_form && self.lookup_macro(*head_sym).is_some() {
@@ -172,7 +178,10 @@ impl Runtime {
     /// (if cond then else) - Conditional evaluation (else is required)
     fn eval_if(&mut self, args: &[Expr]) -> Result<Value, String> {
         if args.len() != 3 {
-            return Err(format!("if expects 3 arguments (cond then else), got {}", args.len()));
+            return Err(format!(
+                "if expects 3 arguments (cond then else), got {}",
+                args.len()
+            ));
         }
 
         let cond = self.eval(&args[0])?;
@@ -235,7 +244,10 @@ impl Runtime {
     /// (defparameter var val) - Define global variable
     fn eval_defparameter(&mut self, args: &[Expr]) -> Result<Value, String> {
         if args.len() != 2 {
-            return Err(format!("defparameter expects 2 arguments (var val), got {}", args.len()));
+            return Err(format!(
+                "defparameter expects 2 arguments (var val), got {}",
+                args.len()
+            ));
         }
 
         let Expr::Sym(var_sym) = args[0] else {
@@ -250,7 +262,10 @@ impl Runtime {
     /// (setf var val) - Update variable (lexical or global)
     fn eval_setf(&mut self, args: &[Expr]) -> Result<Value, String> {
         if args.len() != 2 {
-            return Err(format!("setf expects 2 arguments (var val), got {}", args.len()));
+            return Err(format!(
+                "setf expects 2 arguments (var val), got {}",
+                args.len()
+            ));
         }
 
         let Expr::Sym(var_sym) = args[0] else {
@@ -265,7 +280,10 @@ impl Runtime {
     /// (define name expr) - Define global variable
     fn eval_define(&mut self, args: &[Expr]) -> Result<Value, String> {
         if args.len() != 2 {
-            return Err(format!("define expects 2 arguments (name expr), got {}", args.len()));
+            return Err(format!(
+                "define expects 2 arguments (name expr), got {}",
+                args.len()
+            ));
         }
 
         let Expr::Sym(name_sym) = args[0] else {
@@ -532,7 +550,7 @@ impl Runtime {
             // CRITICAL: Restore caller's environment before evaluating expansion
             // This ensures the expanded code sees the caller's bindings (e.g., let*)
             self.lexical.restore_and_push(&caller_env);
-            self.pop_frame();  // Remove the empty frame added by restore_and_push
+            self.pop_frame(); // Remove the empty frame added by restore_and_push
 
             // Convert result Value back to Expr
             let expanded_expr = self.value_to_expr(&result_val)?;
@@ -616,7 +634,9 @@ mod tests {
 
     fn eval_str(rt: &mut Runtime, input: &str) -> Result<Value, String> {
         let mut reader = Reader::new(input).map_err(|e| format!("Parse error: {}", e))?;
-        let expr = reader.read(&mut rt.interner).map_err(|e| format!("Read error: {}", e))?;
+        let expr = reader
+            .read(&mut rt.interner)
+            .map_err(|e| format!("Read error: {}", e))?;
         rt.eval(&expr)
     }
 
@@ -663,13 +683,22 @@ mod tests {
         let mut rt = Runtime::new();
 
         // True branch
-        assert_eq!(eval_str(&mut rt, "(if t 'yes 'no)").unwrap(), Value::Sym(rt.interner.intern("yes")));
+        assert_eq!(
+            eval_str(&mut rt, "(if t 'yes 'no)").unwrap(),
+            Value::Sym(rt.interner.intern("yes"))
+        );
 
         // False branch
-        assert_eq!(eval_str(&mut rt, "(if nil 'yes 'no)").unwrap(), Value::Sym(rt.interner.intern("no")));
+        assert_eq!(
+            eval_str(&mut rt, "(if nil 'yes 'no)").unwrap(),
+            Value::Sym(rt.interner.intern("no"))
+        );
 
         // 0 is truthy in Lisp
-        assert_eq!(eval_str(&mut rt, "(if 0 'yes 'no)").unwrap(), Value::Sym(rt.interner.intern("yes")));
+        assert_eq!(
+            eval_str(&mut rt, "(if 0 'yes 'no)").unwrap(),
+            Value::Sym(rt.interner.intern("yes"))
+        );
     }
 
     #[test]
@@ -743,9 +772,7 @@ mod tests {
     fn test_eval_nested_let_star() {
         let mut rt = Runtime::new();
 
-        let result = eval_str(&mut rt,
-            "(let* ((x 1)) (let* ((x 2)) x))"
-        ).unwrap();
+        let result = eval_str(&mut rt, "(let* ((x 1)) (let* ((x 2)) x))").unwrap();
         assert_eq!(result, Value::Int(2));
     }
 
@@ -772,9 +799,7 @@ mod tests {
     fn test_eval_if_nested() {
         let mut rt = Runtime::new();
 
-        let result = eval_str(&mut rt,
-            "(if t (if nil 'inner-yes 'inner-no) 'outer-no)"
-        ).unwrap();
+        let result = eval_str(&mut rt, "(if t (if nil 'inner-yes 'inner-no) 'outer-no)").unwrap();
 
         assert_eq!(result, Value::Sym(rt.interner.intern("inner-no")));
     }

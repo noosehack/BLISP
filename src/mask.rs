@@ -6,9 +6,9 @@
 //! - Active mask computed from MaskExpr (boolean composition)
 //! - Calendar index stays intact (masked rows remain, just excluded from compute)
 
+use bitvec::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use bitvec::prelude::*;
 
 /// Mask expression: boolean composition of named masks
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,12 @@ impl MaskSet {
 
     /// Add or update a named mask
     /// Returns error if length doesn't match expected or if name collision with different bitset (T6)
-    pub fn insert(&mut self, name: String, mask: Arc<BitVec>, expected_len: usize) -> Result<(), String> {
+    pub fn insert(
+        &mut self,
+        name: String,
+        mask: Arc<BitVec>,
+        expected_len: usize,
+    ) -> Result<(), String> {
         if mask.len() != expected_len {
             return Err(format!(
                 "Mask '{}' length {} doesn't match expected {}",
@@ -144,47 +149,41 @@ impl ActiveMask {
 }
 
 /// Compile mask expression to BitVec
-pub fn compile_mask_expr(
-    expr: &MaskExpr,
-    masks: &MaskSet,
-    nrows: usize,
-) -> Result<BitVec, String> {
+pub fn compile_mask_expr(expr: &MaskExpr, masks: &MaskSet, nrows: usize) -> Result<BitVec, String> {
     match expr {
-        MaskExpr::Name(name) => {
-            masks
-                .get(name)
-                .map(|m| (**m).clone())
-                .ok_or_else(|| format!("Mask '{}' not found", name))
-        }
+        MaskExpr::Name(name) => masks
+            .get(name)
+            .map(|m| (**m).clone())
+            .ok_or_else(|| format!("Mask '{}' not found", name)),
 
         MaskExpr::Not(inner) => {
             let mut result = compile_mask_expr(inner, masks, nrows)?;
-            result = !result;  // Bitwise NOT
+            result = !result; // Bitwise NOT
             Ok(result)
         }
 
         MaskExpr::And(exprs) => {
             if exprs.is_empty() {
-                return Ok(bitvec![0; nrows]);  // Empty AND = all unmasked
+                return Ok(bitvec![0; nrows]); // Empty AND = all unmasked
             }
 
             let mut result = compile_mask_expr(&exprs[0], masks, nrows)?;
             for expr in &exprs[1..] {
                 let next = compile_mask_expr(expr, masks, nrows)?;
-                result &= next;  // Bitwise AND
+                result &= next; // Bitwise AND
             }
             Ok(result)
         }
 
         MaskExpr::Or(exprs) => {
             if exprs.is_empty() {
-                return Ok(bitvec![0; nrows]);  // Empty OR = all unmasked
+                return Ok(bitvec![0; nrows]); // Empty OR = all unmasked
             }
 
             let mut result = compile_mask_expr(&exprs[0], masks, nrows)?;
             for expr in &exprs[1..] {
                 let next = compile_mask_expr(expr, masks, nrows)?;
-                result |= next;  // Bitwise OR
+                result |= next; // Bitwise OR
             }
             Ok(result)
         }
@@ -264,7 +263,8 @@ pub fn reindex_maskset(
     for (name, old_mask_arc) in &old_masks.row_masks {
         let new_mask = reindex_row_mask(old_mask_arc, old_index, new_index);
         // Insert should succeed (new MaskSet, no collisions)
-        new_masks.insert(name.clone(), Arc::new(new_mask), new_index.len())
+        new_masks
+            .insert(name.clone(), Arc::new(new_mask), new_index.len())
             .expect("Reindex mask insert should not fail");
     }
 
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn test_mask_set_insert() {
         let mut masks = MaskSet::new();
-        let weekend = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]);  // Sat, Sun masked
+        let weekend = Arc::new(bitvec![0, 0, 0, 0, 0, 1, 1]); // Sat, Sun masked
         masks.insert("weekend".to_string(), weekend, 7).unwrap();
         assert!(masks.contains("weekend"));
     }
@@ -335,7 +335,7 @@ mod tests {
 
         let expr = MaskExpr::Not(Box::new(MaskExpr::Name("weekend".to_string())));
         let compiled = compile_mask_expr(&expr, &masks, 7).unwrap();
-        assert_eq!(compiled, bitvec![1, 1, 1, 1, 1, 0, 0]);  // Inverted
+        assert_eq!(compiled, bitvec![1, 1, 1, 1, 1, 0, 0]); // Inverted
     }
 
     #[test]
@@ -351,6 +351,6 @@ mod tests {
             MaskExpr::Name("holiday".to_string()),
         ]);
         let compiled = compile_mask_expr(&expr, &masks, 7).unwrap();
-        assert_eq!(compiled, bitvec![0, 1, 0, 0, 0, 1, 1]);  // weekend OR holiday
+        assert_eq!(compiled, bitvec![0, 1, 0, 0, 0, 1, 1]); // weekend OR holiday
     }
 }

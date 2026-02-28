@@ -11,7 +11,6 @@
 ///   (-> a (f x) (g y z))  =>  (g (f a x) y z)
 ///
 /// This enables pipeline optimization without changing semantics.
-
 use crate::ast::{Expr, Interner};
 
 /// Canonical expression after normalization
@@ -65,12 +64,16 @@ fn normalize_expr(expr: Expr, interner: &mut Interner) -> Expr {
             Expr::List(normalized)
         }
         // Atoms are already canonical
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Sym(_) | Expr::Nil => expr,
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Sym(_) | Expr::Nil => {
+            expr
+        }
         // Quote forms - normalize the inner expression
         Expr::Quote(inner) => Expr::Quote(Box::new(normalize_expr(*inner, interner))),
         Expr::QuasiQuote(inner) => Expr::QuasiQuote(Box::new(normalize_expr(*inner, interner))),
         Expr::Unquote(inner) => Expr::Unquote(Box::new(normalize_expr(*inner, interner))),
-        Expr::UnquoteSplicing(inner) => Expr::UnquoteSplicing(Box::new(normalize_expr(*inner, interner))),
+        Expr::UnquoteSplicing(inner) => {
+            Expr::UnquoteSplicing(Box::new(normalize_expr(*inner, interner)))
+        }
     }
 }
 
@@ -176,11 +179,7 @@ mod tests {
         let mut interner = Interner::new();
 
         // (f x y) => (f x y) - no macros
-        let expr = Expr::List(vec![
-            sym(&mut interner, "f"),
-            num(1.0),
-            num(2.0),
-        ]);
+        let expr = Expr::List(vec![sym(&mut interner, "f"), num(1.0), num(2.0)]);
         let result = normalize(expr.clone(), &mut interner);
         assert_eq!(result.inner(), &expr);
     }
@@ -190,10 +189,7 @@ mod tests {
         let mut interner = Interner::new();
 
         // (-> x) => x
-        let expr = Expr::List(vec![
-            sym(&mut interner, "->"),
-            num(42.0),
-        ]);
+        let expr = Expr::List(vec![sym(&mut interner, "->"), num(42.0)]);
         let result = normalize(expr, &mut interner);
         assert_eq!(result.inner(), &num(42.0));
     }
@@ -206,17 +202,10 @@ mod tests {
         let expr = Expr::List(vec![
             sym(&mut interner, "->"),
             num(1.0),
-            Expr::List(vec![
-                sym(&mut interner, "f"),
-                num(2.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "f"), num(2.0)]),
         ]);
 
-        let expected = Expr::List(vec![
-            sym(&mut interner, "f"),
-            num(1.0),
-            num(2.0),
-        ]);
+        let expected = Expr::List(vec![sym(&mut interner, "f"), num(1.0), num(2.0)]);
 
         let result = normalize(expr, &mut interner);
         assert_eq!(result.inner(), &expected);
@@ -231,18 +220,12 @@ mod tests {
             sym(&mut interner, "->"),
             num(1.0),
             Expr::List(vec![sym(&mut interner, "f")]),
-            Expr::List(vec![
-                sym(&mut interner, "g"),
-                num(2.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "g"), num(2.0)]),
         ]);
 
         let expected = Expr::List(vec![
             sym(&mut interner, "g"),
-            Expr::List(vec![
-                sym(&mut interner, "f"),
-                num(1.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "f"), num(1.0)]),
             num(2.0),
         ]);
 
@@ -261,10 +244,7 @@ mod tests {
             sym(&mut interner, "f"),
         ]);
 
-        let expected = Expr::List(vec![
-            sym(&mut interner, "f"),
-            num(42.0),
-        ]);
+        let expected = Expr::List(vec![sym(&mut interner, "f"), num(42.0)]);
 
         let result = normalize(expr, &mut interner);
         assert_eq!(result.inner(), &expected);
@@ -278,14 +258,8 @@ mod tests {
         let expr = Expr::List(vec![
             sym(&mut interner, "->"),
             num(1.0),
-            Expr::List(vec![
-                sym(&mut interner, "f"),
-                num(2.0),
-            ]),
-            Expr::List(vec![
-                sym(&mut interner, "g"),
-                num(3.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "f"), num(2.0)]),
+            Expr::List(vec![sym(&mut interner, "g"), num(3.0)]),
         ]);
 
         let once = normalize(expr.clone(), &mut interner);
@@ -313,10 +287,7 @@ mod tests {
 
         let expected = Expr::List(vec![
             sym(&mut interner, "g"),
-            Expr::List(vec![
-                sym(&mut interner, "f"),
-                num(1.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "f"), num(1.0)]),
         ]);
 
         let result = normalize(outer, &mut interner);
@@ -339,10 +310,7 @@ mod tests {
 
         let expected = Expr::List(vec![
             sym(&mut interner, "f"),
-            Expr::List(vec![
-                sym(&mut interner, "g"),
-                num(1.0),
-            ]),
+            Expr::List(vec![sym(&mut interner, "g"), num(1.0)]),
         ]);
 
         let result = normalize(expr, &mut interner);

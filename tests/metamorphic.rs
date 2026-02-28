@@ -13,13 +13,13 @@
 
 mod common;
 
+use blisp::ast::{Expr, Interner};
+use blisp::exec::execute;
+use blisp::frame::IndexColumn;
 use blisp::normalize::normalize;
 use blisp::planner::plan;
-use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blisp::ast::{Expr, Interner};
-use blisp::frame::IndexColumn;
 use common::{assert_frame_equiv, build_date_frame, Env};
 use std::sync::Arc;
 
@@ -70,12 +70,10 @@ fn meta_let_shadowing_law() {
     // Construct: (let ((a (dlog y))) a)
     let expected_expr = Expr::List(vec![
         Expr::Sym(let_sym),
-        Expr::List(vec![
-            Expr::List(vec![
-                Expr::Sym(a_sym),
-                Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(y_sym)]),
-            ]),
-        ]),
+        Expr::List(vec![Expr::List(vec![
+            Expr::Sym(a_sym),
+            Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(y_sym)]),
+        ])]),
         Expr::Sym(a_sym),
     ]);
 
@@ -158,7 +156,7 @@ fn meta_mapr_output_shape_law() {
     let mut rt = Runtime::new();
 
     // Create frames with DIFFERENT row counts
-    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);  // 10 rows
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1); // 10 rows
     let x_sym = rt.interner.intern("x");
     rt.define(x_sym, Value::Frame(Arc::clone(&x)));
 
@@ -183,7 +181,10 @@ fn meta_mapr_output_shape_law() {
 
     match result {
         Value::Frame(f) => {
-            assert_eq!(f.nrows, 15, "mapr output must have y's row count (RIGHT OUTER JOIN)");
+            assert_eq!(
+                f.nrows, 15,
+                "mapr output must have y's row count (RIGHT OUTER JOIN)"
+            );
         }
         _ => panic!("Expected Frame"),
     }
@@ -196,7 +197,7 @@ fn meta_asofr_output_shape_law() {
 
     let mut rt = Runtime::new();
 
-    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1);  // 10 rows
+    let x = build_date_frame(42, "DATE", 10, 2, false, 0.1); // 10 rows
     let x_sym = rt.interner.intern("x");
     rt.define(x_sym, Value::Frame(Arc::clone(&x)));
 
@@ -221,7 +222,10 @@ fn meta_asofr_output_shape_law() {
 
     match result {
         Value::Frame(f) => {
-            assert_eq!(f.nrows, 15, "asofr output must have y's row count (RIGHT OUTER ASOF JOIN)");
+            assert_eq!(
+                f.nrows, 15,
+                "asofr output must have y's row count (RIGHT OUTER ASOF JOIN)"
+            );
         }
         _ => panic!("Expected Frame"),
     }
@@ -234,7 +238,7 @@ fn meta_mapr_column_projection_law() {
 
     let mut rt = Runtime::new();
 
-    let x = build_date_frame(42, "DATE", 10, 3, false, 0.1);  // 3 columns
+    let x = build_date_frame(42, "DATE", 10, 3, false, 0.1); // 3 columns
     let x_sym = rt.interner.intern("x");
     rt.define(x_sym, Value::Frame(Arc::clone(&x)));
 
@@ -262,7 +266,11 @@ fn meta_mapr_column_projection_law() {
 
             // Verify column names match x's columns
             for (i, colname) in f.tags.colnames.iter().enumerate() {
-                assert_eq!(colname, &format!("col{}", i), "mapr must preserve x's column names");
+                assert_eq!(
+                    colname,
+                    &format!("col{}", i),
+                    "mapr must preserve x's column names"
+                );
             }
         }
         _ => panic!("Expected Frame"),
@@ -331,10 +339,7 @@ fn meta_unary_preserves_shape() {
     let dlog_sym = rt.interner.intern("dlog");
     let x_sym = rt.interner.intern("x");
 
-    let expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -365,10 +370,7 @@ fn meta_unary_preserves_tags_arc() {
     let dlog_sym = rt.interner.intern("dlog");
     let x_sym = rt.interner.intern("x");
 
-    let expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -408,10 +410,7 @@ fn meta_unary_na_positions_monotonic() {
     let dlog_sym = rt.interner.intern("dlog");
     let x_sym = rt.interner.intern("x");
 
-    let expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -470,7 +469,8 @@ fn meta_normalize_idempotent() {
     let twice = normalize(once.inner().clone(), &mut interner);
 
     assert_eq!(
-        once.inner(), twice.inner(),
+        once.inner(),
+        twice.inner(),
         "Normalization must be idempotent"
     );
 }
@@ -498,7 +498,8 @@ fn meta_plan_deterministic() {
     let plan2 = plan(&normalized, &interner).expect("plan2 failed");
 
     assert_eq!(
-        plan1.nodes.len(), plan2.nodes.len(),
+        plan1.nodes.len(),
+        plan2.nodes.len(),
         "Planner must be deterministic (same AST → same plan)"
     );
 }
@@ -542,8 +543,14 @@ fn meta_binary_additive_identity() {
     assert_eq!(result.cols.len(), x.cols.len(), "x + 0 must preserve ncols");
 
     // Arc identity (I1-I3)
-    assert!(Arc::ptr_eq(&result.tags.index, &x.tags.index), "x + 0: I1 violation");
-    assert!(Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames), "x + 0: I2 violation");
+    assert!(
+        Arc::ptr_eq(&result.tags.index, &x.tags.index),
+        "x + 0: I1 violation"
+    );
+    assert!(
+        Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames),
+        "x + 0: I2 violation"
+    );
 
     // Value identity (within floating point tolerance)
     assert_frame_equiv(&x, &result);
@@ -564,11 +571,7 @@ fn meta_binary_multiplicative_identity() {
 
     // Build (* x 1)
     let mul_sym = rt.interner.intern("*");
-    let expr = Expr::List(vec![
-        Expr::Sym(mul_sym),
-        Expr::Sym(x_sym),
-        Expr::Float(1.0),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(mul_sym), Expr::Sym(x_sym), Expr::Float(1.0)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -580,8 +583,14 @@ fn meta_binary_multiplicative_identity() {
     };
 
     // Arc identity (I1-I3)
-    assert!(Arc::ptr_eq(&result.tags.index, &x.tags.index), "x * 1: I1 violation");
-    assert!(Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames), "x * 1: I2 violation");
+    assert!(
+        Arc::ptr_eq(&result.tags.index, &x.tags.index),
+        "x * 1: I1 violation"
+    );
+    assert!(
+        Arc::ptr_eq(&result.tags.colnames, &x.tags.colnames),
+        "x * 1: I2 violation"
+    );
 
     assert_frame_equiv(&x, &result);
 }
@@ -599,11 +608,7 @@ fn meta_binary_absorption_law() {
 
     // Build (* x 0)
     let mul_sym = rt.interner.intern("*");
-    let expr = Expr::List(vec![
-        Expr::Sym(mul_sym),
-        Expr::Sym(x_sym),
-        Expr::Float(0.0),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(mul_sym), Expr::Sym(x_sym), Expr::Float(0.0)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -629,11 +634,18 @@ fn meta_binary_absorption_law() {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
                 for j in 0..x_vals.len() {
                     if x_vals[j].is_nan() {
-                        assert!(result_vals[j].is_nan(),
-                            "x * 0: Input NA must propagate (row {}, col {})", j, i);
+                        assert!(
+                            result_vals[j].is_nan(),
+                            "x * 0: Input NA must propagate (row {}, col {})",
+                            j,
+                            i
+                        );
                     } else {
-                        assert_eq!(result_vals[j], 0.0,
-                            "x * 0: Valid input must become 0 (row {}, col {})", j, i);
+                        assert_eq!(
+                            result_vals[j], 0.0,
+                            "x * 0: Valid input must become 0 (row {}, col {})",
+                            j, i
+                        );
                     }
                 }
             }
@@ -677,10 +689,16 @@ fn meta_binary_preserves_lhs_tags() {
         let result_index_ptr = Arc::as_ptr(&result.tags.index);
         let result_colnames_ptr = Arc::as_ptr(&result.tags.colnames);
 
-        assert_eq!(result_index_ptr, x_index_ptr,
-            "{} must preserve index Arc (I1)", op_name);
-        assert_eq!(result_colnames_ptr, x_colnames_ptr,
-            "{} must preserve colnames Arc (I2)", op_name);
+        assert_eq!(
+            result_index_ptr, x_index_ptr,
+            "{} must preserve index Arc (I1)",
+            op_name
+        );
+        assert_eq!(
+            result_colnames_ptr, x_colnames_ptr,
+            "{} must preserve colnames Arc (I2)",
+            op_name
+        );
     }
 }
 
@@ -718,24 +736,38 @@ fn meta_binary_na_propagation() {
     };
 
     // Check NA propagation
-    for (i, ((x_col, y_col), result_col)) in x.cols.iter()
+    for (i, ((x_col, y_col), result_col)) in x
+        .cols
+        .iter()
         .zip(y.cols.iter())
         .zip(result.cols.iter())
-        .enumerate() {
-
+        .enumerate()
+    {
         use blisp::frame::ColData;
-        let x_data = match x_col { ColData::Mat(col) => col };
-        let y_data = match y_col { ColData::Mat(col) => col };
-        let result_data = match result_col { ColData::Mat(col) => col };
+        let x_data = match x_col {
+            ColData::Mat(col) => col,
+        };
+        let y_data = match y_col {
+            ColData::Mat(col) => col,
+        };
+        let result_data = match result_col {
+            ColData::Mat(col) => col,
+        };
 
         match (x_data.as_ref(), y_data.as_ref(), result_data.as_ref()) {
-            (blawktrust::Column::F64(x_vals),
-             blawktrust::Column::F64(y_vals),
-             blawktrust::Column::F64(result_vals)) => {
+            (
+                blawktrust::Column::F64(x_vals),
+                blawktrust::Column::F64(y_vals),
+                blawktrust::Column::F64(result_vals),
+            ) => {
                 for j in 0..x_vals.len() {
                     if x_vals[j].is_nan() || y_vals[j].is_nan() {
-                        assert!(result_vals[j].is_nan(),
-                            "x + y: Either input NA must propagate (row {}, col {})", j, i);
+                        assert!(
+                            result_vals[j].is_nan(),
+                            "x + y: Either input NA must propagate (row {}, col {})",
+                            j,
+                            i
+                        );
                     }
                     // Note: We don't assert !NA → !NA because operations can create NA (e.g., div by 0)
                 }
@@ -764,11 +796,7 @@ fn meta_shift_zero_identity() {
 
     // Build (shift 0 x)
     let shift_sym = rt.interner.intern("shift");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(0),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(0), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -809,19 +837,11 @@ fn meta_shift_composition_law() {
     let lhs_expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(shift_sym),
-            Expr::Int(3),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(3), Expr::Sym(x_sym)]),
     ]);
 
     // RHS: (shift 5 x)
-    let rhs_expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(5),
-        Expr::Sym(x_sym),
-    ]);
+    let rhs_expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(5), Expr::Sym(x_sym)]);
 
     // Evaluate both
     let lhs = common::direct_eval(&lhs_expr, &env, &rt.interner).expect("LHS eval failed");
@@ -850,11 +870,7 @@ fn meta_shift_mask_monotonic() {
 
     // Build (shift 2 x)
     let shift_sym = rt.interner.intern("shift");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(2),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(2), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -868,23 +884,35 @@ fn meta_shift_mask_monotonic() {
     // Check each column: input NA → output NA (monotone)
     for (i, (x_col, result_col)) in x.cols.iter().zip(result.cols.iter()).enumerate() {
         use blisp::frame::ColData;
-        let x_data = match x_col { ColData::Mat(col) => col };
-        let result_data = match result_col { ColData::Mat(col) => col };
+        let x_data = match x_col {
+            ColData::Mat(col) => col,
+        };
+        let result_data = match result_col {
+            ColData::Mat(col) => col,
+        };
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
                 // First 2 rows must be NA (shift introduces)
                 for j in 0..2 {
-                    assert!(result_vals[j].is_nan(),
-                        "shift 2: First {} rows must be NA (col {})", 2, i);
+                    assert!(
+                        result_vals[j].is_nan(),
+                        "shift 2: First {} rows must be NA (col {})",
+                        2,
+                        i
+                    );
                 }
 
                 // For rows j >= 2: if input[j-2] is NA, output[j] must be NA
                 for j in 2..result_vals.len() {
                     if x_vals[j - 2].is_nan() {
-                        assert!(result_vals[j].is_nan(),
+                        assert!(
+                            result_vals[j].is_nan(),
                             "shift 2: Input NA at {} must propagate to output at {} (col {})",
-                            j - 2, j, i);
+                            j - 2,
+                            j,
+                            i
+                        );
                     }
                 }
             }
@@ -909,11 +937,7 @@ fn meta_shift_preserves_tags_arc() {
     // Test various k values
     for k in [1, 2, 5] {
         let shift_sym = rt.interner.intern("shift");
-        let expr = Expr::List(vec![
-            Expr::Sym(shift_sym),
-            Expr::Int(k),
-            Expr::Sym(x_sym),
-        ]);
+        let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(k), Expr::Sym(x_sym)]);
 
         let normalized = normalize(expr, &mut rt.interner);
         let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -927,10 +951,16 @@ fn meta_shift_preserves_tags_arc() {
         let result_index_ptr = Arc::as_ptr(&result.tags.index);
         let result_colnames_ptr = Arc::as_ptr(&result.tags.colnames);
 
-        assert_eq!(result_index_ptr, x_index_ptr,
-            "shift {}: I1 violation - index Arc not preserved", k);
-        assert_eq!(result_colnames_ptr, x_colnames_ptr,
-            "shift {}: I2 violation - colnames Arc not preserved", k);
+        assert_eq!(
+            result_index_ptr, x_index_ptr,
+            "shift {}: I1 violation - index Arc not preserved",
+            k
+        );
+        assert_eq!(
+            result_colnames_ptr, x_colnames_ptr,
+            "shift {}: I2 violation - colnames Arc not preserved",
+            k
+        );
     }
 }
 
@@ -947,11 +977,7 @@ fn meta_shift_all_na_when_k_exceeds_nrows() {
 
     // Build (shift 10 x) where 10 > 8
     let shift_sym = rt.interner.intern("shift");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(10),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(10), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let ir_plan = plan(&normalized, &rt.interner).expect("plan failed");
@@ -965,13 +991,19 @@ fn meta_shift_all_na_when_k_exceeds_nrows() {
     // All cells must be NA
     for (i, result_col) in result.cols.iter().enumerate() {
         use blisp::frame::ColData;
-        let result_data = match result_col { ColData::Mat(col) => col };
+        let result_data = match result_col {
+            ColData::Mat(col) => col,
+        };
 
         match result_data.as_ref() {
             blawktrust::Column::F64(vals) => {
                 for (j, &val) in vals.iter().enumerate() {
-                    assert!(val.is_nan(),
-                        "shift(k >= nrows) must yield all NA (row {}, col {})", j, i);
+                    assert!(
+                        val.is_nan(),
+                        "shift(k >= nrows) must yield all NA (row {}, col {})",
+                        j,
+                        i
+                    );
                 }
             }
             _ => panic!("Expected F64 column"),
@@ -990,30 +1022,30 @@ fn meta_dlog_identity_positive_domain() {
     //
     // This is the STRONGEST semantic tripwire for time-series correctness.
     // Catches: off-by-one, sign errors, NA/div0 edge cases
-    
+
     let mut rt = Runtime::new();
-    
+
     // Build positive-valued frame to stay in log domain
     // Values in (0.1, 100.0) with controlled NA rate
     let seed = 12345_u64;
     let nrows = 20;
     let ncols = 2;
-    
+
     // Generate positive values
     let mut rng = seed;
     let mut dates = Vec::with_capacity(nrows);
     for i in 0..nrows {
         dates.push(20200101 + i as i32);
     }
-    
+
     let index = IndexColumn::Date(Arc::new(dates));
-    
+
     let mut cols_data = Vec::new();
     for _col in 0..ncols {
         let mut col_vals = Vec::with_capacity(nrows);
         for _row in 0..nrows {
             rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
-            
+
             // 10% NA rate
             if (rng % 100) < 10 {
                 col_vals.push(f64::NAN);
@@ -1023,35 +1055,29 @@ fn meta_dlog_identity_positive_domain() {
                 col_vals.push(val);
             }
         }
-        
-        
-        cols_data.push(blisp::frame::ColData::Mat(Arc::new(blawktrust::Column::F64(col_vals))));
+
+        cols_data.push(blisp::frame::ColData::Mat(Arc::new(
+            blawktrust::Column::F64(col_vals),
+        )));
     }
-    
+
     let colnames = (0..ncols).map(|i| format!("col{}", i)).collect();
-    
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        colnames,
-    );
-    
+
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, colnames);
+
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
         cols: cols_data,
         nrows,
     };
-    
+
     let x_sym = rt.interner.intern("x");
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
-    
+
     // LHS: (dlog x)
     let dlog_sym = rt.interner.intern("dlog");
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
-    
+    let lhs_expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
+
     // RHS: (log (/ x (shift 1 x)))
     let log_sym = rt.interner.intern("log");
     let div_sym = rt.interner.intern("/");
@@ -1061,14 +1087,10 @@ fn meta_dlog_identity_positive_domain() {
         Expr::List(vec![
             Expr::Sym(div_sym),
             Expr::Sym(x_sym),
-            Expr::List(vec![
-                Expr::Sym(shift_sym),
-                Expr::Int(1),
-                Expr::Sym(x_sym),
-            ]),
+            Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(1), Expr::Sym(x_sym)]),
         ]),
     ]);
-    
+
     // Evaluate both via IR
     let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
     let lhs_plan = plan(&lhs_normalized, &rt.interner).expect("LHS plan failed");
@@ -1077,7 +1099,7 @@ fn meta_dlog_identity_positive_domain() {
         Value::Frame(f) => f,
         _ => panic!("Expected Frame"),
     };
-    
+
     let rhs_normalized = normalize(rhs_expr, &mut rt.interner);
     let rhs_plan = plan(&rhs_normalized, &rt.interner).expect("RHS plan failed");
     let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
@@ -1085,34 +1107,48 @@ fn meta_dlog_identity_positive_domain() {
         Value::Frame(f) => f,
         _ => panic!("Expected Frame"),
     };
-    
+
     // Layer 1: Tags/shape equivalence
     assert_eq!(lhs.nrows, rhs.nrows, "dlog identity: nrows mismatch");
-    assert_eq!(lhs.cols.len(), rhs.cols.len(), "dlog identity: ncols mismatch");
-    
+    assert_eq!(
+        lhs.cols.len(),
+        rhs.cols.len(),
+        "dlog identity: ncols mismatch"
+    );
+
     // Layer 2: Mask equivalence (NA patterns must match exactly)
     for (col_idx, (lhs_col, rhs_col)) in lhs.cols.iter().zip(rhs.cols.iter()).enumerate() {
         use blisp::frame::ColData;
-        let lhs_data = match lhs_col { ColData::Mat(col) => col };
-        let rhs_data = match rhs_col { ColData::Mat(col) => col };
-        
+        let lhs_data = match lhs_col {
+            ColData::Mat(col) => col,
+        };
+        let rhs_data = match rhs_col {
+            ColData::Mat(col) => col,
+        };
+
         match (lhs_data.as_ref(), rhs_data.as_ref()) {
             (blawktrust::Column::F64(lhs_vals), blawktrust::Column::F64(rhs_vals)) => {
                 for (row_idx, (&l, &r)) in lhs_vals.iter().zip(rhs_vals.iter()).enumerate() {
                     // Mask equivalence: is_na(lhs) == is_na(rhs)
                     assert_eq!(
-                        l.is_nan(), r.is_nan(),
+                        l.is_nan(),
+                        r.is_nan(),
                         "dlog identity: NA mask mismatch at row {}, col {}",
-                        row_idx, col_idx
+                        row_idx,
+                        col_idx
                     );
-                    
+
                     // Layer 3: Value equivalence for non-NA cells
                     if !l.is_nan() && !r.is_nan() {
                         let diff = (l - r).abs();
                         assert!(
                             diff < 1e-10,
                             "dlog identity: value mismatch at row {}, col {}: {} vs {} (diff: {})",
-                            row_idx, col_idx, l, r, diff
+                            row_idx,
+                            col_idx,
+                            l,
+                            r,
+                            diff
                         );
                     }
                 }
@@ -1137,11 +1173,7 @@ fn meta_rolling_mean_window_one_identity() {
 
     // LHS: (rolling-mean 1 x)
     let rm_sym = rt.interner.intern("rolling-mean");
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(1),
-        Expr::Sym(x_sym),
-    ]);
+    let lhs_expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(1), Expr::Sym(x_sym)]);
 
     // RHS: x (identity)
     let rhs_expr = Expr::Sym(x_sym);
@@ -1164,8 +1196,14 @@ fn meta_rolling_mean_window_one_identity() {
     };
 
     // Verify exact equivalence (including Arc ptr_eq)
-    assert!(Arc::ptr_eq(&lhs.tags.index, &rhs.tags.index), "Index Arc not preserved");
-    assert!(Arc::ptr_eq(&lhs.tags.colnames, &rhs.tags.colnames), "Colnames Arc not preserved");
+    assert!(
+        Arc::ptr_eq(&lhs.tags.index, &rhs.tags.index),
+        "Index Arc not preserved"
+    );
+    assert!(
+        Arc::ptr_eq(&lhs.tags.colnames, &rhs.tags.colnames),
+        "Colnames Arc not preserved"
+    );
     common::assert_frame_equiv(&lhs, &rhs);
 }
 
@@ -1179,11 +1217,7 @@ fn meta_rolling_mean_constant_series() {
     let nrows = 10;
     let index = IndexColumn::Date(Arc::new((0..nrows).map(|i| 20200101 + i as i32).collect()));
     let col_data = blawktrust::Column::F64(vec![5.0; nrows]);
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["const".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["const".to_string()]);
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
         cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
@@ -1195,11 +1229,7 @@ fn meta_rolling_mean_constant_series() {
 
     // Execute (rolling-mean 3 x)
     let rm_sym = rt.interner.intern("rolling-mean");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
@@ -1225,7 +1255,8 @@ fn meta_rolling_mean_constant_series() {
         assert!(
             (values[i] - 5.0).abs() < 1e-10,
             "Row {} should be 5.0 (constant mean), got {}",
-            i, values[i]
+            i,
+            values[i]
         );
     }
 }
@@ -1247,22 +1278,14 @@ fn meta_rolling_mean_shift_commutation() {
     let lhs_expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(rm_sym),
-            Expr::Int(3),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(3), Expr::Sym(x_sym)]),
     ]);
 
     // RHS: (rolling-mean 3 (shift 2 x))
     let rhs_expr = Expr::List(vec![
         Expr::Sym(rm_sym),
         Expr::Int(3),
-        Expr::List(vec![
-            Expr::Sym(shift_sym),
-            Expr::Int(2),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(2), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1298,11 +1321,7 @@ fn meta_rolling_mean_mask_monotone() {
 
     // Execute (rolling-mean 4 x)
     let rm_sym = rt.interner.intern("rolling-mean");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
@@ -1325,12 +1344,15 @@ fn meta_rolling_mean_mask_monotone() {
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
-                for (row_idx, (&x_val, &result_val)) in x_vals.iter().zip(result_vals.iter()).enumerate() {
+                for (row_idx, (&x_val, &result_val)) in
+                    x_vals.iter().zip(result_vals.iter()).enumerate()
+                {
                     if x_val.is_nan() {
                         assert!(
                             result_val.is_nan(),
                             "Mask monotonicity violation: x[{},{}] is NA but result is not NA",
-                            row_idx, col_idx
+                            row_idx,
+                            col_idx
                         );
                     }
                     // Note: result can be NA even if x is not (prefix, strict min_periods)
@@ -1357,21 +1379,13 @@ fn meta_ft_mean_derived_form_identity() {
     let rm_sym = rt.interner.intern("rolling-mean");
 
     // LHS: (ft-mean 3 x)
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(ft_mean_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let lhs_expr = Expr::List(vec![Expr::Sym(ft_mean_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     // RHS: (shift 1 (rolling-mean 3 x))
     let rhs_expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(1),
-        Expr::List(vec![
-            Expr::Sym(rm_sym),
-            Expr::Int(3),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(3), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1410,11 +1424,7 @@ fn meta_rolling_std_non_negativity() {
 
     // Execute (rolling-std 4 x)
     let rs_sym = rt.interner.intern("rolling-std");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
@@ -1438,7 +1448,9 @@ fn meta_rolling_std_non_negativity() {
                         assert!(
                             val >= 0.0,
                             "Non-negativity violation: result[{},{}] = {} (should be >= 0)",
-                            row_idx, col_idx, val
+                            row_idx,
+                            col_idx,
+                            val
                         );
                     }
                 }
@@ -1464,22 +1476,14 @@ fn meta_rolling_std_shift_commutation() {
     let lhs_expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(rs_sym),
-            Expr::Int(3),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(3), Expr::Sym(x_sym)]),
     ]);
 
     // RHS: (rolling-std 3 (shift 2 x))
     let rhs_expr = Expr::List(vec![
         Expr::Sym(rs_sym),
         Expr::Int(3),
-        Expr::List(vec![
-            Expr::Sym(shift_sym),
-            Expr::Int(2),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(2), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1531,11 +1535,7 @@ fn meta_rolling_std_scale_equivariance() {
     // RHS: (* (rolling-std 4 x) 3.0)
     let rhs_expr = Expr::List(vec![
         Expr::Sym(mul_sym),
-        Expr::List(vec![
-            Expr::Sym(rs_sym),
-            Expr::Int(4),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(4), Expr::Sym(x_sym)]),
         Expr::Float(scale),
     ]);
 
@@ -1585,11 +1585,7 @@ fn meta_rolling_std_translation_invariance() {
     ]);
 
     // RHS: (rolling-std 4 x)
-    let rhs_expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let rhs_expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     // Evaluate both
     let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
@@ -1622,11 +1618,7 @@ fn meta_rolling_std_mask_monotone() {
     rt.define(x_sym, Value::Frame(Arc::clone(&x)));
 
     let rs_sym = rt.interner.intern("rolling-std");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut rt.interner);
     let plan_result = plan(&normalized, &rt.interner).expect("plan failed");
@@ -1649,12 +1641,15 @@ fn meta_rolling_std_mask_monotone() {
 
         match (x_data.as_ref(), result_data.as_ref()) {
             (blawktrust::Column::F64(x_vals), blawktrust::Column::F64(result_vals)) => {
-                for (row_idx, (&x_val, &result_val)) in x_vals.iter().zip(result_vals.iter()).enumerate() {
+                for (row_idx, (&x_val, &result_val)) in
+                    x_vals.iter().zip(result_vals.iter()).enumerate()
+                {
                     if x_val.is_nan() {
                         assert!(
                             result_val.is_nan(),
                             "Mask monotonicity violation: x[{},{}] is NA but result is not NA",
-                            row_idx, col_idx
+                            row_idx,
+                            col_idx
                         );
                     }
                 }
@@ -1678,21 +1673,13 @@ fn meta_ft_std_derived_form_identity() {
     let rs_sym = rt.interner.intern("rolling-std");
 
     // LHS: (ft-std 3 x)
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(ft_std_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let lhs_expr = Expr::List(vec![Expr::Sym(ft_std_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     // RHS: (shift 1 (rolling-std 3 x))
     let rhs_expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(1),
-        Expr::List(vec![
-            Expr::Sym(rs_sym),
-            Expr::Int(3),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(3), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1737,11 +1724,7 @@ fn meta_rolling_zscore_rewrite_identity() {
     let div_sym = rt.interner.intern("/");
 
     // LHS: (rolling-zscore 4 x)
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let lhs_expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     // RHS: (/ (- x (rolling-mean 4 x)) (rolling-std 4 x))
     let rhs_expr = Expr::List(vec![
@@ -1749,17 +1732,9 @@ fn meta_rolling_zscore_rewrite_identity() {
         Expr::List(vec![
             Expr::Sym(sub_sym),
             Expr::Sym(x_sym),
-            Expr::List(vec![
-                Expr::Sym(rm_sym),
-                Expr::Int(4),
-                Expr::Sym(x_sym),
-            ]),
+            Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(4), Expr::Sym(x_sym)]),
         ]),
-        Expr::List(vec![
-            Expr::Sym(rs_sym),
-            Expr::Int(4),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(4), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1800,11 +1775,7 @@ fn meta_ft_zscore_rewrite_identity() {
     let div_sym = rt.interner.intern("/");
 
     // LHS: (ft-zscore 4 x)
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(ftz_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let lhs_expr = Expr::List(vec![Expr::Sym(ftz_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     // RHS: (/ (- x (ft-mean 4 x)) (ft-std 4 x))
     let rhs_expr = Expr::List(vec![
@@ -1812,17 +1783,9 @@ fn meta_ft_zscore_rewrite_identity() {
         Expr::List(vec![
             Expr::Sym(sub_sym),
             Expr::Sym(x_sym),
-            Expr::List(vec![
-                Expr::Sym(ftm_sym),
-                Expr::Int(4),
-                Expr::Sym(x_sym),
-            ]),
+            Expr::List(vec![Expr::Sym(ftm_sym), Expr::Int(4), Expr::Sym(x_sym)]),
         ]),
-        Expr::List(vec![
-            Expr::Sym(fts_sym),
-            Expr::Int(4),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(fts_sym), Expr::Int(4), Expr::Sym(x_sym)]),
     ]);
 
     // Evaluate both
@@ -1863,19 +1826,11 @@ fn meta_rolling_zscore_scale_invariance() {
     let lhs_expr = Expr::List(vec![
         Expr::Sym(rz_sym),
         Expr::Int(4),
-        Expr::List(vec![
-            Expr::Sym(mul_sym),
-            Expr::Sym(x_sym),
-            Expr::Float(3.0),
-        ]),
+        Expr::List(vec![Expr::Sym(mul_sym), Expr::Sym(x_sym), Expr::Float(3.0)]),
     ]);
 
     // RHS: (rolling-zscore 4 x)
-    let rhs_expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let rhs_expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     // Evaluate both
     let lhs_normalized = normalize(lhs_expr, &mut rt.interner);
@@ -1923,11 +1878,7 @@ fn meta_rolling_zscore_translation_invariance() {
     ]);
 
     // RHS: (rolling-zscore 4 x)
-    let rhs_expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(4),
-        Expr::Sym(x_sym),
-    ]);
+    let rhs_expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(4), Expr::Sym(x_sym)]);
 
     // Evaluate both
     let lhs_normalized = normalize(lhs_expr, &mut rt.interner);

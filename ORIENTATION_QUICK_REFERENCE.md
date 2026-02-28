@@ -72,7 +72,7 @@
 
 **Elementwise (X)**:
 ```lisp
-(sum (o 'X table))  ;; → All values flattened (identity)
+(sum (o 'X table))  ;; → Panic (X is for broadcast, not aggregation)
 ```
 
 ### Sequence Operations (dlog, shift, cs1)

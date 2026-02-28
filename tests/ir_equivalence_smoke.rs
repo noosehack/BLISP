@@ -2,13 +2,13 @@
 
 mod common;
 
+use blisp::ast::{Expr, Interner};
+use blisp::exec::execute;
+use blisp::frame::IndexColumn;
 use blisp::normalize::normalize;
 use blisp::planner::plan;
-use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blisp::ast::{Expr, Interner};
-use blisp::frame::IndexColumn;
 use common::{assert_frame_equiv, direct_eval, Env};
 use std::sync::Arc;
 
@@ -92,10 +92,7 @@ fn smoke_dlog() {
     let (mut rt, env) = setup_env();
     let dlog_sym = rt.interner.intern("dlog");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -135,10 +132,7 @@ fn smoke_nested_unary() {
     let x_sym = rt.interner.intern("x");
     let expr = Expr::List(vec![
         Expr::Sym(dlog_sym),
-        Expr::List(vec![
-            Expr::Sym(log_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(log_sym), Expr::Sym(x_sym)]),
     ]);
     check_equiv(rt, &env, expr);
 }
@@ -152,10 +146,7 @@ fn smoke_join_after_unary() {
     let y_sym = rt.interner.intern("y");
     let expr = Expr::List(vec![
         Expr::Sym(mapr_sym),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
         Expr::Sym(y_sym),
     ]);
     check_equiv(rt, &env, expr);
@@ -232,10 +223,7 @@ fn smoke_timestamp_pipeline() {
     let y_sym = rt.interner.intern("y");
     let expr = Expr::List(vec![
         Expr::Sym(asofr_sym),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
         Expr::Sym(y_sym),
     ]);
     check_equiv(rt, &env, expr);
@@ -258,15 +246,10 @@ fn smoke_let_simple_reuse() {
 
     let expr = Expr::List(vec![
         Expr::Sym(let_sym),
-        Expr::List(vec![
-            Expr::List(vec![
-                Expr::Sym(a_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(x_sym),
-                ]),
-            ]),
-        ]),
+        Expr::List(vec![Expr::List(vec![
+            Expr::Sym(a_sym),
+            Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
+        ])]),
         Expr::List(vec![
             Expr::Sym(mapr_sym),
             Expr::Sym(a_sym),
@@ -302,10 +285,7 @@ fn smoke_let_sequential_binding() {
             ]),
             Expr::List(vec![
                 Expr::Sym(b_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(a_sym),
-                ]),
+                Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(a_sym)]),
             ]),
         ]),
         Expr::Sym(b_sym),
@@ -324,16 +304,14 @@ fn smoke_let_shadowing() {
 
     let expr = Expr::List(vec![
         Expr::Sym(let_sym),
-        Expr::List(vec![
+        Expr::List(vec![Expr::List(vec![
+            Expr::Sym(x_sym),
             Expr::List(vec![
-                Expr::Sym(x_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(x_sym),  // Refers to outer x
-                ]),
+                Expr::Sym(dlog_sym),
+                Expr::Sym(x_sym), // Refers to outer x
             ]),
-        ]),
-        Expr::Sym(x_sym),  // Refers to inner x (shadowed)
+        ])]),
+        Expr::Sym(x_sym), // Refers to inner x (shadowed)
     ]);
 
     check_equiv(rt, &env, expr);
@@ -356,17 +334,11 @@ fn smoke_let_join_of_bound() {
         Expr::List(vec![
             Expr::List(vec![
                 Expr::Sym(a_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(x_sym),
-                ]),
+                Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
             ]),
             Expr::List(vec![
                 Expr::Sym(b_sym),
-                Expr::List(vec![
-                    Expr::Sym(dlog_sym),
-                    Expr::Sym(y_sym),
-                ]),
+                Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(y_sym)]),
             ]),
         ]),
         Expr::List(vec![
@@ -403,11 +375,7 @@ fn smoke_binary_scalar_sub() {
     // (- x 2.0)
     let sub_sym = rt.interner.intern("-");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(sub_sym),
-        Expr::Sym(x_sym),
-        Expr::Float(2.0),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(sub_sym), Expr::Sym(x_sym), Expr::Float(2.0)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -417,11 +385,7 @@ fn smoke_binary_scalar_mul() {
     // (* x 3.0)
     let mul_sym = rt.interner.intern("*");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(mul_sym),
-        Expr::Sym(x_sym),
-        Expr::Float(3.0),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(mul_sym), Expr::Sym(x_sym), Expr::Float(3.0)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -431,11 +395,7 @@ fn smoke_binary_scalar_div() {
     // (/ x 2.0)
     let div_sym = rt.interner.intern("/");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(div_sym),
-        Expr::Sym(x_sym),
-        Expr::Float(2.0),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(div_sym), Expr::Sym(x_sym), Expr::Float(2.0)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -462,10 +422,7 @@ fn smoke_binary_pipeline_with_scalar() {
     let x_sym = rt.interner.intern("x");
     let expr = Expr::List(vec![
         Expr::Sym(mul_sym),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
         Expr::Float(100.0),
     ]);
     check_equiv(rt, &env, expr);
@@ -501,11 +458,7 @@ fn smoke_shift_zero_identity() {
     // (shift 0 x) should be exact identity
     let shift_sym = rt.interner.intern("shift");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(0),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(0), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -515,11 +468,7 @@ fn smoke_shift_one_lag() {
     // (shift 1 x) - lag by 1 row
     let shift_sym = rt.interner.intern("shift");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(1),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(1), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -529,11 +478,7 @@ fn smoke_shift_large_k() {
     // (shift 100 x) - k > nrows produces all NA
     let shift_sym = rt.interner.intern("shift");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(shift_sym),
-        Expr::Int(100),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(100), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -546,11 +491,7 @@ fn smoke_shift_composition() {
     let expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(shift_sym),
-            Expr::Int(1),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(1), Expr::Sym(x_sym)]),
     ]);
     check_equiv(rt, &env, expr);
 }
@@ -565,10 +506,7 @@ fn smoke_shift_after_unary() {
     let expr = Expr::List(vec![
         Expr::Sym(shift_sym),
         Expr::Int(1),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
     ]);
     check_equiv(rt, &env, expr);
 }
@@ -581,10 +519,10 @@ fn smoke_shift_after_unary() {
 fn smoke_dlog_identity_handcrafted() {
     // Property: dlog(x) == log(x / shift(1, x))
     // Hand-crafted data to verify sign convention and NA behavior
-    
+
     let mut rt = Runtime::new();
     let mut interner = Interner::new();
-    
+
     // Build a small positive-valued frame: [2.0, 4.0, 8.0, 4.0, 2.0]
     // Expected dlog results:
     // Row 0: NA (no prior value)
@@ -592,35 +530,28 @@ fn smoke_dlog_identity_handcrafted() {
     // Row 2: log(8/4) = log(2) ≈ 0.693
     // Row 3: log(4/8) = log(0.5) ≈ -0.693
     // Row 4: log(2/4) = log(0.5) ≈ -0.693
-    
+
     let index = IndexColumn::Date(Arc::new(vec![
         20200101, 20200102, 20200103, 20200104, 20200105,
     ]));
-    
+
     let col_data = blawktrust::Column::F64(vec![2.0, 4.0, 8.0, 4.0, 2.0]);
-    
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["price".to_string()],
-    );
-    
+
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["price".to_string()]);
+
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
         cols: vec![blisp::frame::ColData::Mat(Arc::new(col_data))],
         nrows: 5,
     };
-    
+
     let x_sym = interner.intern("x");
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
-    
+
     // LHS: (dlog x)
     let dlog_sym = interner.intern("dlog");
-    let lhs_expr = Expr::List(vec![
-        Expr::Sym(dlog_sym),
-        Expr::Sym(x_sym),
-    ]);
-    
+    let lhs_expr = Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]);
+
     // RHS: (log (/ x (shift 1 x)))
     let log_sym = interner.intern("log");
     let div_sym = interner.intern("/");
@@ -630,14 +561,10 @@ fn smoke_dlog_identity_handcrafted() {
         Expr::List(vec![
             Expr::Sym(div_sym),
             Expr::Sym(x_sym),
-            Expr::List(vec![
-                Expr::Sym(shift_sym),
-                Expr::Int(1),
-                Expr::Sym(x_sym),
-            ]),
+            Expr::List(vec![Expr::Sym(shift_sym), Expr::Int(1), Expr::Sym(x_sym)]),
         ]),
     ]);
-    
+
     // Evaluate both via IR
     let lhs_normalized = normalize(lhs_expr, &mut interner);
     let lhs_plan = plan(&lhs_normalized, &interner).expect("LHS plan failed");
@@ -646,7 +573,7 @@ fn smoke_dlog_identity_handcrafted() {
         Value::Frame(f) => f,
         _ => panic!("Expected Frame"),
     };
-    
+
     let rhs_normalized = normalize(rhs_expr, &mut interner);
     let rhs_plan = plan(&rhs_normalized, &interner).expect("RHS plan failed");
     let rhs_val = execute(&rhs_plan, &mut rt).expect("RHS execute failed");
@@ -654,7 +581,7 @@ fn smoke_dlog_identity_handcrafted() {
         Value::Frame(f) => f,
         _ => panic!("Expected Frame"),
     };
-    
+
     // Verify identity
     common::assert_frame_equiv(&lhs, &rhs);
 }
@@ -669,11 +596,7 @@ fn smoke_rolling_mean_window_one() {
     // (rolling-mean 1 x) - window=1 should be identity-like (each value equals itself)
     let rm_sym = rt.interner.intern("rolling-mean");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(1),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(1), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -683,11 +606,7 @@ fn smoke_rolling_mean_window_three() {
     // (rolling-mean 3 x) - basic trailing window
     let rm_sym = rt.interner.intern("rolling-mean");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(3), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -697,11 +616,7 @@ fn smoke_rolling_mean_large_window() {
     // (rolling-mean 100 x) - window > nrows produces all NA
     let rm_sym = rt.interner.intern("rolling-mean");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(100),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(100), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -715,10 +630,7 @@ fn smoke_rolling_mean_after_unary() {
     let expr = Expr::List(vec![
         Expr::Sym(rm_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
     ]);
     check_equiv(rt, &env, expr);
 }
@@ -745,11 +657,7 @@ fn smoke_rolling_mean_handcrafted() {
 
     let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0, f64::NAN, 5.0, 6.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["value".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["value".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -762,11 +670,7 @@ fn smoke_rolling_mean_handcrafted() {
 
     // Execute (rolling-mean 3 x)
     let rm_sym = interner.intern("rolling-mean");
-    let expr = Expr::List(vec![
-        Expr::Sym(rm_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rm_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut interner);
     let ir_plan = plan(&normalized, &interner).expect("plan failed");
@@ -793,10 +697,22 @@ fn smoke_rolling_mean_handcrafted() {
     // Check expected values
     assert!(values[0].is_nan(), "Row 0 should be NA (window too small)");
     assert!(values[1].is_nan(), "Row 1 should be NA (window too small)");
-    assert!((values[2] - 2.0).abs() < 1e-10, "Row 2 should be 2.0 (mean of 1,2,3)");
-    assert!(values[3].is_nan(), "Row 3 should be NA (only 2 valid in window)");
-    assert!(values[4].is_nan(), "Row 4 should be NA (only 2 valid in window)");
-    assert!(values[5].is_nan(), "Row 5 should be NA (only 2 valid in window)");
+    assert!(
+        (values[2] - 2.0).abs() < 1e-10,
+        "Row 2 should be 2.0 (mean of 1,2,3)"
+    );
+    assert!(
+        values[3].is_nan(),
+        "Row 3 should be NA (only 2 valid in window)"
+    );
+    assert!(
+        values[4].is_nan(),
+        "Row 4 should be NA (only 2 valid in window)"
+    );
+    assert!(
+        values[5].is_nan(),
+        "Row 5 should be NA (only 2 valid in window)"
+    );
 }
 
 // ============================================================================
@@ -809,11 +725,7 @@ fn smoke_rolling_std_window_one() {
     // (rolling-std 1 x) - window=1 should return 0.0 (single point has zero variance)
     let rs_sym = rt.interner.intern("rolling-std");
     let x_sym = rt.interner.intern("x");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(1),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(1), Expr::Sym(x_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -829,11 +741,7 @@ fn smoke_rolling_std_constant_series() {
 
     let col_data = blawktrust::Column::F64(vec![5.0, 5.0, 5.0, 5.0, 5.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["const".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["const".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -845,11 +753,7 @@ fn smoke_rolling_std_constant_series() {
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
 
     let rs_sym = interner.intern("rolling-std");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut interner);
     let ir_plan = plan(&normalized, &interner).expect("plan failed");
@@ -885,17 +789,11 @@ fn smoke_rolling_std_known_window() {
     let mut rt = Runtime::new();
     let mut interner = Interner::new();
 
-    let index = IndexColumn::Date(Arc::new(vec![
-        20200101, 20200102, 20200103,
-    ]));
+    let index = IndexColumn::Date(Arc::new(vec![20200101, 20200102, 20200103]));
 
     let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["value".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["value".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -907,11 +805,7 @@ fn smoke_rolling_std_known_window() {
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
 
     let rs_sym = interner.intern("rolling-std");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut interner);
     let ir_plan = plan(&normalized, &interner).expect("plan failed");
@@ -933,7 +827,10 @@ fn smoke_rolling_std_known_window() {
     assert!(values[0].is_nan(), "Row 0 should be NA (prefix)");
     assert!(values[1].is_nan(), "Row 1 should be NA (prefix)");
     let expected_std = (2.0_f64 / 3.0_f64).sqrt();
-    assert!((values[2] - expected_std).abs() < 1e-10, "Row 2 should be sqrt(2/3) ≈ 0.8165");
+    assert!(
+        (values[2] - expected_std).abs() < 1e-10,
+        "Row 2 should be sqrt(2/3) ≈ 0.8165"
+    );
 }
 
 #[test]
@@ -942,11 +839,7 @@ fn smoke_rolling_std_with_na() {
     // (rolling-std 3 z) where z has NAs
     let rs_sym = rt.interner.intern("rolling-std");
     let z_sym = rt.interner.intern("z");
-    let expr = Expr::List(vec![
-        Expr::Sym(rs_sym),
-        Expr::Int(3),
-        Expr::Sym(z_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rs_sym), Expr::Int(3), Expr::Sym(z_sym)]);
     check_equiv(rt, &env, expr);
 }
 
@@ -960,10 +853,7 @@ fn smoke_rolling_std_after_unary() {
     let expr = Expr::List(vec![
         Expr::Sym(rs_sym),
         Expr::Int(2),
-        Expr::List(vec![
-            Expr::Sym(dlog_sym),
-            Expr::Sym(x_sym),
-        ]),
+        Expr::List(vec![Expr::Sym(dlog_sym), Expr::Sym(x_sym)]),
     ]);
     check_equiv(rt, &env, expr);
 }
@@ -984,11 +874,7 @@ fn smoke_rolling_zscore_constant_series() {
 
     let col_data = blawktrust::Column::F64(vec![5.0, 5.0, 5.0, 5.0, 5.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["const".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["const".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -1000,11 +886,7 @@ fn smoke_rolling_zscore_constant_series() {
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
 
     let rz_sym = interner.intern("rolling-zscore");
-    let expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut interner);
     let ir_plan = plan(&normalized, &interner).expect("plan failed");
@@ -1041,17 +923,11 @@ fn smoke_rolling_zscore_known_window() {
     let mut rt = Runtime::new();
     let mut interner = Interner::new();
 
-    let index = IndexColumn::Date(Arc::new(vec![
-        20200101, 20200102, 20200103,
-    ]));
+    let index = IndexColumn::Date(Arc::new(vec![20200101, 20200102, 20200103]));
 
     let col_data = blawktrust::Column::F64(vec![1.0, 2.0, 3.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["value".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["value".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -1063,11 +939,7 @@ fn smoke_rolling_zscore_known_window() {
     rt.define(x_sym, Value::Frame(Arc::new(frame)));
 
     let rz_sym = interner.intern("rolling-zscore");
-    let expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let normalized = normalize(expr, &mut interner);
     let ir_plan = plan(&normalized, &interner).expect("plan failed");
@@ -1092,7 +964,10 @@ fn smoke_rolling_zscore_known_window() {
     // Row 2: zscore of 3 in window [1,2,3]
     // mean=2, std=sqrt(2/3), zscore=(3-2)/sqrt(2/3) = 1/sqrt(2/3) = sqrt(3/2) ≈ 1.2247
     let expected = (3.0_f64 / 2.0_f64).sqrt();
-    assert!((values[2] - expected).abs() < 1e-10, "Row 2 zscore should be sqrt(3/2) ≈ 1.2247");
+    assert!(
+        (values[2] - expected).abs() < 1e-10,
+        "Row 2 zscore should be sqrt(3/2) ≈ 1.2247"
+    );
 }
 
 #[test]
@@ -1112,11 +987,7 @@ fn smoke_ft_zscore_no_self_reference() {
 
     let col_data = blawktrust::Column::F64(vec![1.0, 1.0, 1.0, 10.0, 1.0, 1.0]);
 
-    let tags = blisp::frame::Tags::new(
-        "DATE".to_string(),
-        index,
-        vec!["value".to_string()],
-    );
+    let tags = blisp::frame::Tags::new("DATE".to_string(), index, vec!["value".to_string()]);
 
     let frame = blisp::frame::Frame {
         tags: Arc::new(tags),
@@ -1129,11 +1000,7 @@ fn smoke_ft_zscore_no_self_reference() {
 
     // Execute rolling-zscore
     let rz_sym = interner.intern("rolling-zscore");
-    let rz_expr = Expr::List(vec![
-        Expr::Sym(rz_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let rz_expr = Expr::List(vec![Expr::Sym(rz_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let rz_normalized = normalize(rz_expr, &mut interner);
     let rz_plan = plan(&rz_normalized, &interner).expect("rz plan failed");
@@ -1145,11 +1012,7 @@ fn smoke_ft_zscore_no_self_reference() {
 
     // Execute ft-zscore
     let ftz_sym = interner.intern("ft-zscore");
-    let ftz_expr = Expr::List(vec![
-        Expr::Sym(ftz_sym),
-        Expr::Int(3),
-        Expr::Sym(x_sym),
-    ]);
+    let ftz_expr = Expr::List(vec![Expr::Sym(ftz_sym), Expr::Int(3), Expr::Sym(x_sym)]);
 
     let ftz_normalized = normalize(ftz_expr, &mut interner);
     let ftz_plan = plan(&ftz_normalized, &interner).expect("ftz plan failed");

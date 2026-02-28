@@ -39,7 +39,7 @@ All orientation modes work correctly at the **semantic level**. The only issues 
 | H | ColwiseLike | `[4, 6]` (2 values) | Column sums | ✅ |
 | Z | RowwiseLike | Shape changes | Row-wise | ✅ |
 | R | Real | `[10]` (1 value) | **Scalar total** | ✅ |
-| X | Each | Panic: "sum not defined" | Elementwise only | ✅ |
+| X | Each | Panic: "use for broadcast context only" | Not for aggregation | ✅ |
 
 ---
 

@@ -1,4 +1,5 @@
 //! S-expression reader/parser
+#![allow(clippy::doc_lazy_continuation)]
 
 use crate::ast::{Expr, Interner};
 

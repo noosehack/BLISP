@@ -4,10 +4,19 @@
 //! dispatch for scalars and columns.
 
 #![allow(dead_code)]
+#![allow(unused_variables)]
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::manual_strip)]
 #![allow(clippy::comparison_to_empty)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::manual_memcpy)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::get_first)]
+#![allow(clippy::map_entry)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::infallible_destructuring_match)]
+#![allow(clippy::new_without_default)]
 
 use crate::frame;
 use crate::runtime::Runtime;

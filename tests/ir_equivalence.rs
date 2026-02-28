@@ -9,14 +9,12 @@
 
 mod common;
 
+use blisp::exec::execute;
 use blisp::normalize::normalize;
 use blisp::planner::plan;
-use blisp::exec::execute;
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use common::{
-    assert_frame_equiv, gen_expr_date, direct_eval, Env,
-};
+use common::{assert_frame_equiv, direct_eval, gen_expr_date, Env};
 use proptest::prelude::*;
 use std::sync::Arc;
 

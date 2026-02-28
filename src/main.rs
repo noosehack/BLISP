@@ -1,9 +1,9 @@
-use blisp::runtime::Runtime;
 use blisp::reader::Reader;
+use blisp::runtime::Runtime;
 use blisp::value::{self, Value};
-use blisp::{eval, io, ast, normalize, planner, exec};
-use std::io::Write;
+use blisp::{ast, eval, exec, io, normalize, planner};
 use std::env;
+use std::io::Write;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -86,7 +86,8 @@ fn main() {
 
     // Load files (always use legacy for --load files, as they may contain defmacro, etc.)
     for file in load_files {
-        if let Err(e) = load_file(&mut rt, &file, true) {  // true = always legacy for --load
+        if let Err(e) = load_file(&mut rt, &file, true) {
+            // true = always legacy for --load
             eprintln!("Error loading {}: {}", file, e);
             std::process::exit(1);
         }
@@ -188,7 +189,9 @@ fn print_dictionary() {
     println!();
 
     // Collect all builtin names
-    let mut names: Vec<String> = rt.builtins.keys()
+    let mut names: Vec<String> = rt
+        .builtins
+        .keys()
         .map(|&sym| rt.interner.resolve(sym).to_string())
         .collect();
     names.sort();
@@ -201,18 +204,67 @@ fn print_dictionary() {
     let comparison = vec!["<", "<=", "==", "!=", ">", ">="];
     let math = vec!["log", "exp", "sqrt"];
     let io = vec!["file", "file-head", "stdin", "save", "print"];
-    let temporal = vec!["dlog", "dlog-col", "dlog-cols", "ret", "diff", "diff-col", "diff-cols",
-                       "shift", "shift-col", "shift-cols"];
+    let temporal = vec![
+        "dlog",
+        "dlog-col",
+        "dlog-cols",
+        "ret",
+        "diff",
+        "diff-col",
+        "diff-cols",
+        "shift",
+        "shift-col",
+        "shift-cols",
+    ];
     let aggregate = vec!["sum", "sum0", "mean", "mean0", "std", "std0"];
-    let table_ops = vec!["col", "cols", "setcol", "withcol", "select", "select-num",
-                        "make-col", "apply-cols", "map-cols", "w"];
-    let rolling = vec!["wstd", "wstd0", "wstd-cols", "wstd0-cols", "wv", "wv-cols",
-                      "wz0", "wz0-cols", "wzs"];
-    let transforms = vec!["locf", "locf-cols", "wkd", "cs1", "cs1-col", "cs1-cols",
-                         "ecs1", "ecs1-col", "ecs1-cols", "xminus", "zscore", "chop",
-                         "keep-shape", "keep-shape-cols"];
-    let mask_ops = vec!["mask-weekend", "with-mask", "mask-on", "mask-off",
-                       "mask-list", "mask-stats", "mask-define"];
+    let table_ops = vec![
+        "col",
+        "cols",
+        "setcol",
+        "withcol",
+        "select",
+        "select-num",
+        "make-col",
+        "apply-cols",
+        "map-cols",
+        "w",
+    ];
+    let rolling = vec![
+        "wstd",
+        "wstd0",
+        "wstd-cols",
+        "wstd0-cols",
+        "wv",
+        "wv-cols",
+        "wz0",
+        "wz0-cols",
+        "wzs",
+    ];
+    let transforms = vec![
+        "locf",
+        "locf-cols",
+        "wkd",
+        "cs1",
+        "cs1-col",
+        "cs1-cols",
+        "ecs1",
+        "ecs1-col",
+        "ecs1-cols",
+        "xminus",
+        "zscore",
+        "chop",
+        "keep-shape",
+        "keep-shape-cols",
+    ];
+    let mask_ops = vec![
+        "mask-weekend",
+        "with-mask",
+        "mask-on",
+        "mask-off",
+        "mask-list",
+        "mask-stats",
+        "mask-define",
+    ];
     let join_ops = vec!["mapr", "asofr"];
     let comparisons_col = vec![">-col", ">-cols"];
     let finance = vec!["ur", "ur-col", "ur-cols", "o"];
@@ -222,7 +274,8 @@ fn print_dictionary() {
 
     macro_rules! print_category {
         ($title:expr, $ops:expr) => {
-            let mut found: Vec<&String> = names.iter()
+            let mut found: Vec<&String> = names
+                .iter()
                 .filter(|n| $ops.contains(&n.as_str()))
                 .collect();
             if !found.is_empty() {
@@ -254,7 +307,8 @@ fn print_dictionary() {
     print_category!("Utility", utility);
 
     // Print uncategorized operations
-    let uncategorized: Vec<&String> = names.iter()
+    let uncategorized: Vec<&String> = names
+        .iter()
         .filter(|n| !categorized.contains(n.as_str()))
         .collect();
 
@@ -271,11 +325,9 @@ fn print_dictionary() {
 }
 
 fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {
-    let code = std::fs::read_to_string(path)
-        .map_err(|e| format!("Cannot read file: {}", e))?;
+    let code = std::fs::read_to_string(path).map_err(|e| format!("Cannot read file: {}", e))?;
 
-    let mut reader = Reader::new(&code)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let mut reader = Reader::new(&code).map_err(|e| format!("Parse error: {}", e))?;
 
     // Read and eval all forms using legacy evaluator
     // (--load files may contain defmacro, defparameter, etc. which IR doesn't handle)
@@ -304,8 +356,8 @@ fn demo_column_ops() {
     println!("=== Step 6: High-Performance Column Operations ===");
     println!();
 
-    use value::Value;
     use std::sync::Arc;
+    use value::Value;
 
     // Create a price time series
     let prices_data = vec![100.0, 102.0, 101.5, 103.0, 104.5, 105.0, 106.5, 107.0];
@@ -360,22 +412,18 @@ fn demo_builtins() {
         ("(- 10 3)", "Subtract"),
         ("(* 3 4)", "Multiply"),
         ("(/ 10 2)", "Divide"),
-
         // Math
         ("(abs -5)", "Absolute value"),
         ("(log 2.718281828)", "Natural log"),
         ("(exp 1.0)", "Exponential"),
-
         // With variables
         ("(defparameter x 10)", "Define x"),
         ("(+ x 5)", "Add with variable"),
         ("(* x 2)", "Multiply with variable"),
-
         // Utility
         ("(type-of 42)", "Type of int"),
         ("(type-of 3.14)", "Type of float"),
         ("(print \"Hello, blisp!\")", "Print string"),
-
         // Nested expressions
         ("(+ (* 2 3) (- 10 5))", "Nested: (2*3) + (10-5)"),
         ("(* (+ 1 2) (+ 3 4))", "Nested: (1+2) * (3+4)"),
@@ -394,8 +442,8 @@ fn demo_builtins() {
     // Column operations demo
     println!("=== Column Operations ===\n");
 
-    use value::Value;
     use std::sync::Arc;
+    use value::Value;
 
     // Create a column
     let data = vec![100.0, 102.0, 101.5, 103.0, 104.5];
@@ -437,8 +485,8 @@ fn demo_builtins() {
 }
 
 fn demo_column_types() {
-    use value::{Value, Table};
     use std::sync::Arc;
+    use value::{Table, Value};
 
     println!("=== Column and Table Types ===");
     println!();
@@ -490,41 +538,38 @@ fn demo_evaluator() {
         ("42", "Literal integer"),
         ("3.14", "Literal float"),
         ("\"hello\"", "Literal string"),
-
         // Quote
         ("'foo", "Quote symbol"),
         ("'42", "Quote number"),
-
         // progn
         ("(progn 1 2 3)", "progn returns last"),
-
         // defparameter
         ("(defparameter x 10)", "Define global x"),
         ("x", "Read x"),
-
         // if
         ("(if t 'yes 'no)", "if with true condition"),
         ("(if nil 'yes 'no)", "if with false condition"),
         ("(if 0 'yes 'no)", "if with 0 (truthy in Lisp)"),
-
         // setf
         ("(setf x 20)", "Update x"),
         ("x", "Read x again"),
-
         // let*
         ("(let* ((y 100)) y)", "Simple let*"),
         ("(let* ((a 1) (b 2)) b)", "let* with multiple bindings"),
-
         // Nested let*
-        ("(let* ((x 5)) (let* ((x 10)) x))", "Nested let* (inner shadows)"),
-
+        (
+            "(let* ((x 5)) (let* ((x 10)) x))",
+            "Nested let* (inner shadows)",
+        ),
         // Complex expression
-        (r#"(progn
+        (
+            r#"(progn
                (defparameter z 1)
                (let* ((z 2))
                  (setf z 20)
-                 z))"#, "Complex: progn + defparameter + let* + setf"),
-
+                 z))"#,
+            "Complex: progn + defparameter + let* + setf",
+        ),
         ("z", "z should still be 1 (global unchanged)"),
     ];
 
@@ -553,7 +598,12 @@ fn try_ir_eval(rt: &mut Runtime, expr: ast::Expr) -> Result<value::Value, String
     Ok(result)
 }
 
-fn eval_code(rt: &mut Runtime, code: &str, use_legacy: bool, use_ir_only: bool) -> Result<value::Value, String> {
+fn eval_code(
+    rt: &mut Runtime,
+    code: &str,
+    use_legacy: bool,
+    use_ir_only: bool,
+) -> Result<value::Value, String> {
     let mut reader = Reader::new(code).map_err(|e| format!("Parse error: {}", e))?;
 
     // Read and evaluate ALL expressions (implicit progn)
@@ -581,7 +631,11 @@ fn eval_code(rt: &mut Runtime, code: &str, use_legacy: bool, use_ir_only: bool) 
                             // - All 116 IR tests enforcing correctness
                             result = val;
                         }
-                        Err(e) if e.contains("Cannot plan") || e.contains("not supported") || e.contains("Unknown function") => {
+                        Err(e)
+                            if e.contains("Cannot plan")
+                                || e.contains("not supported")
+                                || e.contains("Unknown function") =>
+                        {
                             // IR can't handle this expression → fallback to legacy
                             // This is NORMAL for general Lisp (defparameter, if, let*, etc.)
                             result = rt.eval(&expr)?;

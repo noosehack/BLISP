@@ -1,3 +1,5 @@
+use crate::frame::{asofr, map_numeric_preserve_tags, ColData, Frame, Tags};
+use crate::io;
 /// BLADE Phase 3: IR Executor
 ///
 /// Purpose: Execute validated IR plans using ONLY frozen primitives
@@ -9,14 +11,14 @@
 /// - Arc preservation verified at runtime
 ///
 /// This is where Phase 2's frozen API earns its keep.
-
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaOp};
-use crate::frame::{Frame, Tags, ColData, map_numeric_preserve_tags, asofr};
-use crate::value::Value;
+use crate::ir::{
+    BinaryFunc, BinaryOp, JoinOp, Node, NodeId, NumericFunc, Operation, Plan, SchemaOp, Source,
+    UnaryOp, ValueRef,
+};
 use crate::runtime::Runtime;
-use crate::io;
-use std::sync::Arc;
+use crate::value::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 // dlog_column replaced with mask-aware version below
 // use blawktrust::builtins::ops::{dlog_column};
 
@@ -62,11 +64,7 @@ pub fn execute(plan: &Plan, rt: &mut Runtime) -> Result<Value, String> {
 }
 
 /// Execute a single node
-fn execute_node(
-    node: &Node,
-    ctx: &ExecContext,
-    rt: &mut Runtime,
-) -> Result<Arc<Frame>, String> {
+fn execute_node(node: &Node, ctx: &ExecContext, rt: &mut Runtime) -> Result<Arc<Frame>, String> {
     match &node.op {
         Operation::Source(source) => execute_source(source, rt),
         Operation::Unary(unary) => execute_unary(unary, ctx),
@@ -84,7 +82,10 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
             let value = io::load_csv(path, &mut rt.interner)?;
             match value {
                 Value::Frame(f) => Ok(f),
-                _ => Err(format!("CSV loader returned non-Frame: {}", value.type_name())),
+                _ => Err(format!(
+                    "CSV loader returned non-Frame: {}",
+                    value.type_name()
+                )),
             }
         }
         Source::Stdin => {
@@ -108,7 +109,10 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
 
             match value {
                 Value::Frame(f) => Ok(f),
-                _ => Err(format!("stdin parsing returned non-Frame: {}", value.type_name())),
+                _ => Err(format!(
+                    "stdin parsing returned non-Frame: {}",
+                    value.type_name()
+                )),
             }
         }
         Source::Variable { name } => {
@@ -126,7 +130,8 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
 fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> {
     match unary {
         UnaryOp::MapNumeric { input, func } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             // Special handling for Wkd: requires index access for weekday determination
@@ -136,12 +141,12 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
             // Phase E: Special handling for rolling operations and mask-aware shift (need active_mask)
             let result = match func {
-                NumericFunc::SHF_WIN_LIN_AVG { w } |
-                NumericFunc::SHF_WIN_NLN_SDV { w } |
-                NumericFunc::SHF_WIN_MIN2_LIN_AVG { w } |
-                NumericFunc::SHF_WIN_MIN2_NLN_SDV { w } |
-                NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w } |
-                NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w } => {
+                NumericFunc::SHF_WIN_LIN_AVG { w }
+                | NumericFunc::SHF_WIN_NLN_SDV { w }
+                | NumericFunc::SHF_WIN_MIN2_LIN_AVG { w }
+                | NumericFunc::SHF_WIN_MIN2_NLN_SDV { w }
+                | NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w }
+                | NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w } => {
                     // Rolling operations need access to active_mask to count only eligible observations
                     apply_rolling_mask_aware(&input_frame, *func)?
                 }
@@ -152,24 +157,22 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                 }
                 _ => {
                     // Non-rolling, non-mask-aware operations: use standard map_numeric_preserve_tags
-                    map_numeric_preserve_tags(&input_frame, |col| {
-                        match func {
-                            NumericFunc::SHF_PTW_OBS_NLN_DLOG => dlog_obs_column(col, 1),
-                            NumericFunc::SHF_PTW_OFS_NLN_DLOG => dlog_ofs_column(col, 1),
-                            NumericFunc::RET => ret_column(col, 1),
-                            NumericFunc::LOG => log_column(col),
-                            NumericFunc::EXP => exp_column(col),
-                            NumericFunc::SQRT => sqrt_column(col),
-                            NumericFunc::ABS => abs_column(col),
-                            NumericFunc::INV => inv_column(col),
-                            NumericFunc::SHF_REC_NLN_LOCF => locf_column(col),
-                            NumericFunc::SHF_PFX_LIN_SUM => cumsum_column(col),
-                            NumericFunc::SHF_PTW_LIN_SHF { k } => shift_column(col, *k),
-                            NumericFunc::KEEP { k } => keep_column(col, *k),
-                            NumericFunc::MSK_WKE => unreachable!("Wkd handled above"),
-                            NumericFunc::LAG_OBS { .. } => unreachable!("LagObs handled separately"),
-                            _ => unreachable!("Rolling ops handled separately"),
-                        }
+                    map_numeric_preserve_tags(&input_frame, |col| match func {
+                        NumericFunc::SHF_PTW_OBS_NLN_DLOG => dlog_obs_column(col, 1),
+                        NumericFunc::SHF_PTW_OFS_NLN_DLOG => dlog_ofs_column(col, 1),
+                        NumericFunc::RET => ret_column(col, 1),
+                        NumericFunc::LOG => log_column(col),
+                        NumericFunc::EXP => exp_column(col),
+                        NumericFunc::SQRT => sqrt_column(col),
+                        NumericFunc::ABS => abs_column(col),
+                        NumericFunc::INV => inv_column(col),
+                        NumericFunc::SHF_REC_NLN_LOCF => locf_column(col),
+                        NumericFunc::SHF_PFX_LIN_SUM => cumsum_column(col),
+                        NumericFunc::SHF_PTW_LIN_SHF { k } => shift_column(col, *k),
+                        NumericFunc::KEEP { k } => keep_column(col, *k),
+                        NumericFunc::MSK_WKE => unreachable!("Wkd handled above"),
+                        NumericFunc::LAG_OBS { .. } => unreachable!("LagObs handled separately"),
+                        _ => unreachable!("Rolling ops handled separately"),
                     })
                 }
             };
@@ -193,12 +196,12 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.1: Fused elementwise operations
         UnaryOp::FusedElementwise { input, ops } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
-            let result = map_numeric_preserve_tags(&input_frame, |col| {
-                fused_elementwise_column(col, ops)
-            });
+            let result =
+                map_numeric_preserve_tags(&input_frame, |col| fused_elementwise_column(col, ops));
 
             debug_assert!(
                 Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
@@ -218,7 +221,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.2a: Fused cs1 ∘ elementwise
         UnaryOp::FusedCs1Elementwise { input, ops } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             let result = map_numeric_preserve_tags(&input_frame, |col| {
@@ -243,12 +247,12 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.2b: Fused cs1 ∘ dlog-ofs
         UnaryOp::FusedCs1DlogOfs { input, lag } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
-            let result = map_numeric_preserve_tags(&input_frame, |col| {
-                fused_cs1_dlog_ofs_column(col, *lag)
-            });
+            let result =
+                map_numeric_preserve_tags(&input_frame, |col| fused_cs1_dlog_ofs_column(col, *lag));
 
             debug_assert!(
                 Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
@@ -268,12 +272,12 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.2b: Fused cs1 ∘ dlog-obs
         UnaryOp::FusedCs1DlogObs { input } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
-            let result = map_numeric_preserve_tags(&input_frame, |col| {
-                fused_cs1_dlog_obs_column(col)
-            });
+            let result =
+                map_numeric_preserve_tags(&input_frame, |col| fused_cs1_dlog_obs_column(col));
 
             debug_assert!(
                 Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
@@ -293,7 +297,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.3a: Fused dlog-obs ∘ elementwise
         UnaryOp::FusedDlogObsElementwise { input, ops } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             let result = map_numeric_preserve_tags(&input_frame, |col| {
@@ -318,7 +323,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 
         // PR4.3a: Fused dlog-ofs ∘ elementwise
         UnaryOp::FusedDlogOfsElementwise { input, lag, ops } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             let result = map_numeric_preserve_tags(&input_frame, |col| {
@@ -350,7 +356,8 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
 fn execute_binary(binary: &BinaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> {
     match binary {
         BinaryOp::MapNumeric2 { lhs, rhs, func } => {
-            let lhs_frame = ctx.load(*lhs)
+            let lhs_frame = ctx
+                .load(*lhs)
                 .ok_or_else(|| format!("LHS node {:?} not found", lhs))?;
 
             match rhs {
@@ -379,7 +386,8 @@ fn execute_binary(binary: &BinaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, St
 
                 ValueRef::Frame(rhs_id) => {
                     // Frame RHS: strict compatibility required
-                    let rhs_frame = ctx.load(*rhs_id)
+                    let rhs_frame = ctx
+                        .load(*rhs_id)
                         .ok_or_else(|| format!("RHS node {:?} not found", rhs_id))?;
 
                     // Validation should have already checked compatibility
@@ -411,9 +419,11 @@ fn execute_binary(binary: &BinaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, St
 fn execute_join(join: &JoinOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> {
     match join {
         JoinOp::ALIGN { x, y } => {
-            let x_frame = ctx.load(*x)
+            let x_frame = ctx
+                .load(*x)
                 .ok_or_else(|| format!("X node {:?} not found", x))?;
-            let y_frame = ctx.load(*y)
+            let y_frame = ctx
+                .load(*y)
                 .ok_or_else(|| format!("Y node {:?} not found", y))?;
 
             // Use frozen mapr primitive (RIGHT OUTER JOIN)
@@ -437,9 +447,11 @@ fn execute_join(join: &JoinOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> 
         }
 
         JoinOp::ASOF_ALIGN { x, y } => {
-            let x_frame = ctx.load(*x)
+            let x_frame = ctx
+                .load(*x)
                 .ok_or_else(|| format!("X node {:?} not found", x))?;
-            let y_frame = ctx.load(*y)
+            let y_frame = ctx
+                .load(*y)
                 .ok_or_else(|| format!("Y node {:?} not found", y))?;
 
             // Use frozen asofr primitive (RIGHT OUTER ASOF JOIN)
@@ -470,22 +482,32 @@ fn execute_join(join: &JoinOp, ctx: &ExecContext) -> Result<Arc<Frame>, String> 
 /// - I1 preserved: index Arc ptr_eq
 /// - I2_schema: colnames Arc rebuilt (deterministic)
 /// - I3 preserved: nrows unchanged
-fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Result<Arc<Frame>, String> {
+fn execute_schema(
+    schema: &SchemaOp,
+    ctx: &ExecContext,
+    rt: &mut Runtime,
+) -> Result<Arc<Frame>, String> {
     use crate::frame::ColData;
 
     match schema {
         SchemaOp::SHF_PTW_LIN_SPR { input, half } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             // Validate: need at least 2 columns
             let ncols = input_frame.cols.len();
             if ncols < 2 {
-                return Err(format!("xminus requires at least 2 columns (have {})", ncols));
+                return Err(format!(
+                    "xminus requires at least 2 columns (have {})",
+                    ncols
+                ));
             }
 
             // Extract raw columns from ColData
-            let input_cols: Vec<&blawktrust::Column> = input_frame.cols.iter()
+            let input_cols: Vec<&blawktrust::Column> = input_frame
+                .cols
+                .iter()
                 .map(|cd| match cd {
                     ColData::Mat(col_arc) => col_arc.as_ref(),
                 })
@@ -499,7 +521,7 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
                 // Half mode: upper triangle only (j < r)
                 // Creates nc*(nc-1)/2 columns
                 for j in 0..ncols {
-                    for r in (j+1)..ncols {
+                    for r in (j + 1)..ncols {
                         let col_j = input_cols[j];
                         let col_r = input_cols[r];
 
@@ -540,10 +562,10 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
             // Create new Tags with rebuilt colnames (I2_schema)
             // Phase D: Schema ops inherit masks from input (unary operation)
             let new_tags = Tags {
-                index_name: input_frame.tags.index_name.clone(),  // Preserve index name
-                index: Arc::clone(&input_frame.tags.index),        // I1: preserved
-                colnames: Arc::new(output_colnames),                // I2_schema: rebuilt
-                masks: input_frame.tags.masks.clone(),              // Inherit input masks
+                index_name: input_frame.tags.index_name.clone(), // Preserve index name
+                index: Arc::clone(&input_frame.tags.index),      // I1: preserved
+                colnames: Arc::new(output_colnames),             // I2_schema: rebuilt
+                masks: input_frame.tags.masks.clone(),           // Inherit input masks
                 active_mask: input_frame.tags.active_mask.clone(), // Inherit input active_mask
             };
 
@@ -567,7 +589,8 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
             use bitvec::prelude::*;
             use std::sync::Arc;
 
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             // Determine mask name
@@ -575,32 +598,34 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
 
             // Compute weekend bitmask from index
             let weekend_bitvec: BitVec = match &*input_frame.tags.index {
-                crate::frame::IndexColumn::Date(dates) => {
-                    dates.iter().map(|&date| {
+                crate::frame::IndexColumn::Date(dates) => dates
+                    .iter()
+                    .map(|&date| {
                         let day_of_week = (4 + date).rem_euclid(7);
                         day_of_week == 0 || day_of_week == 6
-                    }).collect()
-                }
-                crate::frame::IndexColumn::Timestamp(timestamps) => {
-                    timestamps.iter().map(|&ts| {
+                    })
+                    .collect(),
+                crate::frame::IndexColumn::Timestamp(timestamps) => timestamps
+                    .iter()
+                    .map(|&ts| {
                         let days = (ts / 86400000) as i32;
                         let day_of_week = (4 + days).rem_euclid(7);
                         day_of_week == 0 || day_of_week == 6
-                    }).collect()
-                }
+                    })
+                    .collect(),
                 crate::frame::IndexColumn::String(_) => {
-                    return Err("mask-weekend requires Date or Timestamp index, got String".to_string());
+                    return Err(
+                        "mask-weekend requires Date or Timestamp index, got String".to_string()
+                    );
                 }
             };
 
             // Add mask to MaskSet
             let nrows = input_frame.nrows();
             let mut new_masks = input_frame.tags.masks.clone();
-            new_masks.insert(
-                mask_name.clone(),
-                Arc::new(weekend_bitvec),
-                nrows
-            ).map_err(|e| format!("mask-weekend: {}", e))?;
+            new_masks
+                .insert(mask_name.clone(), Arc::new(weekend_bitvec), nrows)
+                .map_err(|e| format!("mask-weekend: {}", e))?;
 
             // Build new tags with updated masks
             let new_tags = Tags {
@@ -614,29 +639,36 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
             // Build new frame preserving columns
             let result = Frame::with_tags(
                 Arc::new(new_tags),
-                input_frame.cols.iter().filter_map(|cd| {
-                    if let ColData::Mat(col) = cd {
-                        Some(Arc::clone(col))
-                    } else {
-                        None
-                    }
-                }).collect()
+                input_frame
+                    .cols
+                    .iter()
+                    .filter_map(|cd| {
+                        if let ColData::Mat(col) = cd {
+                            Some(Arc::clone(col))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
             );
 
             Ok(Arc::new(result))
         }
 
         SchemaOp::WTH_MSK { input, mask_expr } => {
-            let input_frame = ctx.load(*input)
+            let input_frame = ctx
+                .load(*input)
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             let nrows = input_frame.nrows();
 
             // Compile mask expression
-            let compiled = crate::mask::compile_mask_expr(mask_expr, &input_frame.tags.masks, nrows)?;
+            let compiled =
+                crate::mask::compile_mask_expr(mask_expr, &input_frame.tags.masks, nrows)?;
 
             // Create new active mask
-            let new_active_mask = crate::mask::ActiveMask::from_bitvec(compiled, Some(mask_expr.clone()));
+            let new_active_mask =
+                crate::mask::ActiveMask::from_bitvec(compiled, Some(mask_expr.clone()));
 
             // Build new tags with updated active mask
             let new_tags = Tags {
@@ -650,13 +682,17 @@ fn execute_schema(schema: &SchemaOp, ctx: &ExecContext, rt: &mut Runtime) -> Res
             // Build new frame preserving columns
             let result = Frame::with_tags(
                 Arc::new(new_tags),
-                input_frame.cols.iter().filter_map(|cd| {
-                    if let ColData::Mat(col) = cd {
-                        Some(Arc::clone(col))
-                    } else {
-                        None
-                    }
-                }).collect()
+                input_frame
+                    .cols
+                    .iter()
+                    .filter_map(|cd| {
+                        if let ColData::Mat(col) = cd {
+                            Some(Arc::clone(col))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
             );
 
             Ok(Arc::new(result))
@@ -675,13 +711,16 @@ use blawktrust::Column;
 pub fn log_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if x > 0.0 && !x.is_nan() {
-                    x.ln()
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if x > 0.0 && !x.is_nan() {
+                        x.ln()
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -691,13 +730,10 @@ pub fn log_column(col: &Column) -> Column {
 pub fn exp_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if !x.is_nan() {
-                    x.exp()
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| if !x.is_nan() { x.exp() } else { f64::NAN })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -707,13 +743,16 @@ pub fn exp_column(col: &Column) -> Column {
 pub fn sqrt_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if x >= 0.0 && !x.is_nan() {
-                    x.sqrt()
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if x >= 0.0 && !x.is_nan() {
+                        x.sqrt()
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -723,13 +762,10 @@ pub fn sqrt_column(col: &Column) -> Column {
 pub fn abs_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if !x.is_nan() {
-                    x.abs()
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| if !x.is_nan() { x.abs() } else { f64::NAN })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -739,13 +775,16 @@ pub fn abs_column(col: &Column) -> Column {
 pub fn inv_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if !x.is_nan() && x != 0.0 {
-                    1.0 / x
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if !x.is_nan() && x != 0.0 {
+                        1.0 / x
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -773,16 +812,30 @@ fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, S
     let nrows = frame.nrows();
 
     // Transform each column with mask-aware rolling
-    let cols_out: Vec<ColData> = frame.cols.iter()
+    let cols_out: Vec<ColData> = frame
+        .cols
+        .iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => {
                 let result_col = match &func {
-                    NumericFunc::SHF_WIN_LIN_AVG { w } => rolling_mean_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::SHF_WIN_NLN_SDV { w } => rolling_std_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::SHF_WIN_MIN2_LIN_AVG { w } => rolling_mean_partial_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::SHF_WIN_MIN2_NLN_SDV { w } => rolling_std_partial_mask_aware(col, *w, active_mask, nrows),
-                    NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w } => rolling_mean_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
-                    NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w } => rolling_std_partial_mask_aware_offset(col, *w, active_mask, nrows, 1),
+                    NumericFunc::SHF_WIN_LIN_AVG { w } => {
+                        rolling_mean_mask_aware(col, *w, active_mask, nrows)
+                    }
+                    NumericFunc::SHF_WIN_NLN_SDV { w } => {
+                        rolling_std_mask_aware(col, *w, active_mask, nrows)
+                    }
+                    NumericFunc::SHF_WIN_MIN2_LIN_AVG { w } => {
+                        rolling_mean_partial_mask_aware(col, *w, active_mask, nrows)
+                    }
+                    NumericFunc::SHF_WIN_MIN2_NLN_SDV { w } => {
+                        rolling_std_partial_mask_aware(col, *w, active_mask, nrows)
+                    }
+                    NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w } => {
+                        rolling_mean_partial_mask_aware_offset(col, *w, active_mask, nrows, 1)
+                    }
+                    NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w } => {
+                        rolling_std_partial_mask_aware_offset(col, *w, active_mask, nrows, 1)
+                    }
                     _ => unreachable!("Non-rolling op passed to apply_rolling_mask_aware"),
                 };
                 ColData::Mat(Arc::new(result_col))
@@ -791,7 +844,7 @@ fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, S
         .collect();
 
     Ok(Frame {
-        tags: Arc::clone(&frame.tags),  // Preserve tags (I1-I3)
+        tags: Arc::clone(&frame.tags), // Preserve tags (I1-I3)
         cols: cols_out,
         nrows: frame.nrows,
     })
@@ -810,7 +863,9 @@ fn apply_shift_obs_mask_aware(frame: &Frame, k: usize) -> Result<Frame, String> 
     let nrows = frame.nrows();
 
     // Transform each column with mask-aware shift
-    let cols_out: Vec<ColData> = frame.cols.iter()
+    let cols_out: Vec<ColData> = frame
+        .cols
+        .iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => {
                 let result_col = shift_obs_column(col, k, active_mask, nrows);
@@ -820,7 +875,7 @@ fn apply_shift_obs_mask_aware(frame: &Frame, k: usize) -> Result<Frame, String> 
         .collect();
 
     Ok(Frame {
-        tags: Arc::clone(&frame.tags),  // Preserve tags (I1-I3)
+        tags: Arc::clone(&frame.tags), // Preserve tags (I1-I3)
         cols: cols_out,
         nrows: frame.nrows,
     })
@@ -830,7 +885,12 @@ fn apply_shift_obs_mask_aware(frame: &Frame, k: usize) -> Result<Frame, String> 
 ///
 /// Maintains a queue of the last w eligible observations.
 /// Amortized O(n): each eligible observation enters/exits queue exactly once.
-fn rolling_mean_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_mean_mask_aware(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -924,13 +984,16 @@ fn apply_elementwise_op(x: f64, op: crate::ir::NumericFunc) -> f64 {
 pub fn fused_elementwise_column(col: &Column, ops: &[crate::ir::NumericFunc]) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                let mut y = x;
-                for op in ops {
-                    y = apply_elementwise_op(y, *op);
-                }
-                y
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| {
+                    let mut y = x;
+                    for op in ops {
+                        y = apply_elementwise_op(y, *op);
+                    }
+                    y
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -997,7 +1060,11 @@ pub fn fused_cs1_dlog_ofs_column(col: &Column, lag: usize) -> Column {
                     let lagged = data[i - lag];
 
                     // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
-                    let dlog_val = if current.is_finite() && lagged.is_finite() && current > 0.0 && lagged > 0.0 {
+                    let dlog_val = if current.is_finite()
+                        && lagged.is_finite()
+                        && current > 0.0
+                        && lagged > 0.0
+                    {
                         current.ln() - lagged.ln()
                     } else {
                         f64::NAN
@@ -1154,8 +1221,11 @@ pub fn fused_dlog_ofs_elementwise_column(col: &Column, lag: usize, ops: &[Numeri
                     let lagged = data[i - lag];
 
                     // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
-                    let dlog_val = if current.is_finite() && lagged.is_finite() 
-                        && current > 0.0 && lagged > 0.0 {
+                    let dlog_val = if current.is_finite()
+                        && lagged.is_finite()
+                        && current > 0.0
+                        && lagged > 0.0
+                    {
                         current.ln() - lagged.ln()
                     } else {
                         f64::NAN
@@ -1175,12 +1245,18 @@ pub fn fused_dlog_ofs_elementwise_column(col: &Column, lag: usize, ops: &[Numeri
         }
         _ => col.clone(),
     }
-}/// Rolling mean with mask-aware observation counting (strict) - LEGACY O(n·w) version
+}
+/// Rolling mean with mask-aware observation counting (strict) - LEGACY O(n·w) version
 ///
 /// Kept for comparison testing. Use `rolling_mean_mask_aware_legacy` for verification.
 #[cfg(test)]
 #[allow(dead_code)]
-fn rolling_mean_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_mean_mask_aware_legacy(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1194,7 +1270,7 @@ fn rolling_mean_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::Ac
 
                 // Find last w eligible observations (not masked, not NA) ending at or before position i
                 let mut eligible: Vec<f64> = Vec::new();
-                let mut j = i as isize;  // Start from current position, go backward
+                let mut j = i as isize; // Start from current position, go backward
 
                 while eligible.len() < w && j >= 0 {
                     let idx = j as usize;
@@ -1224,7 +1300,12 @@ fn rolling_mean_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::Ac
 ///
 /// Maintains running sum and sum-of-squares for incremental variance.
 /// Uses population variance: var = E[X²] - E[X]² = (sumsq/w) - (sum/w)²
-fn rolling_std_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_std_mask_aware(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1264,7 +1345,7 @@ fn rolling_std_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask
                     let mean = sum / n;
                     // Use sample variance (n-1 denominator) to match CLISPI/Adyton
                     let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
-                    result.push(variance.max(0.0).sqrt());  // max(0) for numerical stability
+                    result.push(variance.max(0.0).sqrt()); // max(0) for numerical stability
                 } else {
                     result.push(f64::NAN);
                 }
@@ -1279,7 +1360,12 @@ fn rolling_std_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask
 /// Rolling std with mask-aware observation counting (strict) - LEGACY O(n·w) version
 #[cfg(test)]
 #[allow(dead_code)]
-fn rolling_std_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_std_mask_aware_legacy(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1306,9 +1392,8 @@ fn rolling_std_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::Act
                 // Strict: need exactly w eligible observations
                 if eligible.len() == w {
                     let mean: f64 = eligible.iter().sum::<f64>() / (w as f64);
-                    let variance: f64 = eligible.iter()
-                        .map(|&x| (x - mean).powi(2))
-                        .sum::<f64>() / (w as f64);
+                    let variance: f64 =
+                        eligible.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (w as f64);
                     result.push(variance.sqrt());
                 } else {
                     result.push(f64::NAN);
@@ -1324,11 +1409,22 @@ fn rolling_std_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::Act
 /// Rolling mean partial with mask-aware observation counting - O(n) streaming version
 ///
 /// Partial: emits if window has >= 2 observations (relaxed min_periods)
-fn rolling_mean_partial_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_mean_partial_mask_aware(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     rolling_mean_partial_mask_aware_offset(col, w, mask, nrows, 0)
 }
 
-fn rolling_mean_partial_mask_aware_offset(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize, end_offset: usize) -> Column {
+fn rolling_mean_partial_mask_aware_offset(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1384,7 +1480,12 @@ fn rolling_mean_partial_mask_aware_offset(col: &Column, w: usize, mask: &crate::
 /// Rolling mean partial with mask-aware observation counting - LEGACY O(n·w) version
 #[cfg(test)]
 #[allow(dead_code)]
-fn rolling_mean_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_mean_partial_mask_aware_legacy(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1426,11 +1527,22 @@ fn rolling_mean_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::
 /// Rolling std partial with mask-aware observation counting - O(n) streaming version
 ///
 /// Partial: emits if window has >= 2 observations (relaxed min_periods)
-fn rolling_std_partial_mask_aware(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_std_partial_mask_aware(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     rolling_std_partial_mask_aware_offset(col, w, mask, nrows, 0)
 }
 
-fn rolling_std_partial_mask_aware_offset(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize, end_offset: usize) -> Column {
+fn rolling_std_partial_mask_aware_offset(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1492,7 +1604,12 @@ fn rolling_std_partial_mask_aware_offset(col: &Column, w: usize, mask: &crate::m
 /// Rolling std partial with mask-aware observation counting - LEGACY O(n·w) version
 #[cfg(test)]
 #[allow(dead_code)]
-fn rolling_std_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn rolling_std_partial_mask_aware_legacy(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
@@ -1519,9 +1636,8 @@ fn rolling_std_partial_mask_aware_legacy(col: &Column, w: usize, mask: &crate::m
                 // Partial: allow if we have at least 2 observations
                 if eligible.len() >= 2 {
                     let mean: f64 = eligible.iter().sum::<f64>() / (eligible.len() as f64);
-                    let variance: f64 = eligible.iter()
-                        .map(|&x| (x - mean).powi(2))
-                        .sum::<f64>() / (eligible.len() as f64);
+                    let variance: f64 = eligible.iter().map(|&x| (x - mean).powi(2)).sum::<f64>()
+                        / (eligible.len() as f64);
                     result.push(variance.sqrt());
                 } else {
                     result.push(f64::NAN);
@@ -1703,28 +1819,34 @@ fn wkd_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
     // Determine which rows are weekends
     let weekend_mask: Vec<bool> = match &*frame.tags.index {
         IndexColumn::Date(dates) => {
-            dates.iter().map(|&date| {
-                // Parse date to get day of week
-                // Date is stored as i32: days since Unix epoch (1970-01-01)
-                // Use chrono-like calculation to determine day of week
+            dates
+                .iter()
+                .map(|&date| {
+                    // Parse date to get day of week
+                    // Date is stored as i32: days since Unix epoch (1970-01-01)
+                    // Use chrono-like calculation to determine day of week
 
-                // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
-                // day_of_week = (4 + days_since_epoch) % 7
-                // 0=Sunday, 1=Monday, ..., 6=Saturday
-                let day_of_week = (4 + date).rem_euclid(7);
+                    // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
+                    // day_of_week = (4 + days_since_epoch) % 7
+                    // 0=Sunday, 1=Monday, ..., 6=Saturday
+                    let day_of_week = (4 + date).rem_euclid(7);
 
-                // Weekend: Sunday (0) or Saturday (6)
-                day_of_week == 0 || day_of_week == 6
-            }).collect()
+                    // Weekend: Sunday (0) or Saturday (6)
+                    day_of_week == 0 || day_of_week == 6
+                })
+                .collect()
         }
         IndexColumn::Timestamp(timestamps) => {
-            timestamps.iter().map(|&ts| {
-                // Timestamp is i64 milliseconds since Unix epoch
-                // Convert to days and use same logic
-                let days = (ts / 86400000) as i32;  // 86400000 ms per day
-                let day_of_week = (4 + days).rem_euclid(7);
-                day_of_week == 0 || day_of_week == 6
-            }).collect()
+            timestamps
+                .iter()
+                .map(|&ts| {
+                    // Timestamp is i64 milliseconds since Unix epoch
+                    // Convert to days and use same logic
+                    let days = (ts / 86400000) as i32; // 86400000 ms per day
+                    let day_of_week = (4 + days).rem_euclid(7);
+                    day_of_week == 0 || day_of_week == 6
+                })
+                .collect()
         }
         IndexColumn::String(_) => {
             return Err("wkd requires Date or Timestamp index, got String".to_string());
@@ -1732,35 +1854,47 @@ fn wkd_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
     };
 
     // Apply weekend mask to all columns
-    let masked_cols: Vec<ColData> = frame.cols.iter().map(|col_data| {
-        match col_data {
-            ColData::Mat(col_arc) => {
-                match &**col_arc {
-                    Column::F64(data) => {
-                        let masked_data: Vec<f64> = data.iter().enumerate().map(|(i, &val)| {
-                            if weekend_mask[i] {
-                                f64::NAN  // Weekend: mask to NA
-                            } else {
-                                val  // Weekday: unchanged
-                            }
-                        }).collect();
-                        ColData::Mat(Arc::new(Column::F64(masked_data)))
+    let masked_cols: Vec<ColData> = frame
+        .cols
+        .iter()
+        .map(|col_data| {
+            match col_data {
+                ColData::Mat(col_arc) => {
+                    match &**col_arc {
+                        Column::F64(data) => {
+                            let masked_data: Vec<f64> = data
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &val)| {
+                                    if weekend_mask[i] {
+                                        f64::NAN // Weekend: mask to NA
+                                    } else {
+                                        val // Weekday: unchanged
+                                    }
+                                })
+                                .collect();
+                            ColData::Mat(Arc::new(Column::F64(masked_data)))
+                        }
+                        other => ColData::Mat(Arc::new(other.clone())),
                     }
-                    other => ColData::Mat(Arc::new(other.clone()))
                 }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Build result frame with preserved tags (I1, I2, I3)
     let result = Frame {
-        tags: Arc::clone(&frame.tags),  // I1, I2 preserved via Arc
+        tags: Arc::clone(&frame.tags), // I1, I2 preserved via Arc
         cols: masked_cols,
-        nrows: frame.nrows,  // I3: preserved
+        nrows: frame.nrows, // I3: preserved
     };
 
     // Verify invariants
-    debug_assert_eq!(result.nrows(), frame.nrows(), "W5: I3 violation - nrows changed");
+    debug_assert_eq!(
+        result.nrows(),
+        frame.nrows(),
+        "W5: I3 violation - nrows changed"
+    );
     debug_assert_eq!(result.ncols(), frame.ncols(), "W5: column count changed");
 
     Ok(Arc::new(result))
@@ -1779,7 +1913,9 @@ fn xminus_columns(col_a: &Column, col_b: &Column) -> Column {
                 panic!("xminus: column length mismatch");
             }
 
-            let result = data_a.iter().zip(data_b.iter())
+            let result = data_a
+                .iter()
+                .zip(data_b.iter())
                 .map(|(&a, &b)| {
                     if a.is_nan() || b.is_nan() {
                         f64::NAN
@@ -1800,9 +1936,7 @@ fn xminus_columns(col_a: &Column, col_b: &Column) -> Column {
 /// eligible_rows: Vec<usize> = indices of unmasked rows
 /// pos_in_eligible: Vec<i32> = for each row, its position in eligible list (-1 if masked)
 fn eligible_rows(mask: &crate::mask::ActiveMask, nrows: usize) -> (Vec<usize>, Vec<i32>) {
-    let eligible: Vec<usize> = (0..nrows)
-        .filter(|&i| !mask.is_masked(i))
-        .collect();
+    let eligible: Vec<usize> = (0..nrows).filter(|&i| !mask.is_masked(i)).collect();
 
     let mut pos_in_eligible = vec![-1i32; nrows];
     for (p, &i) in eligible.iter().enumerate() {
@@ -1842,14 +1976,10 @@ pub(crate) fn shift_column(col: &Column, k: usize) -> Column {
 fn keep_column(col: &Column, k: usize) -> Column {
     match col {
         Column::F64(data) => {
-            let result: Vec<f64> = data.iter().enumerate()
-                .map(|(i, &val)| {
-                    if i % k == 0 {
-                        val
-                    } else {
-                        f64::NAN
-                    }
-                })
+            let result: Vec<f64> = data
+                .iter()
+                .enumerate()
+                .map(|(i, &val)| if i % k == 0 { val } else { f64::NAN })
                 .collect();
             Column::F64(result)
         }
@@ -1860,7 +1990,12 @@ fn keep_column(col: &Column, k: usize) -> Column {
 /// Mask-aware shift (observation-based): shift by k eligible (unmasked) rows
 /// Skip masked rows only (not NA values)
 /// For matching CLISPI's wkd-filtered behavior
-fn shift_obs_column(col: &Column, k: usize, mask: &crate::mask::ActiveMask, nrows: usize) -> Column {
+fn shift_obs_column(
+    col: &Column,
+    k: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = vec![f64::NAN; nrows];
@@ -1928,7 +2063,7 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
 
             // Edge case: window larger than data
             if w > nrows {
-                return Column::F64(result);  // All NA
+                return Column::F64(result); // All NA
             }
 
             let mut running_sum = 0.0;
@@ -1988,7 +2123,7 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
 
             // Edge case: window larger than data
             if w > nrows {
-                return Column::F64(result);  // All NA
+                return Column::F64(result); // All NA
             }
 
             let mut running_sum = 0.0;
@@ -2029,7 +2164,7 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                     // Use relative epsilon to catch numerical noise
                     let epsilon = 1e-10 * mean.abs().max(1.0);
                     result[i] = if variance <= epsilon {
-                        0.0  // Constant series or numerical noise
+                        0.0 // Constant series or numerical noise
                     } else {
                         variance.sqrt()
                     };
@@ -2174,42 +2309,69 @@ fn rolling_std_partial(col: &Column, w: usize) -> Column {
 fn binary_scalar_column(col: &Column, scalar: f64, func: BinaryFunc) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if x.is_nan() || scalar.is_nan() {
-                    f64::NAN
-                } else {
-                    match func {
-                        BinaryFunc::ADD => x + scalar,
-                        BinaryFunc::SUB => x - scalar,
-                        BinaryFunc::MUL => x * scalar,
-                        BinaryFunc::DIV => {
-                            if scalar == 0.0 {
-                                f64::NAN
-                            } else {
-                                x / scalar
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if x.is_nan() || scalar.is_nan() {
+                        f64::NAN
+                    } else {
+                        match func {
+                            BinaryFunc::ADD => x + scalar,
+                            BinaryFunc::SUB => x - scalar,
+                            BinaryFunc::MUL => x * scalar,
+                            BinaryFunc::DIV => {
+                                if scalar == 0.0 {
+                                    f64::NAN
+                                } else {
+                                    x / scalar
+                                }
+                            }
+                            BinaryFunc::GTR => {
+                                if x > scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::LSS => {
+                                if x < scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::LTE => {
+                                if x <= scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::GTE => {
+                                if x >= scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::EQL => {
+                                if x == scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::NEQ => {
+                                if x != scalar {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
                             }
                         }
-                        BinaryFunc::GTR => {
-                            if x > scalar { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::LSS => {
-                            if x < scalar { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::LTE => {
-                            if x <= scalar { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::GTE => {
-                            if x >= scalar { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::EQL => {
-                            if x == scalar { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::NEQ => {
-                            if x != scalar { 1.0 } else { 0.0 }
-                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -2224,7 +2386,8 @@ fn binary_frame_frame(lhs: &Frame, rhs: &Frame, func: BinaryFunc) -> Result<Fram
     if lhs.cols.len() != rhs.cols.len() {
         return Err(format!(
             "Frame-frame binary op requires same column count: {} vs {}",
-            lhs.cols.len(), rhs.cols.len()
+            lhs.cols.len(),
+            rhs.cols.len()
         ));
     }
 
@@ -2254,10 +2417,12 @@ fn binary_frame_frame(lhs: &Frame, rhs: &Frame, func: BinaryFunc) -> Result<Fram
     // - Merge mask sets (error on collision with different bitsets)
     // - OR active masks (union of excluded rows)
     let mut merged_masks = lhs.tags.masks.clone();
-    merged_masks.merge(&rhs.tags.masks)
+    merged_masks
+        .merge(&rhs.tags.masks)
         .map_err(|e| format!("Binary op mask merge failed: {}", e))?;
 
-    let merged_active_mask = crate::mask::or_active_masks(&lhs.tags.active_mask, &rhs.tags.active_mask);
+    let merged_active_mask =
+        crate::mask::or_active_masks(&lhs.tags.active_mask, &rhs.tags.active_mask);
 
     let result_tags = Tags {
         index_name: lhs.tags.index_name.clone(),
@@ -2281,46 +2446,75 @@ fn binary_column_column(lhs: &Column, rhs: &Column, func: BinaryFunc) -> Result<
             if lhs_data.len() != rhs_data.len() {
                 return Err(format!(
                     "Column-column binary op requires same length: {} vs {}",
-                    lhs_data.len(), rhs_data.len()
+                    lhs_data.len(),
+                    rhs_data.len()
                 ));
             }
 
-            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&x, &y)| {
-                if x.is_nan() || y.is_nan() {
-                    f64::NAN
-                } else {
-                    match func {
-                        BinaryFunc::ADD => x + y,
-                        BinaryFunc::SUB => x - y,
-                        BinaryFunc::MUL => x * y,
-                        BinaryFunc::DIV => {
-                            if y == 0.0 {
-                                f64::NAN
-                            } else {
-                                x / y
+            let result = lhs_data
+                .iter()
+                .zip(rhs_data.iter())
+                .map(|(&x, &y)| {
+                    if x.is_nan() || y.is_nan() {
+                        f64::NAN
+                    } else {
+                        match func {
+                            BinaryFunc::ADD => x + y,
+                            BinaryFunc::SUB => x - y,
+                            BinaryFunc::MUL => x * y,
+                            BinaryFunc::DIV => {
+                                if y == 0.0 {
+                                    f64::NAN
+                                } else {
+                                    x / y
+                                }
+                            }
+                            BinaryFunc::GTR => {
+                                if x > y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::LSS => {
+                                if x < y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::LTE => {
+                                if x <= y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::GTE => {
+                                if x >= y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::EQL => {
+                                if x == y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
+                            }
+                            BinaryFunc::NEQ => {
+                                if x != y {
+                                    1.0
+                                } else {
+                                    0.0
+                                }
                             }
                         }
-                        BinaryFunc::GTR => {
-                            if x > y { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::LSS => {
-                            if x < y { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::LTE => {
-                            if x <= y { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::GTE => {
-                            if x >= y { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::EQL => {
-                            if x == y { 1.0 } else { 0.0 }
-                        }
-                        BinaryFunc::NEQ => {
-                            if x != y { 1.0 } else { 0.0 }
-                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
 
             Ok(Column::F64(result))
         }
@@ -2331,9 +2525,9 @@ fn binary_column_column(lhs: &Column, rhs: &Column, func: BinaryFunc) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::plan;
-    use crate::normalize::normalize;
     use crate::ast::{Expr, Interner};
+    use crate::normalize::normalize;
+    use crate::planner::plan;
     use std::io::Write;
 
     fn setup_test_csv(path: &str, content: &str) {
@@ -2373,7 +2567,10 @@ mod tests {
     #[test]
     fn test_exec_dlog() {
         let test_file = "/tmp/test_exec_dlog.csv";
-        setup_test_csv(test_file, "DATE;price\n2020-01-01;100\n2020-01-02;102\n2020-01-03;105\n");
+        setup_test_csv(
+            test_file,
+            "DATE;price\n2020-01-01;100\n2020-01-02;102\n2020-01-03;105\n",
+        );
 
         let mut interner = Interner::new();
         let mut rt = Runtime::new();
@@ -2409,7 +2606,10 @@ mod tests {
         let test_y = "/tmp/test_exec_thread_y.csv";
 
         setup_test_csv(test_x, "DATE;price\n2020-01-01;100\n2020-01-03;103\n");
-        setup_test_csv(test_y, "DATE;dummy\n2020-01-01;1\n2020-01-02;2\n2020-01-03;3\n");
+        setup_test_csv(
+            test_y,
+            "DATE;dummy\n2020-01-01;1\n2020-01-02;2\n2020-01-03;3\n",
+        );
 
         let mut interner = Interner::new();
         let mut rt = Runtime::new();
@@ -2464,12 +2664,18 @@ mod tests {
         // They MUST differ on position 3 (index 3)
         if let (Column::F64(obs_vals), Column::F64(ofs_vals)) = (obs_result, ofs_result) {
             // Position 3: OBS = ln(110/100), OFS = NA (used x[2]=NA)
-            assert!(obs_vals[3].is_finite(), "OBS should compute ln(110/100) at position 3");
+            assert!(
+                obs_vals[3].is_finite(),
+                "OBS should compute ln(110/100) at position 3"
+            );
             assert!(ofs_vals[3].is_nan(), "OFS should return NA at position 3");
 
             // Approximate check for OBS value
             let expected_obs = (110.0_f64).ln() - (100.0_f64).ln();
-            assert!((obs_vals[3] - expected_obs).abs() < 1e-10, "OBS value should be ln(110/100)");
+            assert!(
+                (obs_vals[3] - expected_obs).abs() < 1e-10,
+                "OBS value should be ln(110/100)"
+            );
         } else {
             panic!("Expected F64 columns");
         }
@@ -2490,8 +2696,11 @@ mod tests {
                 if ofs_vals[i].is_nan() && bt_vals[i].is_nan() {
                     continue; // Both NA, OK
                 }
-                assert!((ofs_vals[i] - bt_vals[i]).abs() < 1e-10,
-                    "OFS wrapper should match blawktrust at position {}", i);
+                assert!(
+                    (ofs_vals[i] - bt_vals[i]).abs() < 1e-10,
+                    "OFS wrapper should match blawktrust at position {}",
+                    i
+                );
             }
         } else {
             panic!("Expected F64 columns");
@@ -2554,7 +2763,7 @@ mod tests {
 
         // Create mask: rows 1,2 masked (only 0,3 eligible)
         use bitvec::prelude::*;
-        let bv = bitvec![0, 1, 1, 0];  // 1 = masked
+        let bv = bitvec![0, 1, 1, 0]; // 1 = masked
         let mask = crate::mask::ActiveMask::from_bitvec(bv, None);
 
         let result = shift_obs_column(&col, 1, &mask, 4);
@@ -2586,7 +2795,7 @@ mod tests {
 
         // OBS: observation-based shift with mask
         use bitvec::prelude::*;
-        let bv = bitvec![0, 1, 1, 0];  // 1 = masked
+        let bv = bitvec![0, 1, 1, 0]; // 1 = masked
         let mask = crate::mask::ActiveMask::from_bitvec(bv, None);
         let obs_result = shift_obs_column(&col, 1, &mask, 4);
 
@@ -2624,8 +2833,11 @@ mod tests {
                 if ofs_vals[i].is_nan() && obs_vals[i].is_nan() {
                     continue; // Both NA, OK
                 }
-                assert_eq!(ofs_vals[i], obs_vals[i],
-                    "OFS should equal OBS on unmasked data at position {}", i);
+                assert_eq!(
+                    ofs_vals[i], obs_vals[i],
+                    "OFS should equal OBS on unmasked data at position {}",
+                    i
+                );
             }
         } else {
             panic!("Expected F64 columns");

@@ -1,3 +1,4 @@
+use crate::ast::{Expr, Interner, SymbolId};
 /// BLADE Phase 3: IR Planner
 ///
 /// Purpose: Convert normalized expressions into validated IR plans
@@ -8,10 +9,11 @@
 /// - Schema consistency checks
 ///
 /// The planner does NOT execute - it only builds the IR DAG and validates it.
-
-use crate::ir::{Plan, Node, NodeId, Operation, Source, UnaryOp, BinaryOp, BinaryFunc, ValueRef, JoinOp, NumericFunc, SchemaInfo, SchemaOp};
+use crate::ir::{
+    BinaryFunc, BinaryOp, JoinOp, Node, NodeId, NumericFunc, Operation, Plan, SchemaInfo, SchemaOp,
+    Source, UnaryOp, ValueRef,
+};
 use crate::normalize::CanonExpr;
-use crate::ast::{Expr, Interner, SymbolId};
 use std::collections::HashMap;
 
 /// Planning context - tracks variable bindings and node references
@@ -120,13 +122,31 @@ fn plan_expr(
                     }
 
                     // Unary numeric operations
-                    "dlog" => plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // default: OBS (NA-skipping)
-                    "dlog-ofs" => plan_unary(NumericFunc::SHF_PTW_OFS_NLN_DLOG, &elements[1..], plan, ctx, interner),  // explicit OFS (positional)
+                    "dlog" => plan_unary(
+                        NumericFunc::SHF_PTW_OBS_NLN_DLOG,
+                        &elements[1..],
+                        plan,
+                        ctx,
+                        interner,
+                    ), // default: OBS (NA-skipping)
+                    "dlog-ofs" => plan_unary(
+                        NumericFunc::SHF_PTW_OFS_NLN_DLOG,
+                        &elements[1..],
+                        plan,
+                        ctx,
+                        interner,
+                    ), // explicit OFS (positional)
 
                     // DEPRECATED: Legacy alias for dlog
                     "dlog-col" => {
                         eprintln!("Warning: 'dlog-col' is deprecated, use 'dlog' instead");
-                        plan_unary(NumericFunc::SHF_PTW_OBS_NLN_DLOG, &elements[1..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_PTW_OBS_NLN_DLOG,
+                            &elements[1..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     "ret" => plan_unary(NumericFunc::RET, &elements[1..], plan, ctx, interner),
@@ -135,7 +155,13 @@ fn plan_expr(
                     "sqrt" => plan_unary(NumericFunc::SQRT, &elements[1..], plan, ctx, interner),
                     "abs" => plan_unary(NumericFunc::ABS, &elements[1..], plan, ctx, interner),
                     "inv" => plan_unary(NumericFunc::INV, &elements[1..], plan, ctx, interner),
-                    "locf" => plan_unary(NumericFunc::SHF_REC_NLN_LOCF, &elements[1..], plan, ctx, interner),
+                    "locf" => plan_unary(
+                        NumericFunc::SHF_REC_NLN_LOCF,
+                        &elements[1..],
+                        plan,
+                        ctx,
+                        interner,
+                    ),
                     "wkd" => plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner),
 
                     // DEPRECATED: Legacy alias for wkd
@@ -144,12 +170,24 @@ fn plan_expr(
                         plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner)
                     }
 
-                    "cs1" => plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner),
+                    "cs1" => plan_unary(
+                        NumericFunc::SHF_PFX_LIN_SUM,
+                        &elements[1..],
+                        plan,
+                        ctx,
+                        interner,
+                    ),
 
                     // DEPRECATED: Legacy alias for cs1
                     "cs1-col" => {
                         eprintln!("Warning: 'cs1-col' is deprecated, use 'cs1' instead");
-                        plan_unary(NumericFunc::SHF_PFX_LIN_SUM, &elements[1..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_PFX_LIN_SUM,
+                            &elements[1..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Shift operation: (shift k x) where k is non-negative integer
@@ -161,30 +199,52 @@ fn plan_expr(
                         // Parse k as non-negative integer
                         let k = match &elements[1] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("shift k must be non-negative, got {}", i)),
-                            Expr::Float(_) => return Err("shift k must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("shift k must be non-negative, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("shift k must be integer, not float".to_string())
+                            }
                             _ => return Err("shift k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_PTW_LIN_SHF { k },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // DEPRECATED: Legacy alias for shift
                     "shift-col" => {
                         eprintln!("Warning: 'shift-col' is deprecated, use 'shift' instead");
                         if elements.len() != 3 {
-                            return Err("shift-col expects 2 arguments: (shift-col k x)".to_string());
+                            return Err(
+                                "shift-col expects 2 arguments: (shift-col k x)".to_string()
+                            );
                         }
 
                         // Parse k as non-negative integer
                         let k = match &elements[1] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("shift-col k must be non-negative, got {}", i)),
-                            Expr::Float(_) => return Err("shift-col k must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("shift-col k must be non-negative, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("shift-col k must be integer, not float".to_string())
+                            }
                             _ => return Err("shift-col k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_PTW_LIN_SHF { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_PTW_LIN_SHF { k },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Mask-aware shift (observation-based lag): (lag-obs k x) or (shift-obs k x)
@@ -197,12 +257,22 @@ fn plan_expr(
                         // Parse k as non-negative integer
                         let k = match &elements[1] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("lag-obs k must be non-negative, got {}", i)),
-                            Expr::Float(_) => return Err("lag-obs k must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("lag-obs k must be non-negative, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("lag-obs k must be integer, not float".to_string())
+                            }
                             _ => return Err("lag-obs k must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::LAG_OBS { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::LAG_OBS { k },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Keep every k-th row: (keep k x) where k is positive integer
@@ -214,8 +284,12 @@ fn plan_expr(
                         // Parse k as positive integer
                         let k = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("keep k must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("keep k must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("keep k must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("keep k must be integer, not float".to_string())
+                            }
                             _ => return Err("keep k must be integer literal".to_string()),
                         };
 
@@ -225,35 +299,69 @@ fn plan_expr(
                     // Rolling mean: (rolling-mean w x) where w is positive integer
                     "rolling-mean" => {
                         if elements.len() != 3 {
-                            return Err("rolling-mean expects 2 arguments: (rolling-mean w x)".to_string());
+                            return Err(
+                                "rolling-mean expects 2 arguments: (rolling-mean w x)".to_string()
+                            );
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-mean w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-mean w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("rolling-mean w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("rolling-mean w must be integer, not float".to_string())
+                            }
                             _ => return Err("rolling-mean w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_LIN_AVG { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_WIN_LIN_AVG { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Rolling mean (min 2 observations): (rolling-mean-min2 w x) where w is positive integer
                     "rolling-mean-min2" => {
                         if elements.len() != 3 {
-                            return Err("rolling-mean-min2 expects 2 arguments: (rolling-mean-min2 w x)".to_string());
+                            return Err(
+                                "rolling-mean-min2 expects 2 arguments: (rolling-mean-min2 w x)"
+                                    .to_string(),
+                            );
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-mean-min2 w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-mean-min2 w must be integer, not float".to_string()),
-                            _ => return Err("rolling-mean-min2 w must be integer literal".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!(
+                                    "rolling-mean-min2 w must be positive, got {}",
+                                    i
+                                ))
+                            }
+                            Expr::Float(_) => {
+                                return Err(
+                                    "rolling-mean-min2 w must be integer, not float".to_string()
+                                )
+                            }
+                            _ => {
+                                return Err(
+                                    "rolling-mean-min2 w must be integer literal".to_string()
+                                )
+                            }
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_MIN2_LIN_AVG { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Feature engineering: ft-mean as planner rewrite
@@ -267,17 +375,29 @@ fn plan_expr(
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-mean w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("ft-mean w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-mean w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("ft-mean w must be integer, not float".to_string())
+                            }
                             _ => return Err("ft-mean w must be integer literal".to_string()),
                         };
 
                         // Plan inner rolling-mean
-                        let rolling_node = plan_unary(NumericFunc::SHF_WIN_LIN_AVG { w }, &elements[2..], plan, ctx, interner)?;
+                        let rolling_node = plan_unary(
+                            NumericFunc::SHF_WIN_LIN_AVG { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )?;
 
                         // Plan outer shift(1, ...)
                         // Create a temporary node reference for the rolling-mean result
-                        let input_node = plan.get_node(rolling_node).ok_or("Invalid rolling-mean node")?;
+                        let input_node = plan
+                            .get_node(rolling_node)
+                            .ok_or("Invalid rolling-mean node")?;
                         let shift_node_id = NodeId(plan.nodes.len());
                         let shift_node = Node {
                             id: shift_node_id,
@@ -293,35 +413,66 @@ fn plan_expr(
                     // Rolling std: (rolling-std w x) where w is positive integer
                     "rolling-std" => {
                         if elements.len() != 3 {
-                            return Err("rolling-std expects 2 arguments: (rolling-std w x)".to_string());
+                            return Err(
+                                "rolling-std expects 2 arguments: (rolling-std w x)".to_string()
+                            );
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-std w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-std w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("rolling-std w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("rolling-std w must be integer, not float".to_string())
+                            }
                             _ => return Err("rolling-std w must be integer literal".to_string()),
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_NLN_SDV { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_WIN_NLN_SDV { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
-
 
                     // Rolling std (min 2 observations): relaxed min_periods for masked calendars
                     "rolling-std-min2" => {
                         if elements.len() != 3 {
-                            return Err("rolling-std-min2 expects 2 arguments: (rolling-std-min2 w x)".to_string());
+                            return Err(
+                                "rolling-std-min2 expects 2 arguments: (rolling-std-min2 w x)"
+                                    .to_string(),
+                            );
                         }
 
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-std-min2 w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("rolling-std-min2 w must be integer, not float".to_string()),
-                            _ => return Err("rolling-std-min2 w must be integer literal".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!(
+                                    "rolling-std-min2 w must be positive, got {}",
+                                    i
+                                ))
+                            }
+                            Expr::Float(_) => {
+                                return Err(
+                                    "rolling-std-min2 w must be integer, not float".to_string()
+                                )
+                            }
+                            _ => {
+                                return Err("rolling-std-min2 w must be integer literal".to_string())
+                            }
                         };
 
-                        plan_unary(NumericFunc::SHF_WIN_MIN2_NLN_SDV { w }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
                     // Feature engineering: ft-std as planner rewrite
@@ -334,16 +485,28 @@ fn plan_expr(
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-std w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("ft-std w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-std w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("ft-std w must be integer, not float".to_string())
+                            }
                             _ => return Err("ft-std w must be integer literal".to_string()),
                         };
 
                         // Plan inner rolling-std
-                        let rolling_node = plan_unary(NumericFunc::SHF_WIN_NLN_SDV { w }, &elements[2..], plan, ctx, interner)?;
+                        let rolling_node = plan_unary(
+                            NumericFunc::SHF_WIN_NLN_SDV { w },
+                            &elements[2..],
+                            plan,
+                            ctx,
+                            interner,
+                        )?;
 
                         // Plan outer shift(1, ...)
-                        let input_node = plan.get_node(rolling_node).ok_or("Invalid rolling-std node")?;
+                        let input_node = plan
+                            .get_node(rolling_node)
+                            .ok_or("Invalid rolling-std node")?;
                         let shift_node_id = NodeId(plan.nodes.len());
                         let shift_node = Node {
                             id: shift_node_id,
@@ -375,14 +538,22 @@ fn plan_expr(
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("{} w must be positive, got {}", func_name, i)),
-                            Expr::Float(_) => return Err(format!("{} w must be integer, not float", func_name)),
+                            Expr::Int(i) => {
+                                return Err(format!("{} w must be positive, got {}", func_name, i))
+                            }
+                            Expr::Float(_) => {
+                                return Err(format!("{} w must be integer, not float", func_name))
+                            }
                             _ => return Err(format!("{} w must be integer literal", func_name)),
                         };
 
                         // Plan input x ONCE (critical: don't re-plan stdin multiple times!)
                         let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
-                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or("Invalid x node")?
+                            .schema
+                            .clone();
 
                         // Create rolling-mean (min2) node using already-planned x_node
                         // Use min2 for CLISPI compatibility with masked calendars
@@ -451,8 +622,12 @@ fn plan_expr(
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ur w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("ur w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("ur w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("ur w must be integer, not float".to_string())
+                            }
                             _ => return Err("ur w must be integer literal".to_string()),
                         };
 
@@ -460,7 +635,11 @@ fn plan_expr(
 
                         // Plan input x ONCE
                         let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
-                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or("Invalid x node")?
+                            .schema
+                            .clone();
 
                         // Create rolling-std (min2/relaxed) node for CLISPI compatibility
                         let std_node_id = NodeId(plan.nodes.len());
@@ -511,8 +690,12 @@ fn plan_expr(
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ur-col w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("ur-col w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("ur-col w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("ur-col w must be integer, not float".to_string())
+                            }
                             _ => return Err("ur-col w must be integer literal".to_string()),
                         };
 
@@ -520,7 +703,11 @@ fn plan_expr(
 
                         // Plan input x ONCE
                         let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
-                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or("Invalid x node")?
+                            .schema
+                            .clone();
 
                         // Create rolling-std (min2/relaxed) node for CLISPI compatibility
                         let std_node_id = NodeId(plan.nodes.len());
@@ -566,14 +753,20 @@ fn plan_expr(
                     // Uses RollMeanMin2ExclCurrent / RollStdMin2ExclCurrent (window ending at i-1)
                     "ft-zscore" => {
                         if elements.len() != 3 {
-                            return Err("ft-zscore expects 2 arguments: (ft-zscore w x)".to_string());
+                            return Err(
+                                "ft-zscore expects 2 arguments: (ft-zscore w x)".to_string()
+                            );
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-zscore w must be positive, got {}", i)),
-                            Expr::Float(_) => return Err("ft-zscore w must be integer, not float".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-zscore w must be positive, got {}", i))
+                            }
+                            Expr::Float(_) => {
+                                return Err("ft-zscore w must be integer, not float".to_string())
+                            }
                             _ => return Err("ft-zscore w must be integer literal".to_string()),
                         };
 
@@ -581,14 +774,30 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
 
                         // Plan ft-mean: rolling mean excluding current observation (window ending at i-1)
-                        let ft_mean_node_id = plan_unary(NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_mean_node_id = plan_unary(
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w },
+                            &[elements[2].clone()],
+                            plan,
+                            ctx,
+                            interner,
+                        )?;
 
                         // Plan ft-std: rolling std excluding current observation (window ending at i-1)
-                        let ft_std_node_id = plan_unary(NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w }, &[elements[2].clone()], plan, ctx, interner)?;
+                        let ft_std_node_id = plan_unary(
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w },
+                            &[elements[2].clone()],
+                            plan,
+                            ctx,
+                            interner,
+                        )?;
 
                         // Plan (- x ft-mean)
                         let sub_node_id = NodeId(plan.nodes.len());
-                        let x_schema = plan.get_node(x_node).ok_or("Invalid x node")?.schema.clone();
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or("Invalid x node")?
+                            .schema
+                            .clone();
                         let sub_node = Node {
                             id: sub_node_id,
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
@@ -635,14 +844,18 @@ fn plan_expr(
                     // Schema-transforming operations
                     "xminus" => {
                         if elements.len() != 3 {
-                            return Err("xminus expects 2 arguments: (xminus data half)".to_string());
+                            return Err(
+                                "xminus expects 2 arguments: (xminus data half)".to_string()
+                            );
                         }
 
                         // Parse half as boolean (0/false or 1/true)
                         let half = match &elements[2] {
                             Expr::Int(0) => false,
                             Expr::Int(1) => true,
-                            Expr::Int(i) => return Err(format!("xminus half must be 0 or 1, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("xminus half must be 0 or 1, got {}", i))
+                            }
                             _ => return Err("xminus half must be integer (0 or 1)".to_string()),
                         };
 
@@ -654,7 +867,7 @@ fn plan_expr(
                         let node = Node {
                             id: node_id,
                             op: Operation::Schema(SchemaOp::SHF_PTW_LIN_SPR { input, half }),
-                            schema: SchemaInfo::unknown(),  // Schema will be rebuilt at runtime
+                            schema: SchemaInfo::unknown(), // Schema will be rebuilt at runtime
                         };
                         Ok(plan.add_node(node))
                     }
@@ -662,7 +875,10 @@ fn plan_expr(
                     // Mask operations
                     "mask-weekend" => {
                         if elements.len() < 2 || elements.len() > 3 {
-                            return Err("mask-weekend expects 1-2 arguments: (mask-weekend frame [name])".to_string());
+                            return Err(
+                                "mask-weekend expects 1-2 arguments: (mask-weekend frame [name])"
+                                    .to_string(),
+                            );
                         }
 
                         // Parse optional name
@@ -670,10 +886,14 @@ fn plan_expr(
                             match &elements[2] {
                                 Expr::Str(s) => Some(s.clone()),
                                 Expr::Sym(s) => Some(interner.resolve(*s).to_string()),
-                                _ => return Err("mask-weekend name must be string or symbol".to_string()),
+                                _ => {
+                                    return Err(
+                                        "mask-weekend name must be string or symbol".to_string()
+                                    )
+                                }
                             }
                         } else {
-                            None  // default: "weekend"
+                            None // default: "weekend"
                         };
 
                         // Plan input
@@ -691,7 +911,10 @@ fn plan_expr(
 
                     "with-mask" => {
                         if elements.len() != 3 {
-                            return Err("with-mask expects 2 arguments: (with-mask frame mask-expr)".to_string());
+                            return Err(
+                                "with-mask expects 2 arguments: (with-mask frame mask-expr)"
+                                    .to_string(),
+                            );
                         }
 
                         // Plan input
@@ -713,7 +936,9 @@ fn plan_expr(
                     // Let bindings: (let ((name1 expr1) (name2 expr2) ...) body)
                     "let" => {
                         if elements.len() != 3 {
-                            return Err("let expects 2 arguments: (let ((bindings...)) body)".to_string());
+                            return Err(
+                                "let expects 2 arguments: (let ((bindings...)) body)".to_string()
+                            );
                         }
 
                         // Parse bindings
@@ -872,7 +1097,10 @@ fn plan_binary(
 }
 
 /// Parse a mask expression from AST
-fn parse_mask_expr_from_ast(expr: &Expr, interner: &Interner) -> Result<crate::mask::MaskExpr, String> {
+fn parse_mask_expr_from_ast(
+    expr: &Expr,
+    interner: &Interner,
+) -> Result<crate::mask::MaskExpr, String> {
     use crate::mask::MaskExpr;
 
     match expr {
@@ -883,59 +1111,55 @@ fn parse_mask_expr_from_ast(expr: &Expr, interner: &Interner) -> Result<crate::m
         }
 
         // Quote: (quote weekend) → Name("weekend")
-        Expr::Quote(inner) => {
-            match **inner {
-                Expr::Sym(s) => {
-                    let name = interner.resolve(s).to_string();
-                    Ok(MaskExpr::Name(name))
-                }
-                _ => Err("Quoted mask name must be a symbol".to_string()),
+        Expr::Quote(inner) => match **inner {
+            Expr::Sym(s) => {
+                let name = interner.resolve(s).to_string();
+                Ok(MaskExpr::Name(name))
             }
-        }
+            _ => Err("Quoted mask name must be a symbol".to_string()),
+        },
 
         // List: (not expr) or (and ...) or (or ...)
-        Expr::List(elements) if !elements.is_empty() => {
-            match &elements[0] {
-                Expr::Sym(op_sym) => {
-                    let op_name = interner.resolve(*op_sym);
+        Expr::List(elements) if !elements.is_empty() => match &elements[0] {
+            Expr::Sym(op_sym) => {
+                let op_name = interner.resolve(*op_sym);
 
-                    match op_name {
-                        "not" => {
-                            if elements.len() != 2 {
-                                return Err("mask expr 'not' expects 1 argument".to_string());
-                            }
-                            let inner = parse_mask_expr_from_ast(&elements[1], interner)?;
-                            Ok(MaskExpr::Not(Box::new(inner)))
+                match op_name {
+                    "not" => {
+                        if elements.len() != 2 {
+                            return Err("mask expr 'not' expects 1 argument".to_string());
                         }
-
-                        "and" => {
-                            if elements.len() < 2 {
-                                return Err("mask expr 'and' expects at least 1 argument".to_string());
-                            }
-                            let mut sub_exprs = Vec::new();
-                            for arg in &elements[1..] {
-                                sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
-                            }
-                            Ok(MaskExpr::And(sub_exprs))
-                        }
-
-                        "or" => {
-                            if elements.len() < 2 {
-                                return Err("mask expr 'or' expects at least 1 argument".to_string());
-                            }
-                            let mut sub_exprs = Vec::new();
-                            for arg in &elements[1..] {
-                                sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
-                            }
-                            Ok(MaskExpr::Or(sub_exprs))
-                        }
-
-                        _ => Err(format!("Unknown mask operator: {}", op_name)),
+                        let inner = parse_mask_expr_from_ast(&elements[1], interner)?;
+                        Ok(MaskExpr::Not(Box::new(inner)))
                     }
+
+                    "and" => {
+                        if elements.len() < 2 {
+                            return Err("mask expr 'and' expects at least 1 argument".to_string());
+                        }
+                        let mut sub_exprs = Vec::new();
+                        for arg in &elements[1..] {
+                            sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
+                        }
+                        Ok(MaskExpr::And(sub_exprs))
+                    }
+
+                    "or" => {
+                        if elements.len() < 2 {
+                            return Err("mask expr 'or' expects at least 1 argument".to_string());
+                        }
+                        let mut sub_exprs = Vec::new();
+                        for arg in &elements[1..] {
+                            sub_exprs.push(parse_mask_expr_from_ast(arg, interner)?);
+                        }
+                        Ok(MaskExpr::Or(sub_exprs))
+                    }
+
+                    _ => Err(format!("Unknown mask operator: {}", op_name)),
                 }
-                _ => Err("Mask expression list must start with operator symbol".to_string()),
             }
-        }
+            _ => Err("Mask expression list must start with operator symbol".to_string()),
+        },
 
         _ => Err(format!("Invalid mask expression: {:?}", expr)),
     }
@@ -1086,15 +1310,13 @@ mod tests {
         // (let ((x (read-csv "data.csv"))) (dlog x))
         let let_expr = Expr::List(vec![
             Expr::Sym(interner.intern("let")),
-            Expr::List(vec![
+            Expr::List(vec![Expr::List(vec![
+                Expr::Sym(interner.intern("x")),
                 Expr::List(vec![
-                    Expr::Sym(interner.intern("x")),
-                    Expr::List(vec![
-                        Expr::Sym(interner.intern("read-csv")),
-                        Expr::Str("data.csv".to_string()),
-                    ]),
+                    Expr::Sym(interner.intern("read-csv")),
+                    Expr::Str("data.csv".to_string()),
                 ]),
-            ]),
+            ])]),
             Expr::List(vec![
                 Expr::Sym(interner.intern("dlog")),
                 Expr::Sym(interner.intern("x")),

@@ -77,7 +77,7 @@ fn test_column_pattern_matching() {
 /// Test TableView and orientation system
 #[test]
 fn test_tableview_and_orientations() {
-    use blawktrust::{Table, TableView, ORI_H, ORI_Z, ORI_R};
+    use blawktrust::{Table, TableView, ORI_H, ORI_R, ORI_Z};
 
     // Create a simple table
     let table = Table::new(
@@ -107,8 +107,8 @@ fn test_tableview_and_orientations() {
 /// Test that orientation operations exist (sum is critical)
 #[test]
 fn test_orientation_operations() {
-    use blawktrust::{Table, TableView, ORI_H, ORI_Z, ORI_R};
-    use blawktrust::builtins::ori_ops::{sum, dlog};
+    use blawktrust::builtins::ori_ops::{dlog, sum};
+    use blawktrust::{Table, TableView, ORI_H, ORI_R, ORI_Z};
 
     let table = Table::new(
         vec!["a".to_string(), "b".to_string()],
@@ -124,8 +124,8 @@ fn test_orientation_operations() {
     match result_h {
         Column::F64(data) => {
             assert_eq!(data.len(), 2); // Should have 2 sums (one per column)
-            assert_eq!(data[0], 4.0);  // 1 + 3
-            assert_eq!(data[1], 6.0);  // 2 + 4
+            assert_eq!(data[0], 4.0); // 1 + 3
+            assert_eq!(data[1], 6.0); // 2 + 4
         }
         _ => panic!("Expected F64 column from sum"),
     }
@@ -136,8 +136,8 @@ fn test_orientation_operations() {
     match result_z {
         Column::F64(data) => {
             assert_eq!(data.len(), 2); // Should have 2 sums (one per row)
-            assert_eq!(data[0], 3.0);  // 1 + 2
-            assert_eq!(data[1], 7.0);  // 3 + 4
+            assert_eq!(data[0], 3.0); // 1 + 2
+            assert_eq!(data[1], 7.0); // 3 + 4
         }
         _ => panic!("Expected F64 column from sum"),
     }
@@ -147,8 +147,8 @@ fn test_orientation_operations() {
     let result_r = sum(&view_r);
     match result_r {
         Column::F64(data) => {
-            assert_eq!(data.len(), 1);   // Should be single value
-            assert_eq!(data[0], 10.0);   // 1 + 2 + 3 + 4
+            assert_eq!(data.len(), 1); // Should be single value
+            assert_eq!(data[0], 10.0); // 1 + 2 + 3 + 4
         }
         _ => panic!("Expected F64 column from sum"),
     }
@@ -164,10 +164,7 @@ fn test_orientation_operations() {
 fn test_table_clone() {
     use blawktrust::Table;
 
-    let table = Table::new(
-        vec!["a".to_string()],
-        vec![Column::new_f64(vec![1.0, 2.0])],
-    );
+    let table = Table::new(vec!["a".to_string()], vec![Column::new_f64(vec![1.0, 2.0])]);
 
     // Must be able to clone
     let table2 = table.clone();

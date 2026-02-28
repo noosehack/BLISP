@@ -6,15 +6,15 @@
 //! - map_numeric_preserve_tags: core primitive (Phase 1)
 //! - reindex_by: alignment primitive (Phase 2)
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Index column: Date, Timestamp, or String rownames
 #[derive(Debug, Clone)]
 pub enum IndexColumn {
-    Date(Arc<Vec<i32>>),         // Days since epoch
-    Timestamp(Arc<Vec<i64>>),    // Nanoseconds since epoch
-    String(Arc<Vec<String>>),    // Generic rownames
+    Date(Arc<Vec<i32>>),      // Days since epoch
+    Timestamp(Arc<Vec<i64>>), // Nanoseconds since epoch
+    String(Arc<Vec<String>>), // Generic rownames
 }
 
 impl IndexColumn {
@@ -45,10 +45,10 @@ impl IndexColumn {
 /// Tags: metadata carried by Arc (P2 policy: index + colnames + masks)
 #[derive(Debug, Clone)]
 pub struct Tags {
-    pub index_name: String,              // e.g., "DATE", "TIMESTAMP"
-    pub index: Arc<IndexColumn>,         // Row identifiers
-    pub colnames: Arc<Vec<String>>,      // Numeric column names (in order)
-    pub masks: crate::mask::MaskSet,     // Named row masks (weekend, holiday, etc.)
+    pub index_name: String,                   // e.g., "DATE", "TIMESTAMP"
+    pub index: Arc<IndexColumn>,              // Row identifiers
+    pub colnames: Arc<Vec<String>>,           // Numeric column names (in order)
+    pub masks: crate::mask::MaskSet,          // Named row masks (weekend, holiday, etc.)
     pub active_mask: crate::mask::ActiveMask, // Currently active mask (compiled)
 }
 
@@ -100,9 +100,9 @@ pub enum ColData {
 /// Frame: tags + numeric payload (BLADE core structure)
 #[derive(Debug, Clone)]
 pub struct Frame {
-    pub tags: Arc<Tags>,        // Shared metadata (zero-copy)
-    pub cols: Vec<ColData>,     // Numeric columns (same order as tags.colnames)
-    pub nrows: usize,           // Cached
+    pub tags: Arc<Tags>,    // Shared metadata (zero-copy)
+    pub cols: Vec<ColData>, // Numeric columns (same order as tags.colnames)
+    pub nrows: usize,       // Cached
 }
 
 impl Frame {
@@ -123,7 +123,11 @@ impl Frame {
         let nrows = tags.nrows();
         let col_data = cols.into_iter().map(ColData::Mat).collect();
 
-        Self { tags, cols: col_data, nrows }
+        Self {
+            tags,
+            cols: col_data,
+            nrows,
+        }
     }
 
     /// Get materialized column by index
@@ -163,7 +167,9 @@ where
     let tags_out = Arc::clone(&frame.tags);
 
     // Transform each numeric column
-    let cols_out: Vec<ColData> = frame.cols.iter()
+    let cols_out: Vec<ColData> = frame
+        .cols
+        .iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => ColData::Mat(Arc::new(f(col))),
         })
@@ -268,17 +274,14 @@ pub fn reindex_by(source: &Frame, target_index: Arc<IndexColumn>) -> Frame {
     // Create new Tags with target_index and source colnames (both Arc-reused)
     // Phase G: Reindex masks from source onto target_index
     // Policy: Named masks reindexed, new rows default to false (unmasked)
-    let reindexed_masks = crate::mask::reindex_maskset(
-        &source.tags.masks,
-        &source.tags.index,
-        &target_index
-    );
+    let reindexed_masks =
+        crate::mask::reindex_maskset(&source.tags.masks, &source.tags.index, &target_index);
 
     let reindexed_active_mask = crate::mask::reindex_active_mask(
         &source.tags.active_mask,
         &reindexed_masks,
         &source.tags.index,
-        &target_index
+        &target_index,
     );
 
     let out_tags = Tags {
@@ -351,9 +354,7 @@ fn asofr_sorted(x: &Frame, y: &Frame) -> Frame {
     let ncols = x.ncols();
 
     // Allocate output columns
-    let mut out_cols: Vec<Vec<f64>> = (0..ncols)
-        .map(|_| Vec::with_capacity(y_nrows))
-        .collect();
+    let mut out_cols: Vec<Vec<f64>> = (0..ncols).map(|_| Vec::with_capacity(y_nrows)).collect();
 
     // Two-pointer merge
     let mut x_ptr = -1_isize; // Last valid x index (-1 = none found yet)
@@ -369,9 +370,9 @@ fn asofr_sorted(x: &Frame, y: &Frame) -> Frame {
             for check_idx in start_check..x_nrows {
                 if let Some(x_key) = x.tags.index.get(check_idx) {
                     if index_key_le(&x_key, &y_key) {
-                        x_ptr = check_idx as isize;  // Update to this x
+                        x_ptr = check_idx as isize; // Update to this x
                     } else {
-                        break;  // x values beyond this are > y_key
+                        break; // x values beyond this are > y_key
                     }
                 } else {
                     break;
@@ -445,9 +446,7 @@ fn asofr_fallback(x: &Frame, y: &Frame) -> Frame {
     }
 
     // Allocate output
-    let mut out_cols: Vec<Vec<f64>> = (0..ncols)
-        .map(|_| Vec::with_capacity(y_nrows))
-        .collect();
+    let mut out_cols: Vec<Vec<f64>> = (0..ncols).map(|_| Vec::with_capacity(y_nrows)).collect();
 
     // For each y row, find best x (linear scan - O(n²) but correct)
     for y_row in 0..y_nrows {
@@ -511,7 +510,7 @@ fn asofr_fallback(x: &Frame, y: &Frame) -> Frame {
         index_name: y.tags.index_name.clone(),
         index: Arc::clone(&y.tags.index),
         colnames: Arc::clone(&x.tags.colnames),
-        masks: y.tags.masks.clone(),             // Inherit Y's masks (result has Y's index)
+        masks: y.tags.masks.clone(), // Inherit Y's masks (result has Y's index)
         active_mask: y.tags.active_mask.clone(), // Inherit Y's active mask
     };
 
@@ -574,16 +573,23 @@ mod tests {
         let result = map_numeric_preserve_tags(&frame, |c| c.clone());
 
         // I1: Same index Arc
-        assert!(Arc::ptr_eq(&frame.tags.index, &result.tags.index),
-            "I1 VIOLATED: Index Arc not preserved");
+        assert!(
+            Arc::ptr_eq(&frame.tags.index, &result.tags.index),
+            "I1 VIOLATED: Index Arc not preserved"
+        );
 
         // I2: Same colnames Arc
-        assert!(Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
-            "I2 VIOLATED: Colnames Arc not preserved");
+        assert!(
+            Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
+            "I2 VIOLATED: Colnames Arc not preserved"
+        );
 
         // I3: Same nrows
-        assert_eq!(frame.nrows(), result.nrows(),
-            "I3 VIOLATED: Row count changed");
+        assert_eq!(
+            frame.nrows(),
+            result.nrows(),
+            "I3 VIOLATED: Row count changed"
+        );
     }
 
     #[test]
@@ -600,16 +606,23 @@ mod tests {
         let result = map_numeric_preserve_tags(&frame, |c| dlog_column(c, 1));
 
         // I1: Same index Arc (pointer equality)
-        assert!(Arc::ptr_eq(&frame.tags.index, &result.tags.index),
-            "I1 VIOLATED: dlog didn't preserve index Arc");
+        assert!(
+            Arc::ptr_eq(&frame.tags.index, &result.tags.index),
+            "I1 VIOLATED: dlog didn't preserve index Arc"
+        );
 
         // I2: Same colnames Arc (pointer equality)
-        assert!(Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
-            "I2 VIOLATED: dlog didn't preserve colnames Arc");
+        assert!(
+            Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
+            "I2 VIOLATED: dlog didn't preserve colnames Arc"
+        );
 
         // I3: Same nrows
-        assert_eq!(frame.nrows(), result.nrows(),
-            "I3 VIOLATED: dlog changed row count");
+        assert_eq!(
+            frame.nrows(),
+            result.nrows(),
+            "I3 VIOLATED: dlog changed row count"
+        );
 
         // Verify operation actually worked (first value should be NA for lag=1)
         let out_col = result.get_col(0).unwrap();
@@ -652,8 +665,10 @@ mod tests {
         }
 
         // Verify colnames Arc preserved
-        assert!(Arc::ptr_eq(&source.tags.colnames, &result.tags.colnames),
-            "reindex_by should preserve colnames Arc");
+        assert!(
+            Arc::ptr_eq(&source.tags.colnames, &result.tags.colnames),
+            "reindex_by should preserve colnames Arc"
+        );
     }
 
     #[test]
@@ -793,8 +808,10 @@ mod tests {
         }
 
         // Arc preservation (twice should still share y's colnames from once)
-        assert!(Arc::ptr_eq(&once.tags.colnames, &twice.tags.colnames),
-            "Idempotence: colnames Arc must be preserved");
+        assert!(
+            Arc::ptr_eq(&once.tags.colnames, &twice.tags.colnames),
+            "Idempotence: colnames Arc must be preserved"
+        );
     }
 
     #[test]
@@ -841,8 +858,11 @@ mod tests {
 
         let result = reindex_by(&x, Arc::new(y_index));
 
-        assert_eq!(result.nrows(), y_nrows,
-            "Monotonicity: output rows must equal target rows");
+        assert_eq!(
+            result.nrows(),
+            y_nrows,
+            "Monotonicity: output rows must equal target rows"
+        );
     }
 
     #[test]
@@ -870,8 +890,11 @@ mod tests {
                 // NO invented data
                 for &val in data.iter() {
                     if !val.is_nan() {
-                        assert!(val == 100.0 || val == 102.0,
-                            "Non-NA value {} not from source x", val);
+                        assert!(
+                            val == 100.0 || val == 102.0,
+                            "Non-NA value {} not from source x",
+                            val
+                        );
                     }
                 }
             }
@@ -899,12 +922,22 @@ mod tests {
         for (i, op) in ops.iter().enumerate() {
             let result = map_numeric_preserve_tags(&frame, op);
 
-            assert!(Arc::ptr_eq(&frame.tags.index, &result.tags.index),
-                "Op {}: I1 violated - index Arc not preserved", i);
-            assert!(Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
-                "Op {}: I2 violated - colnames Arc not preserved", i);
-            assert_eq!(frame.nrows(), result.nrows(),
-                "Op {}: I3 violated - row count changed", i);
+            assert!(
+                Arc::ptr_eq(&frame.tags.index, &result.tags.index),
+                "Op {}: I1 violated - index Arc not preserved",
+                i
+            );
+            assert!(
+                Arc::ptr_eq(&frame.tags.colnames, &result.tags.colnames),
+                "Op {}: I2 violated - colnames Arc not preserved",
+                i
+            );
+            assert_eq!(
+                frame.nrows(),
+                result.nrows(),
+                "Op {}: I3 violated - row count changed",
+                i
+            );
         }
     }
 
@@ -934,7 +967,11 @@ mod tests {
         match (&**asof_col, &**mapr_col) {
             (blawktrust::Column::F64(a), blawktrust::Column::F64(m)) => {
                 for i in 0..a.len() {
-                    assert_eq!(a[i], m[i], "Row {}: asofr should equal mapr when indices match", i);
+                    assert_eq!(
+                        a[i], m[i],
+                        "Row {}: asofr should equal mapr when indices match",
+                        i
+                    );
                 }
             }
             _ => panic!("Expected F64 columns"),
@@ -953,7 +990,9 @@ mod tests {
         let x = Frame::new(x_tags, vec![x_col]);
 
         // y: [18000, 18001, 18002, 18003, 18004, 18005, 18006]
-        let y_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18002, 18003, 18004, 18005, 18006]));
+        let y_index = IndexColumn::Date(Arc::new(vec![
+            18000, 18001, 18002, 18003, 18004, 18005, 18006,
+        ]));
         let y_tags = Tags::new("DATE".to_string(), y_index, vec!["dummy".to_string()]);
         let y_col = Arc::new(blawktrust::Column::new_f64(vec![1.0; 7]));
         let y = Frame::new(y_tags, vec![y_col]);
@@ -973,8 +1012,11 @@ mod tests {
 
                 // CRITICAL: 999 never appears before 18005
                 for i in 1..5 {
-                    assert_ne!(data[i], 999.0,
-                        "BIAS VIOLATION: Future value leaked to row {}", i);
+                    assert_ne!(
+                        data[i], 999.0,
+                        "BIAS VIOLATION: Future value leaked to row {}",
+                        i
+                    );
                 }
             }
             _ => panic!("Expected F64 column"),
@@ -1005,10 +1047,15 @@ mod tests {
                 // Expected: [100, 100, 102, 102, 102, 105]
                 // Monotone nondecreasing
                 for i in 1..data.len() {
-                    if !data[i-1].is_nan() && !data[i].is_nan() {
-                        assert!(data[i-1] <= data[i],
+                    if !data[i - 1].is_nan() && !data[i].is_nan() {
+                        assert!(
+                            data[i - 1] <= data[i],
                             "Monotonicity violated: data[{}]={} > data[{}]={}",
-                            i-1, data[i-1], i, data[i]);
+                            i - 1,
+                            data[i - 1],
+                            i,
+                            data[i]
+                        );
                     }
                 }
             }
@@ -1058,7 +1105,9 @@ mod tests {
 
         let x_index = IndexColumn::Date(Arc::new(vec![18000, 18001, 18003, 18003, 18005]));
         let x_tags = Tags::new("DATE".to_string(), x_index, vec!["price".to_string()]);
-        let x_col = Arc::new(blawktrust::Column::new_f64(vec![100.0, 101.0, 103.0, 103.5, 105.0]));
+        let x_col = Arc::new(blawktrust::Column::new_f64(vec![
+            100.0, 101.0, 103.0, 103.5, 105.0,
+        ]));
         let x = Frame::new(x_tags, vec![x_col]);
 
         let y_index = IndexColumn::Date(Arc::new(vec![17999, 18000, 18002, 18003, 18004, 18006]));
@@ -1083,8 +1132,7 @@ mod tests {
                     if o[i].is_nan() && n[i].is_nan() {
                         continue;
                     }
-                    assert_eq!(o[i], n[i],
-                        "Row {}: optimized != naive (edge case)", i);
+                    assert_eq!(o[i], n[i], "Row {}: optimized != naive (edge case)", i);
                 }
             }
             _ => panic!("Expected F64 columns"),

@@ -9,14 +9,14 @@
 //! - Unfused: Multiple passes with intermediate allocations
 //! - Fused: Single pass with one output allocation
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use blawktrust::Column;
 use blisp::exec::{
-    abs_column, log_column, exp_column, sqrt_column, inv_column,
-    cumsum_column, dlog_obs_column, dlog_ofs_column,
-    fused_elementwise_column, fused_cs1_dlog_obs_column, fused_cs1_dlog_ofs_column,
+    abs_column, cumsum_column, dlog_obs_column, dlog_ofs_column, exp_column,
+    fused_cs1_dlog_obs_column, fused_cs1_dlog_ofs_column, fused_elementwise_column, inv_column,
+    log_column, sqrt_column,
 };
 use blisp::ir::NumericFunc;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 /// Generate test data with specified NA density
 fn generate_test_data(size: usize, na_rate: f64) -> Vec<f64> {
@@ -92,9 +92,7 @@ fn bench_pr4_1_elementwise_chain(c: &mut Criterion) {
                     NumericFunc::INV,
                 ];
 
-                b.iter(|| {
-                    black_box(fused_elementwise_column(&col, &ops))
-                });
+                b.iter(|| black_box(fused_elementwise_column(&col, &ops)));
             });
         }
     }
@@ -129,9 +127,7 @@ fn bench_pr4_2b_cs1_dlog_obs(c: &mut Criterion) {
         let data = generate_weekend_data(size);
         let col = Column::new_f64(data);
 
-        b.iter(|| {
-            black_box(fused_cs1_dlog_obs_column(&col))
-        });
+        b.iter(|| black_box(fused_cs1_dlog_obs_column(&col)));
     });
 
     group.finish();
@@ -165,9 +161,7 @@ fn bench_pr4_2b_cs1_dlog_ofs(c: &mut Criterion) {
             let data = generate_test_data(size, 0.0);
             let col = Column::new_f64(data);
 
-            b.iter(|| {
-                black_box(fused_cs1_dlog_ofs_column(&col, k))
-            });
+            b.iter(|| black_box(fused_cs1_dlog_ofs_column(&col, k)));
         });
     }
 

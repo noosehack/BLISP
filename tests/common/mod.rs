@@ -6,13 +6,15 @@
 //! - Frame equivalence assertion (Arc identity + value equality)
 //! - Expression generators (well-typed, join-safe)
 
-use blisp::frame::{Frame, Tags, IndexColumn, ColData, map_numeric_preserve_tags, asofr, reindex_by};
+use blawktrust::Column;
 use blisp::ast::{Expr, Interner, SymbolId};
+use blisp::frame::{
+    asofr, map_numeric_preserve_tags, reindex_by, ColData, Frame, IndexColumn, Tags,
+};
 use blisp::runtime::Runtime;
 use blisp::value::Value;
-use blawktrust::Column;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const EPSILON: f64 = 1e-10;
 
@@ -55,9 +57,11 @@ pub fn assert_frame_equiv(a: &Frame, b: &Frame) {
 
     // Same column count
     assert_eq!(
-        a.ncols(), b.ncols(),
+        a.ncols(),
+        b.ncols(),
         "Frame column count mismatch: {} vs {}",
-        a.ncols(), b.ncols()
+        a.ncols(),
+        b.ncols()
     );
 
     // Index equivalence: type + values
@@ -95,8 +99,11 @@ fn assert_index_equiv(a: &IndexColumn, b: &IndexColumn) {
         (IndexColumn::String(a_vec), IndexColumn::String(b_vec)) => {
             assert_eq!(**a_vec, **b_vec, "String index values differ");
         }
-        _ => panic!("Index types differ: {:?} vs {:?}",
-            index_type_name(a), index_type_name(b)),
+        _ => panic!(
+            "Index types differ: {:?} vs {:?}",
+            index_type_name(a),
+            index_type_name(b)
+        ),
     }
 }
 
@@ -113,7 +120,8 @@ fn assert_column_equiv(a: &Arc<Column>, b: &Arc<Column>, col_idx: usize) {
     match (&**a, &**b) {
         (Column::F64(a_data), Column::F64(b_data)) => {
             assert_eq!(
-                a_data.len(), b_data.len(),
+                a_data.len(),
+                b_data.len(),
                 "Column {} length mismatch",
                 col_idx
             );
@@ -130,7 +138,11 @@ fn assert_column_equiv(a: &Arc<Column>, b: &Arc<Column>, col_idx: usize) {
                 } else if (a_val - b_val).abs() > EPSILON {
                     panic!(
                         "Column {} row {}: value mismatch: {} vs {} (diff: {})",
-                        col_idx, row_idx, a_val, b_val, (a_val - b_val).abs()
+                        col_idx,
+                        row_idx,
+                        a_val,
+                        b_val,
+                        (a_val - b_val).abs()
                     );
                 }
             }
@@ -199,9 +211,7 @@ pub fn build_date_frame(
         cols.push(Arc::new(Column::new_f64(data)));
     }
 
-    let colnames = (0..ncols)
-        .map(|i| format!("col{}", i))
-        .collect();
+    let colnames = (0..ncols).map(|i| format!("col{}", i)).collect();
 
     let tags = Tags::new(name.to_string(), index, colnames);
     Arc::new(Frame::new(tags, cols))
@@ -258,9 +268,7 @@ pub fn build_timestamp_frame(
         cols.push(Arc::new(Column::new_f64(data)));
     }
 
-    let colnames = (0..ncols)
-        .map(|i| format!("col{}", i))
-        .collect();
+    let colnames = (0..ncols).map(|i| format!("col{}", i)).collect();
 
     let tags = Tags::new(name.to_string(), index, colnames);
     Arc::new(Frame::new(tags, cols))
@@ -313,9 +321,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                             return Err("ret expects 1 argument".to_string());
                         }
                         let input = direct_eval(&elements[1], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            ret_column(col, 1)
-                        });
+                        let result = map_numeric_preserve_tags(&input, |col| ret_column(col, 1));
                         Ok(Arc::new(result))
                     }
 
@@ -324,9 +330,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                             return Err("log expects 1 argument".to_string());
                         }
                         let input = direct_eval(&elements[1], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            log_column(col)
-                        });
+                        let result = map_numeric_preserve_tags(&input, |col| log_column(col));
                         Ok(Arc::new(result))
                     }
 
@@ -338,14 +342,14 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse k
                         let k = match &elements[1] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("shift k must be non-negative, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("shift k must be non-negative, got {}", i))
+                            }
                             _ => return Err("shift k must be non-negative integer".to_string()),
                         };
 
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            shift_column(col, k)
-                        });
+                        let result = map_numeric_preserve_tags(&input, |col| shift_column(col, k));
                         Ok(Arc::new(result))
                     }
 
@@ -357,14 +361,15 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-mean w must be positive, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("rolling-mean w must be positive, got {}", i))
+                            }
                             _ => return Err("rolling-mean w must be positive integer".to_string()),
                         };
 
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_mean_column(col, w)
-                        });
+                        let result =
+                            map_numeric_preserve_tags(&input, |col| rolling_mean_column(col, w));
                         Ok(Arc::new(result))
                     }
 
@@ -376,18 +381,18 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-mean w must be positive, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-mean w must be positive, got {}", i))
+                            }
                             _ => return Err("ft-mean w must be positive integer".to_string()),
                         };
 
                         // ft-mean(w, x) = shift(1, rolling-mean(w, x))
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let rolling_result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_mean_column(col, w)
-                        });
-                        let result = map_numeric_preserve_tags(&rolling_result, |col| {
-                            shift_column(col, 1)
-                        });
+                        let rolling_result =
+                            map_numeric_preserve_tags(&input, |col| rolling_mean_column(col, w));
+                        let result =
+                            map_numeric_preserve_tags(&rolling_result, |col| shift_column(col, 1));
                         Ok(Arc::new(result))
                     }
 
@@ -399,14 +404,15 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-std w must be positive, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("rolling-std w must be positive, got {}", i))
+                            }
                             _ => return Err("rolling-std w must be positive integer".to_string()),
                         };
 
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_std_column(col, w)
-                        });
+                        let result =
+                            map_numeric_preserve_tags(&input, |col| rolling_std_column(col, w));
                         Ok(Arc::new(result))
                     }
 
@@ -418,18 +424,18 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-std w must be positive, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-std w must be positive, got {}", i))
+                            }
                             _ => return Err("ft-std w must be positive integer".to_string()),
                         };
 
                         // ft-std(w, x) = shift(1, rolling-std(w, x))
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let rolling_result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_std_column(col, w)
-                        });
-                        let result = map_numeric_preserve_tags(&rolling_result, |col| {
-                            shift_column(col, 1)
-                        });
+                        let rolling_result =
+                            map_numeric_preserve_tags(&input, |col| rolling_std_column(col, w));
+                        let result =
+                            map_numeric_preserve_tags(&rolling_result, |col| shift_column(col, 1));
                         Ok(Arc::new(result))
                     }
 
@@ -441,39 +447,54 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("rolling-zscore w must be positive, got {}", i)),
-                            _ => return Err("rolling-zscore w must be positive integer".to_string()),
+                            Expr::Int(i) => {
+                                return Err(format!("rolling-zscore w must be positive, got {}", i))
+                            }
+                            _ => {
+                                return Err("rolling-zscore w must be positive integer".to_string())
+                            }
                         };
 
                         // rolling-zscore(w, x) = (x - rolling_mean(w,x)) / rolling_std(w,x)
                         let input = direct_eval(&elements[2], env, interner)?;
-                        let mean_result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_mean_column(col, w)
-                        });
-                        let std_result = map_numeric_preserve_tags(&input, |col| {
-                            rolling_std_column(col, w)
-                        });
+                        let mean_result =
+                            map_numeric_preserve_tags(&input, |col| rolling_mean_column(col, w));
+                        let std_result =
+                            map_numeric_preserve_tags(&input, |col| rolling_std_column(col, w));
 
                         // (x - mean) / std
                         let result = map_numeric_preserve_tags(&input, |col| {
-                            match (col, mean_result.cols.iter().next(), std_result.cols.iter().next()) {
-                                (Column::F64(x_data), Some(blisp::frame::ColData::Mat(mean_col)), Some(blisp::frame::ColData::Mat(std_col))) => {
-                                    match (mean_col.as_ref(), std_col.as_ref()) {
-                                        (Column::F64(mean_data), Column::F64(std_data)) => {
-                                            let result: Vec<f64> = x_data.iter().zip(mean_data.iter()).zip(std_data.iter())
-                                                .map(|((&x, &mean), &std)| {
-                                                    if x.is_nan() || mean.is_nan() || std.is_nan() || std == 0.0 {
-                                                        f64::NAN
-                                                    } else {
-                                                        (x - mean) / std
-                                                    }
-                                                })
-                                                .collect();
-                                            Column::F64(result)
-                                        }
-                                        _ => col.clone(),
+                            match (
+                                col,
+                                mean_result.cols.iter().next(),
+                                std_result.cols.iter().next(),
+                            ) {
+                                (
+                                    Column::F64(x_data),
+                                    Some(blisp::frame::ColData::Mat(mean_col)),
+                                    Some(blisp::frame::ColData::Mat(std_col)),
+                                ) => match (mean_col.as_ref(), std_col.as_ref()) {
+                                    (Column::F64(mean_data), Column::F64(std_data)) => {
+                                        let result: Vec<f64> = x_data
+                                            .iter()
+                                            .zip(mean_data.iter())
+                                            .zip(std_data.iter())
+                                            .map(|((&x, &mean), &std)| {
+                                                if x.is_nan()
+                                                    || mean.is_nan()
+                                                    || std.is_nan()
+                                                    || std == 0.0
+                                                {
+                                                    f64::NAN
+                                                } else {
+                                                    (x - mean) / std
+                                                }
+                                            })
+                                            .collect();
+                                        Column::F64(result)
                                     }
-                                }
+                                    _ => col.clone(),
+                                },
                                 _ => col.clone(),
                             }
                         });
@@ -488,7 +509,9 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // Parse w
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
-                            Expr::Int(i) => return Err(format!("ft-zscore w must be positive, got {}", i)),
+                            Expr::Int(i) => {
+                                return Err(format!("ft-zscore w must be positive, got {}", i))
+                            }
                             _ => return Err("ft-zscore w must be positive integer".to_string()),
                         };
 
@@ -496,40 +519,45 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         // where ft_mean = shift(1, rolling_mean) and ft_std = shift(1, rolling_std)
                         let input = direct_eval(&elements[2], env, interner)?;
 
-                        let rolling_mean = map_numeric_preserve_tags(&input, |col| {
-                            rolling_mean_column(col, w)
-                        });
-                        let ft_mean = map_numeric_preserve_tags(&rolling_mean, |col| {
-                            shift_column(col, 1)
-                        });
+                        let rolling_mean =
+                            map_numeric_preserve_tags(&input, |col| rolling_mean_column(col, w));
+                        let ft_mean =
+                            map_numeric_preserve_tags(&rolling_mean, |col| shift_column(col, 1));
 
-                        let rolling_std = map_numeric_preserve_tags(&input, |col| {
-                            rolling_std_column(col, w)
-                        });
-                        let ft_std = map_numeric_preserve_tags(&rolling_std, |col| {
-                            shift_column(col, 1)
-                        });
+                        let rolling_std =
+                            map_numeric_preserve_tags(&input, |col| rolling_std_column(col, w));
+                        let ft_std =
+                            map_numeric_preserve_tags(&rolling_std, |col| shift_column(col, 1));
 
                         // (x - ft_mean) / ft_std
                         let result = map_numeric_preserve_tags(&input, |col| {
                             match (col, ft_mean.cols.iter().next(), ft_std.cols.iter().next()) {
-                                (Column::F64(x_data), Some(blisp::frame::ColData::Mat(mean_col)), Some(blisp::frame::ColData::Mat(std_col))) => {
-                                    match (mean_col.as_ref(), std_col.as_ref()) {
-                                        (Column::F64(mean_data), Column::F64(std_data)) => {
-                                            let result: Vec<f64> = x_data.iter().zip(mean_data.iter()).zip(std_data.iter())
-                                                .map(|((&x, &mean), &std)| {
-                                                    if x.is_nan() || mean.is_nan() || std.is_nan() || std == 0.0 {
-                                                        f64::NAN
-                                                    } else {
-                                                        (x - mean) / std
-                                                    }
-                                                })
-                                                .collect();
-                                            Column::F64(result)
-                                        }
-                                        _ => col.clone(),
+                                (
+                                    Column::F64(x_data),
+                                    Some(blisp::frame::ColData::Mat(mean_col)),
+                                    Some(blisp::frame::ColData::Mat(std_col)),
+                                ) => match (mean_col.as_ref(), std_col.as_ref()) {
+                                    (Column::F64(mean_data), Column::F64(std_data)) => {
+                                        let result: Vec<f64> = x_data
+                                            .iter()
+                                            .zip(mean_data.iter())
+                                            .zip(std_data.iter())
+                                            .map(|((&x, &mean), &std)| {
+                                                if x.is_nan()
+                                                    || mean.is_nan()
+                                                    || std.is_nan()
+                                                    || std == 0.0
+                                                {
+                                                    f64::NAN
+                                                } else {
+                                                    (x - mean) / std
+                                                }
+                                            })
+                                            .collect();
+                                        Column::F64(result)
                                     }
-                                }
+                                    _ => col.clone(),
+                                },
                                 _ => col.clone(),
                             }
                         });
@@ -661,13 +689,16 @@ fn ret_column(col: &Column, lag: usize) -> Column {
 fn log_column(col: &Column) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if x > 0.0 && !x.is_nan() {
-                    x.ln()
-                } else {
-                    f64::NAN
-                }
-            }).collect();
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if x > 0.0 && !x.is_nan() {
+                        x.ln()
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -749,12 +780,14 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
                     let mean = sum / (w as f64);
 
                     // Compute variance (population, ddof=0)
-                    let variance: f64 = values.iter()
+                    let variance: f64 = values
+                        .iter()
                         .map(|&x| {
                             let diff = x - mean;
                             diff * diff
                         })
-                        .sum::<f64>() / (w as f64);
+                        .sum::<f64>()
+                        / (w as f64);
 
                     // Std is sqrt of variance
                     result[i] = variance.sqrt();
@@ -771,19 +804,28 @@ fn rolling_std_column(col: &Column, w: usize) -> Column {
 fn binary_scalar_column(col: &Column, scalar: f64, op: &str) -> Column {
     match col {
         Column::F64(data) => {
-            let result = data.iter().map(|&x| {
-                if x.is_nan() || scalar.is_nan() {
-                    f64::NAN
-                } else {
-                    match op {
-                        "+" => x + scalar,
-                        "-" => x - scalar,
-                        "*" => x * scalar,
-                        "/" => if scalar == 0.0 { f64::NAN } else { x / scalar },
-                        _ => f64::NAN,
+            let result = data
+                .iter()
+                .map(|&x| {
+                    if x.is_nan() || scalar.is_nan() {
+                        f64::NAN
+                    } else {
+                        match op {
+                            "+" => x + scalar,
+                            "-" => x - scalar,
+                            "*" => x * scalar,
+                            "/" => {
+                                if scalar == 0.0 {
+                                    f64::NAN
+                                } else {
+                                    x / scalar
+                                }
+                            }
+                            _ => f64::NAN,
+                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
             Column::F64(result)
         }
         _ => col.clone(),
@@ -792,17 +834,28 @@ fn binary_scalar_column(col: &Column, scalar: f64, op: &str) -> Column {
 
 fn binary_frame_frame(lhs: &Frame, rhs: &Frame, op: &str) -> Result<Arc<Frame>, String> {
     if lhs.cols.len() != rhs.cols.len() {
-        return Err(format!("Binary op requires same column count: {} vs {}", lhs.cols.len(), rhs.cols.len()));
+        return Err(format!(
+            "Binary op requires same column count: {} vs {}",
+            lhs.cols.len(),
+            rhs.cols.len()
+        ));
     }
     if lhs.nrows != rhs.nrows {
-        return Err(format!("Binary op requires same row count: {} vs {}", lhs.nrows, rhs.nrows));
+        return Err(format!(
+            "Binary op requires same row count: {} vs {}",
+            lhs.nrows, rhs.nrows
+        ));
     }
 
     let mut result_cols = Vec::with_capacity(lhs.cols.len());
 
     for (lhs_col, rhs_col) in lhs.cols.iter().zip(rhs.cols.iter()) {
-        let lhs_data = match lhs_col { ColData::Mat(col) => col };
-        let rhs_data = match rhs_col { ColData::Mat(col) => col };
+        let lhs_data = match lhs_col {
+            ColData::Mat(col) => col,
+        };
+        let rhs_data = match rhs_col {
+            ColData::Mat(col) => col,
+        };
 
         let result_col = binary_column_column(lhs_data, rhs_data, op)?;
         result_cols.push(ColData::Mat(Arc::new(result_col)));
@@ -819,22 +872,36 @@ fn binary_column_column(lhs: &Column, rhs: &Column, op: &str) -> Result<Column, 
     match (lhs, rhs) {
         (Column::F64(lhs_data), Column::F64(rhs_data)) => {
             if lhs_data.len() != rhs_data.len() {
-                return Err(format!("Binary op requires same length: {} vs {}", lhs_data.len(), rhs_data.len()));
+                return Err(format!(
+                    "Binary op requires same length: {} vs {}",
+                    lhs_data.len(),
+                    rhs_data.len()
+                ));
             }
 
-            let result = lhs_data.iter().zip(rhs_data.iter()).map(|(&x, &y)| {
-                if x.is_nan() || y.is_nan() {
-                    f64::NAN
-                } else {
-                    match op {
-                        "+" => x + y,
-                        "-" => x - y,
-                        "*" => x * y,
-                        "/" => if y == 0.0 { f64::NAN } else { x / y },
-                        _ => f64::NAN,
+            let result = lhs_data
+                .iter()
+                .zip(rhs_data.iter())
+                .map(|(&x, &y)| {
+                    if x.is_nan() || y.is_nan() {
+                        f64::NAN
+                    } else {
+                        match op {
+                            "+" => x + y,
+                            "-" => x - y,
+                            "*" => x * y,
+                            "/" => {
+                                if y == 0.0 {
+                                    f64::NAN
+                                } else {
+                                    x / y
+                                }
+                            }
+                            _ => f64::NAN,
+                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
 
             Ok(Column::F64(result))
         }
@@ -893,10 +960,7 @@ fn gen_let_expr(mut rng: u64, depth: usize, interner: &mut Interner) -> Expr {
             ])
         };
 
-        bindings.push(Expr::List(vec![
-            Expr::Sym(sym),
-            bound_expr,
-        ]));
+        bindings.push(Expr::List(vec![Expr::Sym(sym), bound_expr]));
     }
 
     // Generate body using ONLY bound symbols
@@ -971,10 +1035,7 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
 
             let sub = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
 
-            Expr::List(vec![
-                Expr::Sym(interner.intern(op_name)),
-                sub,
-            ])
+            Expr::List(vec![Expr::Sym(interner.intern(op_name)), sub])
         } else if choice < 8 {
             // Join operation (40% probability)
             let join_op = if (rng % 2) == 0 { "mapr" } else { "asofr" };
@@ -982,11 +1043,7 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
             let sub1 = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
             let sub2 = gen_expr_date(rng.wrapping_add(2), depth - 1, interner);
 
-            Expr::List(vec![
-                Expr::Sym(interner.intern(join_op)),
-                sub1,
-                sub2,
-            ])
+            Expr::List(vec![Expr::Sym(interner.intern(join_op)), sub1, sub2])
         } else {
             // Let binding (20% probability, only at depth > 2 to ensure enough depth)
             if depth > 2 {
@@ -994,10 +1051,7 @@ pub fn gen_expr_date(seed: u64, depth: usize, interner: &mut Interner) -> Expr {
             } else {
                 // Fall back to unary at low depth
                 let sub = gen_expr_date(rng.wrapping_add(1), depth - 1, interner);
-                Expr::List(vec![
-                    Expr::Sym(interner.intern("dlog")),
-                    sub,
-                ])
+                Expr::List(vec![Expr::Sym(interner.intern("dlog")), sub])
             }
         }
     }

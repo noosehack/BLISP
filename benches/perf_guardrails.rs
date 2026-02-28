@@ -3,7 +3,7 @@
 //! These benchmarks MUST NOT regress by >20% without explicit justification.
 //! They detect accidental slowdowns in Phase 3+.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::sync::Arc;
 
 // Mock types to match blisp's structure (since it's a binary)
@@ -24,9 +24,7 @@ fn bench_dlog_large(c: &mut Criterion) {
             }
             let col = blawktrust::Column::new_f64(data);
 
-            b.iter(|| {
-                black_box(blawktrust::builtins::ops::dlog_column(&col, 1))
-            });
+            b.iter(|| black_box(blawktrust::builtins::ops::dlog_column(&col, 1)));
         });
     }
     group.finish();

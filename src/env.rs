@@ -1,4 +1,5 @@
 //! Lexical and global environments for variable binding
+#![allow(clippy::doc_lazy_continuation)]
 
 use crate::ast::SymbolId;
 use crate::value::Value;
@@ -14,9 +15,7 @@ pub struct LexicalEnv {
 
 impl LexicalEnv {
     pub fn new() -> Self {
-        Self {
-            frames: Vec::new(),
-        }
+        Self { frames: Vec::new() }
     }
 
     /// Push a new lexical frame (enter new scope)
