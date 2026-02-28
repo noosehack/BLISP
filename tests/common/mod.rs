@@ -125,15 +125,31 @@ fn assert_column_equiv(a: &Arc<Column>, b: &Arc<Column>, col_idx: usize) {
             );
 
             for (row_idx, (&a_val, &b_val)) in a_data.iter().zip(b_data.iter()).enumerate() {
+                // IEEE-754 edge case handling (per NUMERIC_POLICY.md)
                 if a_val.is_nan() && b_val.is_nan() {
-                    // NA == NA is true
+                    // Both NaN → equal (for testing)
                     continue;
                 } else if a_val.is_nan() || b_val.is_nan() {
                     panic!(
                         "Column {} row {}: NA mismatch: {} vs {}",
                         col_idx, row_idx, a_val, b_val
                     );
+                } else if a_val.is_infinite() && b_val.is_infinite() {
+                    // Both infinite → must have same sign
+                    if a_val.signum() != b_val.signum() {
+                        panic!(
+                            "Column {} row {}: Infinity sign mismatch: {} vs {}",
+                            col_idx, row_idx, a_val, b_val
+                        );
+                    }
+                    continue;
+                } else if a_val.is_infinite() || b_val.is_infinite() {
+                    panic!(
+                        "Column {} row {}: Infinity mismatch: {} vs {}",
+                        col_idx, row_idx, a_val, b_val
+                    );
                 } else if (a_val - b_val).abs() > EPSILON {
+                    // Finite values → tolerance check
                     panic!(
                         "Column {} row {}: value mismatch: {} vs {} (diff: {})",
                         col_idx,
@@ -686,10 +702,12 @@ fn log_column(col: &Column) -> Column {
             let result = data
                 .iter()
                 .map(|&x| {
-                    if x > 0.0 && !x.is_nan() {
-                        x.ln()
+                    // IEEE-754: ln() handles edges naturally
+                    // 0.0 → -inf, negative → NaN, NaN → NaN
+                    if x.is_nan() {
+                        f64::NAN // Preserve NA
                     } else {
-                        f64::NAN
+                        x.ln() // IEEE-754 behavior
                     }
                 })
                 .collect();
@@ -732,12 +750,10 @@ fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
                     // Current NA → output NA, but keep last_valid for next valid value
                     result.push(f64::NAN);
                 } else if let Some(prev) = last_valid {
-                    // Valid current, valid previous → compute dlog
-                    if prev > 0.0 && x > 0.0 {
-                        result.push(x.ln() - prev.ln());
-                    } else {
-                        result.push(f64::NAN);
-                    }
+                    // Valid current, valid previous → compute dlog (IEEE-754)
+                    // ln() handles edge cases: 0.0→-inf, negative→NaN
+                    // Subtraction propagates: -inf-val=-inf, val-(-inf)=+inf, NaN±x=NaN
+                    result.push(x.ln() - prev.ln());
                     last_valid = Some(x);
                 } else {
                     // Valid current, no previous → output NA (first valid)
@@ -850,13 +866,7 @@ fn binary_scalar_column(col: &Column, scalar: f64, op: &str) -> Column {
                             "+" => x + scalar,
                             "-" => x - scalar,
                             "*" => x * scalar,
-                            "/" => {
-                                if scalar == 0.0 {
-                                    f64::NAN
-                                } else {
-                                    x / scalar
-                                }
-                            }
+                            "/" => x / scalar, // IEEE-754: x/0 → ±inf
                             _ => f64::NAN,
                         }
                     }

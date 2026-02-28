@@ -1671,12 +1671,10 @@ pub fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
                     // Current NA → output NA, but keep last_valid for next valid value
                     result.push(f64::NAN);
                 } else if let Some(prev) = last_valid {
-                    // Valid current, valid previous → compute dlog
-                    if prev > 0.0 && x > 0.0 {
-                        result.push(x.ln() - prev.ln());
-                    } else {
-                        result.push(f64::NAN);
-                    }
+                    // Valid current, valid previous → compute dlog (IEEE-754)
+                    // ln() handles edge cases: 0.0→-inf, negative→NaN
+                    // Subtraction propagates: -inf-val=-inf, val-(-inf)=+inf, NaN±x=NaN
+                    result.push(x.ln() - prev.ln());
                     last_valid = Some(x);
                 } else {
                     // Valid current, no previous → output NA (first valid)
