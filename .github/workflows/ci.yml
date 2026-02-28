@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Count ignored tests
         run: |
-          IGNORED_COUNT=$(grep -r "#\[ignore" tests/ | wc -l)
+          IGNORED_COUNT=$(grep -r "#\[ignore" tests/ --include="*.rs" | wc -l)
           echo "Current ignored test count: $IGNORED_COUNT"
           echo "Baseline: 15 (see IGNORED_TESTS.md)"
           if [ "$IGNORED_COUNT" -gt 15 ]; then

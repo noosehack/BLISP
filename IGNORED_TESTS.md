@@ -233,7 +233,7 @@ Add to `.github/workflows/ci.yml`:
 ```yaml
 - name: Check ignored test count
   run: |
-    IGNORED_COUNT=$(grep -r "#\[ignore" tests/ | wc -l)
+    IGNORED_COUNT=$(grep -r "#\[ignore" tests/ --include="*.rs" | wc -l)
     if [ "$IGNORED_COUNT" -gt 15 ]; then
       echo "❌ Ignored test count increased from 15 to $IGNORED_COUNT"
       echo "Update IGNORED_TESTS.md with justification or fix the tests"
