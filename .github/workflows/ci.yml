@@ -137,10 +137,35 @@ jobs:
           EOF
           echo -e "a;b\n1;2\n3;4" | ./target/release/blisp test_orientation.lisp
 
+  # Tripwire: prevent silent growth of ignored tests
+  check-ignored-tests:
+    name: Check Ignored Test Count
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Count ignored tests
+        run: |
+          IGNORED_COUNT=$(grep -r "#\[ignore" tests/ | wc -l)
+          echo "Current ignored test count: $IGNORED_COUNT"
+          echo "Baseline: 15 (see IGNORED_TESTS.md)"
+          if [ "$IGNORED_COUNT" -gt 15 ]; then
+            echo "❌ ERROR: Ignored test count increased from 15 to $IGNORED_COUNT"
+            echo "Action required:"
+            echo "  1. Fix the tests to remove #[ignore], OR"
+            echo "  2. Update IGNORED_TESTS.md with justification and new baseline"
+            echo "  3. Update this check's baseline threshold"
+            exit 1
+          elif [ "$IGNORED_COUNT" -lt 15 ]; then
+            echo "✅ Great! Ignored count decreased to $IGNORED_COUNT"
+            echo "Please update IGNORED_TESTS.md and this check's baseline"
+          else
+            echo "✅ Ignored test count matches baseline: $IGNORED_COUNT"
+          fi
+
   # Final gate: everything must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, test, build, smoke-test]
+    needs: [fmt, clippy, test, build, smoke-test, check-ignored-tests]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
