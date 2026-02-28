@@ -251,7 +251,7 @@ fn plan_expr(
                     // Skips masked rows when computing lag - business-day lag when weekend mask active
                     "lag-obs" | "shift-obs" => {
                         if elements.len() != 3 {
-                            return Err(format!("lag-obs expects 2 arguments: (lag-obs k x)"));
+                            return Err("lag-obs expects 2 arguments: (lag-obs k x)".to_string());
                         }
 
                         // Parse k as non-negative integer

@@ -380,7 +380,7 @@ impl Runtime {
             Expr::UnquoteSplicing(inner) => {
                 if depth == 1 {
                     // Cannot splice at top level
-                    return Err("unquote-splicing not in list context".to_string());
+                    Err("unquote-splicing not in list context".to_string())
                 } else {
                     // Nested: decrement depth
                     let inner_val = self.eval_quasiquote(inner, depth - 1)?;

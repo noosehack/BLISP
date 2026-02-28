@@ -125,11 +125,8 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     tokens.push(Token::Int(n));
                 } else if let Ok(f) = token_str.parse::<f64>() {
                     tokens.push(Token::Float(f));
-                } else if token_str == "nil" {
-                    tokens.push(Token::Sym(token_str));
-                } else if token_str == "t" || token_str == "true" {
-                    tokens.push(Token::Sym(token_str));
                 } else {
+                    // All remaining tokens are symbols (including nil, t, true, false)
                     tokens.push(Token::Sym(token_str));
                 }
             }

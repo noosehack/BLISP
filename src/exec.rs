@@ -59,7 +59,7 @@ pub fn execute(plan: &Plan, rt: &mut Runtime) -> Result<Value, String> {
     // Return the last node's result
     let last_id = NodeId(plan.nodes.len() - 1);
     ctx.load(last_id)
-        .map(|f| Value::Frame(f))
+        .map(Value::Frame)
         .ok_or_else(|| "No result from execution".to_string())
 }
 
@@ -277,7 +277,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                 .ok_or_else(|| format!("Input node {:?} not found", input))?;
 
             let result =
-                map_numeric_preserve_tags(&input_frame, |col| fused_cs1_dlog_obs_column(col));
+                map_numeric_preserve_tags(&input_frame, fused_cs1_dlog_obs_column);
 
             debug_assert!(
                 Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
@@ -1655,6 +1655,7 @@ fn rolling_std_partial_mask_aware_legacy(
 /// - Gap-filling semantics: skips NA to find last valid price
 /// - CLISPI equivalent: LOCF→wkd→dlog creates zeros, BLISP wkd→dlog creates multi-day returns
 /// - Both approaches yield identical non-NA, non-zero cumsum results
+///
 /// Observation-based difference log (OBS semantics)
 ///
 /// This is NOT the same as positional lag dlog (OFS). See dlog_ofs_column().
@@ -2402,12 +2403,8 @@ fn binary_frame_frame(lhs: &Frame, rhs: &Frame, func: BinaryFunc) -> Result<Fram
 
     for (lhs_col, rhs_col) in lhs.cols.iter().zip(rhs.cols.iter()) {
         use crate::frame::ColData;
-        let lhs_data = match lhs_col {
-            ColData::Mat(col) => col,
-        };
-        let rhs_data = match rhs_col {
-            ColData::Mat(col) => col,
-        };
+        let ColData::Mat(lhs_data) = lhs_col;
+        let ColData::Mat(rhs_data) = rhs_col;
 
         let result_col = binary_column_column(lhs_data, rhs_data, func)?;
         result_cols.push(ColData::Mat(Arc::new(result_col)));

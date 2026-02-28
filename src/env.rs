@@ -42,8 +42,9 @@ impl LexicalEnv {
     /// Returns true if found and updated
     pub fn set(&mut self, sym: SymbolId, val: Value) -> bool {
         for frame in self.frames.iter_mut().rev() {
-            if frame.contains_key(&sym) {
-                frame.insert(sym, val);
+            use std::collections::hash_map::Entry;
+            if let Entry::Occupied(mut e) = frame.entry(sym) {
+                e.insert(val);
                 return true;
             }
         }

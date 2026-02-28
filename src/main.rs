@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(clippy::useless_vec)]
 use blisp::reader::Reader;
 use blisp::runtime::Runtime;
 use blisp::value::{self, Value};
