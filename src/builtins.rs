@@ -3,6 +3,12 @@
 //! Implements arithmetic, math, and utility functions with
 //! dispatch for scalars and columns.
 
+#![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::comparison_to_empty)]
+
 use crate::frame;
 use crate::runtime::Runtime;
 use crate::value::Value;
