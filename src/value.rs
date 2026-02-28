@@ -2,9 +2,9 @@
 //!
 //! Step 4: Full implementation with Col and Table types.
 
-use crate::ast::{SymbolId, Expr};
-use std::sync::Arc;
+use crate::ast::{Expr, SymbolId};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Captured lexical environment for closures
 pub type LexicalSnapshot = Vec<HashMap<SymbolId, Value>>;
@@ -53,7 +53,10 @@ fn format_timestamp(nanos: i64) -> String {
     } else {
         let frac_str = format!("{:09}", frac_nanos);
         let trimmed = frac_str.trim_end_matches('0');
-        format!("{} {:02}:{:02}:{:02}.{}", date_str, hour, minute, second, trimmed)
+        format!(
+            "{} {:02}:{:02}:{:02}.{}",
+            date_str, hour, minute, second, trimmed
+        )
     }
 }
 
@@ -72,7 +75,9 @@ fn display_column(col: &blawktrust::Column) -> String {
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     if val.is_nan() {
                         parts.push("NA".to_string());
                     } else {
@@ -82,7 +87,9 @@ fn display_column(col: &blawktrust::Column) -> String {
             } else {
                 // Show first 10
                 for i in 0..10 {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     let val = data[i];
                     if val.is_nan() {
                         parts.push("NA".to_string());
@@ -116,13 +123,17 @@ fn display_column(col: &blawktrust::Column) -> String {
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     parts.push(format_date(val));
                 }
             } else {
                 // Show first 10
                 for i in 0..10 {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     parts.push(format_date(data[i]));
                 }
                 parts.push(", ...".to_string());
@@ -146,13 +157,17 @@ fn display_column(col: &blawktrust::Column) -> String {
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     parts.push(format_timestamp(val));
                 }
             } else {
                 // Show first 10
                 for i in 0..10 {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     parts.push(format_timestamp(data[i]));
                 }
                 parts.push(", ...".to_string());
@@ -220,25 +235,23 @@ pub fn write_frame_to<W: std::io::Write>(
         for col_data in &frame.cols {
             write!(writer, ";")?;
             match col_data {
-                crate::frame::ColData::Mat(col) => {
-                    match &**col {
-                        blawktrust::Column::F64(data) => {
-                            if row_idx < data.len() {
-                                let v = data[row_idx];
-                                if v.is_nan() {
-                                    write!(writer, "NA")?;
-                                } else {
-                                    write!(writer, "{}", v)?;
-                                }
+                crate::frame::ColData::Mat(col) => match &**col {
+                    blawktrust::Column::F64(data) => {
+                        if row_idx < data.len() {
+                            let v = data[row_idx];
+                            if v.is_nan() {
+                                write!(writer, "NA")?;
                             } else {
-                                write!(writer, "?")?;
+                                write!(writer, "{}", v)?;
                             }
-                        }
-                        _ => {
+                        } else {
                             write!(writer, "?")?;
                         }
                     }
-                }
+                    _ => {
+                        write!(writer, "?")?;
+                    }
+                },
             }
         }
         writeln!(writer)?;
@@ -246,7 +259,12 @@ pub fn write_frame_to<W: std::io::Write>(
 
     // Show summary if truncated
     if display_rows < n_rows {
-        writeln!(writer, "... ({} more rows, {} total)", n_rows - display_rows, n_rows)?;
+        writeln!(
+            writer,
+            "... ({} more rows, {} total)",
+            n_rows - display_rows,
+            n_rows
+        )?;
     }
 
     Ok(())
@@ -270,7 +288,9 @@ pub fn write_table_to<W: std::io::Write>(
     let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
 
     // Column headers
-    let col_names: Vec<String> = table.columns.iter()
+    let col_names: Vec<String> = table
+        .columns
+        .iter()
         .map(|(sym, _)| interner.resolve(*sym).to_string())
         .collect();
 
@@ -317,134 +337,47 @@ pub fn write_table_to<W: std::io::Write>(
 
     // Show summary if truncated
     if display_rows < n_rows {
-        writeln!(writer, "... ({} more rows, {} total)", n_rows - display_rows, n_rows)?;
+        writeln!(
+            writer,
+            "... ({} more rows, {} total)",
+            n_rows - display_rows,
+            n_rows
+        )?;
     }
 
     Ok(())
 }
 
-/// Physical memory layout (8 CLISPI-compatible orientation codes)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Layout {
-    /// Column-major family (columns contiguous in memory)
-    NSWE,  // Normal (default) - "H"
-    SNWE,  // Rows reversed - "N"
-    NSEW,  // Columns reversed
-    SNEW,  // Both reversed
-
-    /// Row-major family (rows contiguous in memory)
-    WENS,  // Normal row-major - "Z"
-    EWNS,  // Synonym for WENS - "S"
-    EWSN,  // Rows reversed
-    WESN,  // Columns reversed
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Layout::NSWE  // Column-major default (time-series optimal)
-    }
-}
-
-impl Layout {
-    /// Parse layout from string name (supports both 4-letter codes and aliases)
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            // Column-major family
-            "NSWE" | "H" => Some(Layout::NSWE),
-            "SNWE" | "N" => Some(Layout::SNWE),
-            "NSEW" => Some(Layout::NSEW),
-            "SNEW" => Some(Layout::SNEW),
-            // Row-major family
-            "WENS" | "Z" => Some(Layout::WENS),
-            "EWNS" | "S" => Some(Layout::EWNS),
-            "EWSN" => Some(Layout::EWSN),
-            "WESN" => Some(Layout::WESN),
-            _ => None,
-        }
-    }
-
-    /// Get the string name for this layout
-    pub fn to_str(&self) -> &'static str {
-        match self {
-            Layout::NSWE => "NSWE",
-            Layout::SNWE => "SNWE",
-            Layout::NSEW => "NSEW",
-            Layout::SNEW => "SNEW",
-            Layout::WENS => "WENS",
-            Layout::EWNS => "EWNS",
-            Layout::EWSN => "EWSN",
-            Layout::WESN => "WESN",
-        }
-    }
-}
-
-/// Semantic axis for operations (column-wise vs row-wise)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Axis {
-    Col,  // Operate down time per column (default, kdb-like)
-    Row,  // Operate across columns per row (cross-sectional)
-}
-
-impl Default for Axis {
-    fn default() -> Self {
-        Axis::Col  // Column-wise default
-    }
-}
-
-/// Table: columnar data structure with orientation metadata
+/// Table: columnar data structure
 #[derive(Debug, Clone)]
 pub struct Table {
     pub columns: Vec<(SymbolId, blawktrust::Column)>,
     pub row_count: usize,
-    pub layout: Layout,
-    pub axis: Axis,
 }
 
-/// TableView with orientation metadata
+/// TableView wrapper (orientation lives in view.ori)
 #[derive(Debug, Clone)]
 pub struct TableViewWithMetadata {
     pub view: Arc<blawktrust::TableView>,
-    pub layout: Layout,
-    pub axis: Axis,
 }
 
 impl TableViewWithMetadata {
-    /// Create from Arc<TableView> with default metadata
+    /// Create from Arc<TableView>
     #[inline]
     pub fn from_view(view: Arc<blawktrust::TableView>) -> Self {
-        Self {
-            view,
-            layout: Layout::default(),
-            axis: Axis::default(),
-        }
+        Self { view }
     }
 
-    /// Create from raw TableView with default metadata
+    /// Create from raw TableView
     #[inline]
     pub fn new(view: blawktrust::TableView) -> Self {
         Self::from_view(Arc::new(view))
     }
 
-    /// Create from blawktrust::Table with default metadata
+    /// Create from blawktrust::Table
     #[inline]
     pub fn from_table(table: blawktrust::Table) -> Self {
         Self::from_view(Arc::new(blawktrust::TableView::new(table)))
-    }
-
-    /// Create with specific metadata
-    #[inline]
-    pub fn with_meta(view: Arc<blawktrust::TableView>, layout: Layout, axis: Axis) -> Self {
-        Self { view, layout, axis }
-    }
-
-    /// Clone with different metadata
-    #[inline]
-    pub fn with_new_metadata(&self, layout: Layout, axis: Axis) -> Self {
-        Self {
-            view: Arc::clone(&self.view),
-            layout,
-            axis,
-        }
     }
 
     // ==================== View Access Helpers ====================
@@ -468,25 +401,7 @@ impl TableViewWithMetadata {
     pub fn clone_shallow(&self) -> Self {
         Self {
             view: Arc::clone(&self.view),
-            layout: self.layout,
-            axis: self.axis,
         }
-    }
-
-    /// Clone with different axis (shares underlying view)
-    #[inline]
-    pub fn with_axis(&self, axis: Axis) -> Self {
-        let mut out = self.clone_shallow();
-        out.axis = axis;
-        out
-    }
-
-    /// Clone with different layout (shares underlying view)
-    #[inline]
-    pub fn with_layout(&self, layout: Layout) -> Self {
-        let mut out = self.clone_shallow();
-        out.layout = layout;
-        out
     }
 }
 
@@ -512,9 +427,9 @@ pub enum Value {
     Sym(SymbolId),
     List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
-    Table(Arc<Table>),  // Deprecated - use Frame instead
+    Table(Arc<Table>), // Deprecated - use Frame instead
     TableView(Arc<TableViewWithMetadata>),
-    Frame(Arc<crate::frame::Frame>),  // BLADE Frame (P2 policy)
+    Frame(Arc<crate::frame::Frame>), // BLADE Frame (P2 policy)
     Lambda {
         params: Vec<SymbolId>,
         body: Vec<Expr>,
@@ -544,13 +459,31 @@ impl PartialEq for Value {
             (Value::TableView(a), Value::TableView(b)) => Arc::ptr_eq(a, b),
             (Value::Frame(a), Value::Frame(b)) => Arc::ptr_eq(a, b),
             // Lambdas compare by pointer (params and body)
-            (Value::Lambda { params: p1, body: b1, .. }, Value::Lambda { params: p2, body: b2, .. }) => {
-                p1 == p2 && b1 == b2
-            }
+            (
+                Value::Lambda {
+                    params: p1,
+                    body: b1,
+                    ..
+                },
+                Value::Lambda {
+                    params: p2,
+                    body: b2,
+                    ..
+                },
+            ) => p1 == p2 && b1 == b2,
             // Macros compare by pointer (params and body)
-            (Value::Macro { params: p1, body: b1, .. }, Value::Macro { params: p2, body: b2, .. }) => {
-                p1 == p2 && b1 == b2
-            }
+            (
+                Value::Macro {
+                    params: p1,
+                    body: b1,
+                    ..
+                },
+                Value::Macro {
+                    params: p2,
+                    body: b2,
+                    ..
+                },
+            ) => p1 == p2 && b1 == b2,
             _ => false,
         }
     }
@@ -640,9 +573,7 @@ impl Value {
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
             Value::List(items) => {
-                let item_strs: Vec<String> = items.iter()
-                    .map(|v| v.display(interner))
-                    .collect();
+                let item_strs: Vec<String> = items.iter().map(|v| v.display(interner)).collect();
                 format!("({})", item_strs.join(" "))
             }
             Value::Col(c) => display_column(c),
@@ -678,13 +609,15 @@ impl Value {
                 }
             }
             Value::Lambda { params, .. } => {
-                let param_names: Vec<String> = params.iter()
+                let param_names: Vec<String> = params
+                    .iter()
                     .map(|p| interner.resolve(*p).to_string())
                     .collect();
                 format!("#<lambda ({})>", param_names.join(" "))
             }
             Value::Macro { params, .. } => {
-                let param_names: Vec<String> = params.iter()
+                let param_names: Vec<String> = params
+                    .iter()
                     .map(|p| interner.resolve(*p).to_string())
                     .collect();
                 format!("#<macro ({})>", param_names.join(" "))
@@ -720,8 +653,6 @@ impl Table {
         Self {
             columns: Vec::new(),
             row_count: 0,
-            layout: Layout::default(),
-            axis: Axis::default(),
         }
     }
 
@@ -736,7 +667,8 @@ impl Table {
 
     /// Get a column by name
     pub fn get_column(&self, name: SymbolId) -> Option<&blawktrust::Column> {
-        self.columns.iter()
+        self.columns
+            .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, c)| c)
     }

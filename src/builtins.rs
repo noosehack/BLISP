@@ -3,9 +3,9 @@
 //! Implements arithmetic, math, and utility functions with
 //! dispatch for scalars and columns.
 
+use crate::frame;
 use crate::runtime::Runtime;
 use crate::value::Value;
-use crate::frame;
 use std::sync::Arc;
 
 // Import blawktrust's optimized operations
@@ -56,7 +56,7 @@ fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView
 
 /// Convert TableView to Frame (inverse of ensure_tableview)
 fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, String> {
-    use crate::frame::{Frame, IndexColumn, Tags, ColData};
+    use crate::frame::{ColData, Frame, IndexColumn, Tags};
 
     let tv = ensure_tableview(v, rt)?;
 
@@ -99,7 +99,9 @@ fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, St
             };
             let index_strings: Vec<String> = (0..nrows).map(|i| i.to_string()).collect();
             let index = IndexColumn::String(Arc::new(index_strings));
-            let data_cols: Vec<Arc<blawktrust::Column>> = tv.table.columns
+            let data_cols: Vec<Arc<blawktrust::Column>> = tv
+                .table
+                .columns
                 .iter()
                 .map(|col| Arc::new(col.clone()))
                 .collect();
@@ -122,12 +124,12 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("-", builtin_sub);
     rt.register_builtin("*", builtin_mul);
     rt.register_builtin("/", builtin_div);
-    rt.register_builtin(">", builtin_gt);  // Greater than (for >-cols to find)
+    rt.register_builtin(">", builtin_gt); // Greater than (for >-cols to find)
 
     // Math
 
     // Column Operations (Step 6) - Surface names point to table versions
-    rt.register_builtin("diff", builtin_diff_cols);   // Table version (default lag=1)
+    rt.register_builtin("diff", builtin_diff_cols); // Table version (default lag=1)
 
     // Single-column kernels (renamed to avoid collision)
     rt.register_builtin("dlog-col", builtin_dlog);
@@ -145,7 +147,7 @@ pub fn register_builtins(rt: &mut Runtime) {
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
     rt.register_builtin("file-head", builtin_file_head);
-    rt.register_builtin("stdin", builtin_stdin);  // Read from stdin (restored from 5d5e34d)
+    rt.register_builtin("stdin", builtin_stdin); // Read from stdin (restored from 5d5e34d)
     rt.register_builtin("save", builtin_save);
     rt.register_builtin("col", builtin_col);
     rt.register_builtin("setcol", builtin_setcol);
@@ -165,7 +167,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // Comparison Operations (GLD_NUM Tier 1)
     rt.register_builtin(">-cols", builtin_gt_cols); // Explicit table version
-    rt.register_builtin(">-col", builtin_gt);       // Single-column kernel
+    rt.register_builtin(">-col", builtin_gt); // Single-column kernel
     rt.register_builtin("<", builtin_lt);
     rt.register_builtin(">=", builtin_gte);
     rt.register_builtin("<=", builtin_lte);
@@ -178,27 +180,27 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("keep-shape-cols", builtin_keep_shape_cols);
 
     // GLD_NUM Tier 3: Table Transforms
-    rt.register_builtin("mask-on", builtin_with_mask);  // Alias
+    rt.register_builtin("mask-on", builtin_with_mask); // Alias
     rt.register_builtin("mask-off", builtin_mask_off);
     rt.register_builtin("mask-list", builtin_mask_list);
     rt.register_builtin("mask-stats", builtin_mask_stats);
     rt.register_builtin("mask-define", builtin_mask_define);
-    rt.register_builtin("wkd", builtin_wkd);          // Weekday filter (w5)
-    rt.register_builtin("w5", builtin_wkd);           // Alias for backward compat
-    rt.register_builtin("xminus", builtin_xminus);    // Pairwise spreads
+    rt.register_builtin("wkd", builtin_wkd); // Weekday filter (w5)
+    rt.register_builtin("w5", builtin_wkd); // Alias for backward compat
+    rt.register_builtin("xminus", builtin_xminus); // Pairwise spreads
     rt.register_builtin("cs1-cols", builtin_cs1_cols); // Explicit table version
-    rt.register_builtin("cs1-col", builtin_cs1);       // Single-column kernel
-    rt.register_builtin("ecs1", builtin_ecs1_cols);    // Surface name → table version
+    rt.register_builtin("cs1-col", builtin_cs1); // Single-column kernel
+    rt.register_builtin("ecs1", builtin_ecs1_cols); // Surface name → table version
     rt.register_builtin("ecs1-cols", builtin_ecs1_cols);
     rt.register_builtin("ecs1-col", builtin_ecs1);
 
     // GLD_NUM Tier 4: Advanced Operations (JOIN, Finance)
-    rt.register_builtin("mapr", builtin_mapr);       // LEFT JOIN by row key
+    rt.register_builtin("mapr", builtin_mapr); // LEFT JOIN by row key
     rt.register_builtin("ur-cols", builtin_ur_cols); // Explicit table version
-    rt.register_builtin("ur-col", builtin_ur);       // Single-column kernel
+    rt.register_builtin("ur-col", builtin_ur); // Single-column kernel
     rt.register_builtin("wz0", builtin_wz0);
     rt.register_builtin("wz0-cols", builtin_wz0_cols);
-    rt.register_builtin("wzs", builtin_wzs);  // Composite: locf(keep-shape(wz0))
+    rt.register_builtin("wzs", builtin_wzs); // Composite: locf(keep-shape(wz0))
 
     // Rolling Statistics
     rt.register_builtin("wstd", builtin_wstd);
@@ -219,6 +221,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // Orientation
     rt.register_builtin("o", builtin_o);
+    rt.register_builtin("ro", builtin_ro);
 }
 
 // ============================================================================
@@ -265,7 +268,11 @@ fn builtin_add(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("+ cannot add {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "+ cannot add {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -292,7 +299,11 @@ fn builtin_sub(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("- cannot subtract {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "- cannot subtract {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -367,16 +378,25 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let tv_a = blawktrust::TableView::new(blawktrust::Table::new(names_a, cols_a));
 
             // Now multiply as TableView * TableView
-            let cols_tv_a: Vec<_> = tv_a.table.columns.iter()
+            let cols_tv_a: Vec<_> = tv_a
+                .table
+                .columns
+                .iter()
                 .filter(|c| matches!(c, blawktrust::Column::F64(_)))
                 .collect();
-            let cols_b: Vec<_> = b.table.columns.iter()
+            let cols_b: Vec<_> = b
+                .table
+                .columns
+                .iter()
                 .filter(|c| matches!(c, blawktrust::Column::F64(_)))
                 .collect();
 
             if cols_tv_a.len() != cols_b.len() {
-                return Err(format!("* cannot multiply tables with different number of numeric columns: {} vs {}",
-                    cols_tv_a.len(), cols_b.len()));
+                return Err(format!(
+                    "* cannot multiply tables with different number of numeric columns: {} vs {}",
+                    cols_tv_a.len(),
+                    cols_b.len()
+                ));
             }
 
             let mut result_names = Vec::new();
@@ -384,7 +404,10 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             // Preserve date column from tv_b (TableView argument) if it has one
             if !b.table.columns.is_empty() {
-                if matches!(&b.table.columns[0], blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)) {
+                if matches!(
+                    &b.table.columns[0],
+                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)
+                ) {
                     result_names.push(b.table.names[0].clone());
                     result_columns.push(b.table.columns[0].clone());
                 }
@@ -392,7 +415,8 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             // Multiply numeric columns
             for (col_a, col_b) in cols_tv_a.iter().zip(cols_b.iter()) {
-                let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
+                let mul_result =
+                    mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
                 result_columns.push(mul_result);
             }
 
@@ -415,16 +439,25 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         // TableView * TableView (element-wise, column-aligned)
         (Value::TableView(tv_a), Value::TableView(tv_b)) => {
             // Get numeric columns from both tables
-            let cols_a: Vec<_> = tv_a.table.columns.iter()
+            let cols_a: Vec<_> = tv_a
+                .table
+                .columns
+                .iter()
                 .filter(|c| matches!(c, blawktrust::Column::F64(_)))
                 .collect();
-            let cols_b: Vec<_> = tv_b.table.columns.iter()
+            let cols_b: Vec<_> = tv_b
+                .table
+                .columns
+                .iter()
                 .filter(|c| matches!(c, blawktrust::Column::F64(_)))
                 .collect();
 
             if cols_a.len() != cols_b.len() {
-                return Err(format!("* cannot multiply tables with different number of numeric columns: {} vs {}",
-                    cols_a.len(), cols_b.len()));
+                return Err(format!(
+                    "* cannot multiply tables with different number of numeric columns: {} vs {}",
+                    cols_a.len(),
+                    cols_b.len()
+                ));
             }
 
             // Build result, preserving date column from first table if present
@@ -433,7 +466,10 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             // Preserve date/timestamp column from first table if it has one
             if !tv_a.table.columns.is_empty() {
-                if matches!(&tv_a.table.columns[0], blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)) {
+                if matches!(
+                    &tv_a.table.columns[0],
+                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)
+                ) {
                     result_names.push(tv_a.table.names[0].clone());
                     result_columns.push(tv_a.table.columns[0].clone());
                 }
@@ -441,7 +477,8 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
             // Multiply numeric columns
             for (col_a, col_b) in cols_a.iter().zip(cols_b.iter()) {
-                let mul_result = mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
+                let mul_result =
+                    mul_columns(&Arc::new((*col_a).clone()), &Arc::new((*col_b).clone()))?;
                 result_columns.push(mul_result);
             }
 
@@ -456,7 +493,11 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
 
-        _ => Err(format!("* cannot multiply {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "* cannot multiply {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -509,7 +550,11 @@ fn builtin_div(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("/ cannot divide {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "/ cannot divide {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -586,8 +631,12 @@ fn builtin_gt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         // Scalar > Scalar
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a > b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a > b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) > *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a > &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) > *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a > &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         // Col > Scalar
         (Value::Col(col), Value::Int(n)) => {
@@ -605,7 +654,11 @@ fn builtin_gt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("> cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "> cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -618,8 +671,12 @@ fn builtin_lt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a < b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a < b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) < *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a < &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) < *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a < &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         (Value::Col(col), Value::Int(n)) => {
             let result = compare_column_scalar(col, *n as f64, |a, b| a < b)?;
@@ -635,7 +692,11 @@ fn builtin_lt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("< cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "< cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -648,8 +709,12 @@ fn builtin_gte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a >= b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a >= b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) >= *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a >= &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) >= *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a >= &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         (Value::Col(col), Value::Int(n)) => {
             let result = compare_column_scalar(col, *n as f64, |a, b| a >= b)?;
@@ -665,7 +730,11 @@ fn builtin_gte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!(">= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            ">= cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -678,8 +747,12 @@ fn builtin_lte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a <= b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a <= b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) <= *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a <= &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) <= *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a <= &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         (Value::Col(col), Value::Int(n)) => {
             let result = compare_column_scalar(col, *n as f64, |a, b| a <= b)?;
@@ -695,7 +768,11 @@ fn builtin_lte(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("<= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "<= cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -708,8 +785,12 @@ fn builtin_eq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a == b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a == b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) == *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a == &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) == *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a == &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         (Value::Col(col), Value::Int(n)) => {
             let result = compare_column_scalar(col, *n as f64, |a, b| a == b)?;
@@ -725,7 +806,11 @@ fn builtin_eq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("== cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "== cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -738,8 +823,12 @@ fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match (&args[0], &args[1]) {
         (Value::Int(a), Value::Int(b)) => Ok(Value::Float(if a != b { 1.0 } else { 0.0 })),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(if a != b { 1.0 } else { 0.0 })),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(if (*a as f64) != *b { 1.0 } else { 0.0 })),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(if a != &(*b as f64) { 1.0 } else { 0.0 })),
+        (Value::Int(a), Value::Float(b)) => {
+            Ok(Value::Float(if (*a as f64) != *b { 1.0 } else { 0.0 }))
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            Ok(Value::Float(if a != &(*b as f64) { 1.0 } else { 0.0 }))
+        }
 
         (Value::Col(col), Value::Int(n)) => {
             let result = compare_column_scalar(col, *n as f64, |a, b| a != b)?;
@@ -755,7 +844,11 @@ fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
 
-        _ => Err(format!("!= cannot compare {} and {}", args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "!= cannot compare {} and {}",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -765,36 +858,41 @@ fn builtin_neq(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Returns table with 1.0/0.0 masks for all numeric columns
 fn builtin_gt_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!(">-cols expects 2 arguments (table scalar), got {}", args.len()));
+        return Err(format!(
+            ">-cols expects 2 arguments (table scalar), got {}",
+            args.len()
+        ));
     }
 
     let threshold = args[1].as_float()?;
 
     match &args[0] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        let result: Vec<f64> = data.iter()
-                            .map(|&x| {
-                                if x.is_nan() {
-                                    f64::NAN
-                                } else if x > threshold {
-                                    1.0
-                                } else {
-                                    0.0
-                                }
-                            })
-                            .collect();
-                        Ok(blawktrust::Column::new_f64(result))
-                    }
-                    _ => unreachable!("map_numeric_cols only passes F64"),
+            let result = map_numeric_cols(tv.as_ref(), |col| match col {
+                blawktrust::Column::F64(data) => {
+                    let result: Vec<f64> = data
+                        .iter()
+                        .map(|&x| {
+                            if x.is_nan() {
+                                f64::NAN
+                            } else if x > threshold {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect();
+                    Ok(blawktrust::Column::new_f64(result))
                 }
+                _ => unreachable!("map_numeric_cols only passes F64"),
             })?;
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!(">-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            ">-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -812,7 +910,10 @@ fn builtin_gt_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   [NA, 1.0, NA, 2.0]     → [NA, 1.0, 1.0, 2.0]
 fn builtin_locf(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("locf expects 1 argument (column), got {}", args.len()));
+        return Err(format!(
+            "locf expects 1 argument (column), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -843,7 +944,10 @@ fn builtin_locf(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Applies forward fill to each F64 column, preserves non-numeric columns.
 fn builtin_locf_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("locf-cols expects 1 argument (table), got {}", args.len()));
+        return Err(format!(
+            "locf-cols expects 1 argument (table), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
@@ -872,7 +976,10 @@ fn builtin_locf_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("locf-cols expects TableView, got {}. Use (file ...) which returns TableView.", args[0].type_name())),
+        _ => Err(format!(
+            "locf-cols expects TableView, got {}. Use (file ...) which returns TableView.",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -887,7 +994,10 @@ fn builtin_locf_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 /// Used in wzs macro: (wzs data window step) = (locf (keep-shape (wz0 data window) step))
 fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("keep-shape expects 2 arguments (col k), got {}", args.len()));
+        return Err(format!(
+            "keep-shape expects 2 arguments (col k), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -899,14 +1009,10 @@ fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
 
     match col.as_ref() {
         blawktrust::Column::F64(data) => {
-            let result: Vec<f64> = data.iter().enumerate()
-                .map(|(i, &val)| {
-                    if i % k == 0 {
-                        val
-                    } else {
-                        f64::NAN
-                    }
-                })
+            let result: Vec<f64> = data
+                .iter()
+                .enumerate()
+                .map(|(i, &val)| if i % k == 0 { val } else { f64::NAN })
                 .collect();
 
             Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
@@ -920,7 +1026,10 @@ fn builtin_keep_shape(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
 /// Table-level wrapper: TableView -> TableView
 fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("keep-shape-cols expects 2 arguments (table k), got {}", args.len()));
+        return Err(format!(
+            "keep-shape-cols expects 2 arguments (table k), got {}",
+            args.len()
+        ));
     }
 
     let k = args[1].as_int()? as usize;
@@ -930,21 +1039,24 @@ fn builtin_keep_shape_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, S
 
     match &args[0] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        let result: Vec<f64> = data.iter().enumerate()
-                            .map(|(i, &val)| if i % k == 0 { val } else { f64::NAN })
-                            .collect();
-                        Ok(blawktrust::Column::new_f64(result))
-                    }
-                    _ => unreachable!("map_numeric_cols only passes F64"),
+            let result = map_numeric_cols(tv.as_ref(), |col| match col {
+                blawktrust::Column::F64(data) => {
+                    let result: Vec<f64> = data
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &val)| if i % k == 0 { val } else { f64::NAN })
+                        .collect();
+                    Ok(blawktrust::Column::new_f64(result))
                 }
+                _ => unreachable!("map_numeric_cols only passes F64"),
             })?;
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("keep-shape-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "keep-shape-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -964,7 +1076,10 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     use crate::frame::{Frame, IndexColumn};
 
     if args.len() != 1 {
-        return Err(format!("wkd expects 1 argument (table/frame), got {}", args.len()));
+        return Err(format!(
+            "wkd expects 1 argument (table/frame), got {}",
+            args.len()
+        ));
     }
 
     // Handle Frame directly (date is in index)
@@ -976,7 +1091,8 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         };
 
         // Build mask: (date + 5) % 7 > 1 (weekdays)
-        let mask: Vec<bool> = date_data.iter()
+        let mask: Vec<bool> = date_data
+            .iter()
             .map(|&days| {
                 if days == blawktrust::NULL_DATE {
                     false // Exclude NULL dates
@@ -988,14 +1104,17 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             .collect();
 
         // Filter index and all columns
-        let new_index_dates: Vec<i32> = date_data.iter()
+        let new_index_dates: Vec<i32> = date_data
+            .iter()
             .zip(&mask)
             .filter_map(|(&date, &keep)| if keep { Some(date) } else { None })
             .collect();
 
         let new_index = IndexColumn::Date(Arc::new(new_index_dates));
 
-        let new_cols: Vec<Arc<blawktrust::Column>> = frame.cols.iter()
+        let new_cols: Vec<Arc<blawktrust::Column>> = frame
+            .cols
+            .iter()
             .map(|col_data| {
                 use crate::frame::ColData;
                 match col_data {
@@ -1010,7 +1129,7 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         let new_tags = crate::frame::Tags::new(
             frame.tags.index_name.clone(),
             new_index,
-            (*frame.tags.colnames).clone()
+            (*frame.tags.colnames).clone(),
         );
 
         let new_frame = Frame::new(new_tags, new_cols);
@@ -1033,7 +1152,8 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     };
 
     // Build mask: (date + 5) % 7 > 1 (weekdays)
-    let mask: Vec<bool> = date_data.iter()
+    let mask: Vec<bool> = date_data
+        .iter()
         .map(|&days| {
             if days == blawktrust::NULL_DATE {
                 false // Exclude NULL dates
@@ -1046,7 +1166,10 @@ fn builtin_wkd(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     // Filter all columns
     let new_names: Vec<String> = tv.table.names.clone();
-    let new_columns: Vec<blawktrust::Column> = tv.table.columns.iter()
+    let new_columns: Vec<blawktrust::Column> = tv
+        .table
+        .columns
+        .iter()
         .map(|col| filter_column(col, &mask))
         .collect();
 
@@ -1070,7 +1193,10 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
     use std::sync::Arc;
 
     if args.is_empty() || args.len() > 2 {
-        return Err(format!("mask-weekend expects 1-2 arguments (frame [name]), got {}", args.len()));
+        return Err(format!(
+            "mask-weekend expects 1-2 arguments (frame [name]), got {}",
+            args.len()
+        ));
     }
 
     // Extract Frame using as_frame()
@@ -1081,7 +1207,12 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
         match &args[1] {
             Value::Sym(id) => rt.interner.resolve(*id).to_string(),
             Value::Str(s) => s.to_string(),
-            _ => return Err(format!("mask-weekend expects symbol or string name, got {}", args[1].type_name())),
+            _ => {
+                return Err(format!(
+                    "mask-weekend expects symbol or string name, got {}",
+                    args[1].type_name()
+                ))
+            }
         }
     } else {
         "weekend".to_string()
@@ -1090,23 +1221,29 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
     // Compute weekend bitmask from index
     let weekend_bitvec: BitVec = match &*frame.tags.index {
         crate::frame::IndexColumn::Date(dates) => {
-            dates.iter().map(|&date| {
-                // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
-                // day_of_week = (4 + days_since_epoch) % 7
-                // 0=Sunday, 1=Monday, ..., 6=Saturday
-                let day_of_week = (4 + date).rem_euclid(7);
-                // Weekend: Sunday (0) or Saturday (6)
-                day_of_week == 0 || day_of_week == 6
-            }).collect()
+            dates
+                .iter()
+                .map(|&date| {
+                    // Unix epoch (1970-01-01) was a Thursday (day_of_week = 4)
+                    // day_of_week = (4 + days_since_epoch) % 7
+                    // 0=Sunday, 1=Monday, ..., 6=Saturday
+                    let day_of_week = (4 + date).rem_euclid(7);
+                    // Weekend: Sunday (0) or Saturday (6)
+                    day_of_week == 0 || day_of_week == 6
+                })
+                .collect()
         }
         crate::frame::IndexColumn::Timestamp(timestamps) => {
-            timestamps.iter().map(|&ts| {
-                // Timestamp is i64 milliseconds since Unix epoch
-                // Convert to days and use same logic
-                let days = (ts / 86400000) as i32;  // 86400000 ms per day
-                let day_of_week = (4 + days).rem_euclid(7);
-                day_of_week == 0 || day_of_week == 6
-            }).collect()
+            timestamps
+                .iter()
+                .map(|&ts| {
+                    // Timestamp is i64 milliseconds since Unix epoch
+                    // Convert to days and use same logic
+                    let days = (ts / 86400000) as i32; // 86400000 ms per day
+                    let day_of_week = (4 + days).rem_euclid(7);
+                    day_of_week == 0 || day_of_week == 6
+                })
+                .collect()
         }
         crate::frame::IndexColumn::String(_) => {
             return Err("mask-weekend requires Date or Timestamp index, got String".to_string());
@@ -1125,30 +1262,32 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
 
     // Clone tags and add mask
     let mut new_masks = frame.tags.masks.clone();
-    new_masks.insert(
-        mask_name.clone(),
-        Arc::new(weekend_bitvec),
-        nrows
-    ).map_err(|e| format!("mask-weekend: {}", e))?;
+    new_masks
+        .insert(mask_name.clone(), Arc::new(weekend_bitvec), nrows)
+        .map_err(|e| format!("mask-weekend: {}", e))?;
 
     let new_tags = crate::frame::Tags {
         index_name: frame.tags.index_name.clone(),
         index: Arc::clone(&frame.tags.index),
         colnames: Arc::clone(&frame.tags.colnames),
         masks: new_masks,
-        active_mask: frame.tags.active_mask.clone(),  // Keep existing active mask
+        active_mask: frame.tags.active_mask.clone(), // Keep existing active mask
     };
 
     // Build new frame with updated tags
     let new_frame = crate::frame::Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let crate::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let crate::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     Ok(Value::Frame(Arc::new(new_frame)))
@@ -1170,7 +1309,10 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
 /// Returns: Frame with active_mask set to compiled expression
 fn builtin_with_mask(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("with-mask expects 2 arguments (frame mask-expr), got {}", args.len()));
+        return Err(format!(
+            "with-mask expects 2 arguments (frame mask-expr), got {}",
+            args.len()
+        ));
     }
 
     let frame = args[0].as_frame()?;
@@ -1194,13 +1336,17 @@ fn builtin_with_mask(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
     // Build new frame with updated tags
     let new_frame = crate::frame::Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let crate::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let crate::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     Ok(Value::Frame(Arc::new(new_frame)))
@@ -1219,40 +1365,37 @@ fn parse_mask_expr(val: &Value, rt: &Runtime) -> Result<crate::mask::MaskExpr, S
         Value::Str(s) => Ok(MaskExpr::Name(s.to_string())),
 
         // List → Operator (not, and, or)
-        Value::List(items) if !items.is_empty() => {
-            match &items[0] {
-                Value::Sym(op_id) => {
-                    let op_name = rt.interner.resolve(*op_id);
-                    match op_name {
-                        "not" => {
-                            if items.len() != 2 {
-                                return Err(format!("not expects 1 argument, got {}", items.len() - 1));
-                            }
-                            let inner = parse_mask_expr(&items[1], rt)?;
-                            Ok(MaskExpr::Not(Box::new(inner)))
+        Value::List(items) if !items.is_empty() => match &items[0] {
+            Value::Sym(op_id) => {
+                let op_name = rt.interner.resolve(*op_id);
+                match op_name {
+                    "not" => {
+                        if items.len() != 2 {
+                            return Err(format!("not expects 1 argument, got {}", items.len() - 1));
                         }
-                        "and" => {
-                            let exprs: Result<Vec<_>, _> = items[1..]
-                                .iter()
-                                .map(|v| parse_mask_expr(v, rt))
-                                .collect();
-                            Ok(MaskExpr::And(exprs?))
-                        }
-                        "or" => {
-                            let exprs: Result<Vec<_>, _> = items[1..]
-                                .iter()
-                                .map(|v| parse_mask_expr(v, rt))
-                                .collect();
-                            Ok(MaskExpr::Or(exprs?))
-                        }
-                        _ => Err(format!("Unknown mask operator: {}", op_name)),
+                        let inner = parse_mask_expr(&items[1], rt)?;
+                        Ok(MaskExpr::Not(Box::new(inner)))
                     }
+                    "and" => {
+                        let exprs: Result<Vec<_>, _> =
+                            items[1..].iter().map(|v| parse_mask_expr(v, rt)).collect();
+                        Ok(MaskExpr::And(exprs?))
+                    }
+                    "or" => {
+                        let exprs: Result<Vec<_>, _> =
+                            items[1..].iter().map(|v| parse_mask_expr(v, rt)).collect();
+                        Ok(MaskExpr::Or(exprs?))
+                    }
+                    _ => Err(format!("Unknown mask operator: {}", op_name)),
                 }
-                _ => Err("Mask expression list must start with operator symbol".to_string()),
             }
-        }
+            _ => Err("Mask expression list must start with operator symbol".to_string()),
+        },
 
-        _ => Err(format!("Invalid mask expression: expected symbol, string, or list, got {}", val.type_name())),
+        _ => Err(format!(
+            "Invalid mask expression: expected symbol, string, or list, got {}",
+            val.type_name()
+        )),
     }
 }
 
@@ -1264,7 +1407,10 @@ fn parse_mask_expr(val: &Value, rt: &Runtime) -> Result<crate::mask::MaskExpr, S
 /// Returns: Frame with active_mask cleared
 pub fn builtin_mask_off(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("mask-off expects 1 argument (frame), got {}", args.len()));
+        return Err(format!(
+            "mask-off expects 1 argument (frame), got {}",
+            args.len()
+        ));
     }
 
     let frame = args[0].as_frame()?;
@@ -1274,19 +1420,23 @@ pub fn builtin_mask_off(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
         index_name: frame.tags.index_name.clone(),
         index: Arc::clone(&frame.tags.index),
         colnames: Arc::clone(&frame.tags.colnames),
-        masks: frame.tags.masks.clone(),  // Preserve named masks
-        active_mask: crate::mask::ActiveMask::empty(nrows),  // Clear active mask
+        masks: frame.tags.masks.clone(), // Preserve named masks
+        active_mask: crate::mask::ActiveMask::empty(nrows), // Clear active mask
     };
 
     let new_frame = crate::frame::Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let crate::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let crate::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     Ok(Value::Frame(Arc::new(new_frame)))
@@ -1299,7 +1449,10 @@ pub fn builtin_mask_off(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
 /// Output format: List of lists for simplicity
 pub fn builtin_mask_list(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("mask-list expects 1 argument (frame), got {}", args.len()));
+        return Err(format!(
+            "mask-list expects 1 argument (frame), got {}",
+            args.len()
+        ));
     }
 
     let frame = args[0].as_frame()?;
@@ -1341,7 +1494,10 @@ pub fn builtin_mask_list(rt: &mut Runtime, args: &[Value]) -> Result<Value, Stri
 /// Returns: List (masked_count unmasked_count pct_masked)
 pub fn builtin_mask_stats(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("mask-stats expects 2 arguments (frame expr), got {}", args.len()));
+        return Err(format!(
+            "mask-stats expects 2 arguments (frame expr), got {}",
+            args.len()
+        ));
     }
 
     let frame = args[0].as_frame()?;
@@ -1378,7 +1534,10 @@ pub fn builtin_mask_stats(rt: &mut Runtime, args: &[Value]) -> Result<Value, Str
 /// Returns: Frame with named mask added
 pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("mask-define expects 3 arguments (frame name expr), got {}", args.len()));
+        return Err(format!(
+            "mask-define expects 3 arguments (frame name expr), got {}",
+            args.len()
+        ));
     }
 
     let frame = args[0].as_frame()?;
@@ -1388,7 +1547,12 @@ pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, St
     let mask_name = match &args[1] {
         Value::Sym(id) => rt.interner.resolve(*id).to_string(),
         Value::Str(s) => s.to_string(),
-        _ => return Err(format!("mask-define expects string or symbol name, got {}", args[1].type_name())),
+        _ => {
+            return Err(format!(
+                "mask-define expects string or symbol name, got {}",
+                args[1].type_name()
+            ))
+        }
     };
 
     let mask_expr = parse_mask_expr(&args[2], rt)?;
@@ -1398,29 +1562,31 @@ pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, St
 
     // Add to MaskSet
     let mut new_masks = frame.tags.masks.clone();
-    new_masks.insert(
-        mask_name.clone(),
-        Arc::new(compiled),
-        nrows
-    ).map_err(|e| format!("mask-define: {}", e))?;
+    new_masks
+        .insert(mask_name.clone(), Arc::new(compiled), nrows)
+        .map_err(|e| format!("mask-define: {}", e))?;
 
     let new_tags = crate::frame::Tags {
         index_name: frame.tags.index_name.clone(),
         index: Arc::clone(&frame.tags.index),
         colnames: Arc::clone(&frame.tags.colnames),
         masks: new_masks,
-        active_mask: frame.tags.active_mask.clone(),  // Don't activate
+        active_mask: frame.tags.active_mask.clone(), // Don't activate
     };
 
     let new_frame = crate::frame::Frame::with_tags(
         Arc::new(new_tags),
-        frame.cols.iter().filter_map(|cd| {
-            if let crate::frame::ColData::Mat(col) = cd {
-                Some(Arc::clone(col))
-            } else {
-                None
-            }
-        }).collect()
+        frame
+            .cols
+            .iter()
+            .filter_map(|cd| {
+                if let crate::frame::ColData::Mat(col) = cd {
+                    Some(Arc::clone(col))
+                } else {
+                    None
+                }
+            })
+            .collect(),
     );
 
     Ok(Value::Frame(Arc::new(new_frame)))
@@ -1435,7 +1601,10 @@ pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, St
 /// Column naming: "A\B" means A minus B
 fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("xminus expects 2 arguments (table half), got {}", args.len()));
+        return Err(format!(
+            "xminus expects 2 arguments (table half), got {}",
+            args.len()
+        ));
     }
 
     let tv = ensure_tableview(&args[0], rt)?;
@@ -1457,7 +1626,10 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     let ncols = numeric_cols.len();
     if ncols % 2 != 0 {
-        return Err(format!("xminus: expected even number of numeric columns, got {}", ncols));
+        return Err(format!(
+            "xminus: expected even number of numeric columns, got {}",
+            ncols
+        ));
     }
 
     let mid = ncols / 2;
@@ -1501,7 +1673,10 @@ fn builtin_xminus(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Formula: result[i] = 1.0 + sum(diffs[0..=i])
 fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("cs1 expects 1 argument (column), got {}", args.len()));
+        return Err(format!(
+            "cs1 expects 1 argument (column), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -1533,15 +1708,16 @@ fn builtin_cs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// axis=:row → cumulative across columns per row
 fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("cs1-cols expects 1 argument (table), got {}", args.len()));
+        return Err(format!(
+            "cs1-cols expects 1 argument (table), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
         Value::TableView(tv) => {
-            use crate::value::Axis;
-
-            match tv.axis {
-                Axis::Col => {
+            match tv.view.ori.class() {
+                blawktrust::OriClass::ColwiseLike => {
                     // Cumulative down rows, per column (fast path)
                     let result = map_numeric_cols(tv.as_ref(), |col| {
                         match col {
@@ -1551,7 +1727,7 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
                                 for &val in data {
                                     if val.is_nan() {
-                                        result.push(sum);  // LOCF
+                                        result.push(sum); // LOCF
                                     } else {
                                         sum += val;
                                         result.push(sum);
@@ -1566,14 +1742,24 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
                     Ok(Value::tableview(result))
                 }
-                Axis::Row => {
+                blawktrust::OriClass::RowwiseLike => {
                     // Cumulative across columns, per row (slow path)
                     let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
                     let ncols = tv.table.columns.len();
 
                     // Collect numeric column indices
-                    let numeric_indices: Vec<usize> = tv.table.columns.iter().enumerate()
-                        .filter_map(|(i, col)| if matches!(col, blawktrust::Column::F64(_)) { Some(i) } else { None })
+                    let numeric_indices: Vec<usize> = tv
+                        .table
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, col)| {
+                            if matches!(col, blawktrust::Column::F64(_)) {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
 
                     if numeric_indices.is_empty() {
@@ -1593,9 +1779,11 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
                                 let mut cumsum = 1.0;
                                 for &nc_idx in &numeric_indices {
                                     if nc_idx > col_idx {
-                                        break;  // Haven't reached this column yet in the scan
+                                        break; // Haven't reached this column yet in the scan
                                     }
-                                    if let blawktrust::Column::F64(nc_data) = &tv.table.columns[nc_idx] {
+                                    if let blawktrust::Column::F64(nc_data) =
+                                        &tv.table.columns[nc_idx]
+                                    {
                                         let val = nc_data[row];
                                         if !val.is_nan() {
                                             cumsum += val;
@@ -1613,9 +1801,13 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
                     let result_table = blawktrust::Table::new(result_names, result_cols);
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
+                _ => Err("cs1-cols not defined for this orientation".to_string()),
             }
         }
-        _ => Err(format!("cs1-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "cs1-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -1625,7 +1817,10 @@ fn builtin_cs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 /// Formula: exp(sum of log returns) = cumulative product of exp(returns)
 fn builtin_ecs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("ecs1 expects 1 argument (column), got {}", args.len()));
+        return Err(format!(
+            "ecs1 expects 1 argument (column), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -1657,15 +1852,16 @@ fn builtin_ecs1(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// axis=:row → cumulative across columns per row
 fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("ecs1-cols expects 1 argument (table), got {}", args.len()));
+        return Err(format!(
+            "ecs1-cols expects 1 argument (table), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
         Value::TableView(tv) => {
-            use crate::value::Axis;
-
-            match tv.axis {
-                Axis::Col => {
+            match tv.view.ori.class() {
+                blawktrust::OriClass::ColwiseLike => {
                     // Cumulative down rows, per column (fast path)
                     let result = map_numeric_cols(tv.as_ref(), |col| {
                         match col {
@@ -1675,7 +1871,7 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 
                                 for &val in data {
                                     if val.is_nan() {
-                                        result.push(cumsum.exp());  // LOCF
+                                        result.push(cumsum.exp()); // LOCF
                                     } else {
                                         cumsum += val;
                                         result.push(cumsum.exp());
@@ -1690,13 +1886,23 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 
                     Ok(Value::tableview(result))
                 }
-                Axis::Row => {
+                blawktrust::OriClass::RowwiseLike => {
                     // Cumulative across columns, per row (slow path)
                     let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
 
                     // Collect numeric column indices
-                    let numeric_indices: Vec<usize> = tv.table.columns.iter().enumerate()
-                        .filter_map(|(i, col)| if matches!(col, blawktrust::Column::F64(_)) { Some(i) } else { None })
+                    let numeric_indices: Vec<usize> = tv
+                        .table
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, col)| {
+                            if matches!(col, blawktrust::Column::F64(_)) {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
 
                     if numeric_indices.is_empty() {
@@ -1717,7 +1923,9 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                                     if nc_idx > col_idx {
                                         break;
                                     }
-                                    if let blawktrust::Column::F64(nc_data) = &tv.table.columns[nc_idx] {
+                                    if let blawktrust::Column::F64(nc_data) =
+                                        &tv.table.columns[nc_idx]
+                                    {
                                         let val = nc_data[row];
                                         if !val.is_nan() {
                                             cumsum += val;
@@ -1735,9 +1943,13 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                     let result_table = blawktrust::Table::new(result_names, result_cols);
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
+                _ => Err("ecs1-cols not defined for this orientation".to_string()),
             }
         }
-        _ => Err(format!("ecs1-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "ecs1-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -1778,7 +1990,10 @@ fn builtin_ecs1_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 ///   mapr(x, y): DATE=[2020-01-01, 2020-01-02, 2020-01-03], price=[100, NA, 102]
 fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("mapr expects 2 arguments (x y), got {}", args.len()));
+        return Err(format!(
+            "mapr expects 2 arguments (x y), got {}",
+            args.len()
+        ));
     }
 
     // BLADE: Frame version using reindex_by
@@ -1837,7 +2052,8 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 let target_col = &target.table.columns[j];
 
                 // Map target column to source keys
-                let mapped_col = map_column_by_keys(&source.table.columns[0], target_col, &key_map)?;
+                let mapped_col =
+                    map_column_by_keys(&source.table.columns[0], target_col, &key_map)?;
 
                 result_names.push(target.table.names[j].clone());
                 result_columns.push(mapped_col);
@@ -1846,8 +2062,11 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let result_table = blawktrust::Table::new(result_names, result_columns);
             Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
-        _ => Err(format!("mapr expects (Frame Frame) or (TableView TableView), got ({} {})",
-            args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "mapr expects (Frame Frame) or (TableView TableView), got ({} {})",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -1868,7 +2087,10 @@ fn builtin_mapr(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///                                             ^^^ carry forward (at-or-before)
 fn builtin_asofr(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("asofr expects 2 arguments (x y), got {}", args.len()));
+        return Err(format!(
+            "asofr expects 2 arguments (x y), got {}",
+            args.len()
+        ));
     }
 
     match (&args[0], &args[1]) {
@@ -1877,8 +2099,11 @@ fn builtin_asofr(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let result = frame::asofr(x, y);
             Ok(Value::Frame(Arc::new(result)))
         }
-        _ => Err(format!("asofr expects (Frame Frame), got ({} {})",
-            args[0].type_name(), args[1].type_name())),
+        _ => Err(format!(
+            "asofr expects (Frame Frame), got ({} {})",
+            args[0].type_name(),
+            args[1].type_name()
+        )),
     }
 }
 
@@ -1893,7 +2118,10 @@ fn builtin_asofr(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (ur prices 250 5) ; 250-day window, decay=5
 fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(format!("ur expects 2-3 arguments (col window [step]), got {}", args.len()));
+        return Err(format!(
+            "ur expects 2-3 arguments (col window [step]), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -1919,7 +2147,7 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let scale = 100.0 * (252.0_f64).sqrt();
 
             // Step parameter: recalculate volatility every 'step' rows, but output every row
-            let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
+            let mut current_inv_vol = f64::NAN; // 1 / (scale * stddev)
 
             for i in 0..n {
                 // Rolling window philosophy: require full window before computing
@@ -1931,7 +2159,7 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 // Recalculate volatility every 'step' rows
                 if i % step == 0 || current_inv_vol.is_nan() {
                     let start = i - window;
-                    let end = i;  // EXCLUDE current value (Ft-measurable: use only past)
+                    let end = i; // EXCLUDE current value (Ft-measurable: use only past)
 
                     // Calculate rolling stddev
                     let mut sum = 0.0;
@@ -1980,7 +2208,10 @@ fn builtin_ur(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Table-level wrapper: TableView -> TableView
 fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("ur expects 3 arguments (window step table), got {}", args.len()));
+        return Err(format!(
+            "ur expects 3 arguments (window step table), got {}",
+            args.len()
+        ));
     }
 
     let window = args[0].as_int()? as usize;
@@ -2001,7 +2232,7 @@ fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         let scale = 100.0 * (252.0_f64).sqrt();
 
         // Step parameter: recalculate volatility every 'step' rows, but output every row
-        let mut current_inv_vol = f64::NAN;  // 1 / (scale * stddev)
+        let mut current_inv_vol = f64::NAN; // 1 / (scale * stddev)
 
         for i in 0..n {
             // Rolling window philosophy: require full window before computing
@@ -2054,13 +2285,11 @@ fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     match &args[2] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        Ok(blawktrust::Column::new_f64(apply_ur_to_col(data)))
-                    }
-                    _ => unreachable!("map_numeric_cols only passes F64"),
+            let result = map_numeric_cols(tv.as_ref(), |col| match col {
+                blawktrust::Column::F64(data) => {
+                    Ok(blawktrust::Column::new_f64(apply_ur_to_col(data)))
                 }
+                _ => unreachable!("map_numeric_cols only passes F64"),
             })?;
 
             Ok(Value::tableview(result))
@@ -2069,18 +2298,17 @@ fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             // Apply UR to Frame columns
             use crate::frame::map_numeric_preserve_tags;
 
-            let result = map_numeric_preserve_tags(frame.as_ref(), |col| {
-                match col {
-                    blawktrust::Column::F64(data) => {
-                        blawktrust::Column::new_f64(apply_ur_to_col(data))
-                    }
-                    _ => col.clone(),
-                }
+            let result = map_numeric_preserve_tags(frame.as_ref(), |col| match col {
+                blawktrust::Column::F64(data) => blawktrust::Column::new_f64(apply_ur_to_col(data)),
+                _ => col.clone(),
             });
 
             Ok(Value::Frame(Arc::new(result)))
         }
-        _ => Err(format!("ur expects TableView/Frame, got {}", args[2].type_name())),
+        _ => Err(format!(
+            "ur expects TableView/Frame, got {}",
+            args[2].type_name()
+        )),
     }
 }
 
@@ -2094,7 +2322,10 @@ fn builtin_ur_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (wz0 prices 25) ; 25-period rolling z-score
 fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wz0 expects 2 arguments (col window), got {}", args.len()));
+        return Err(format!(
+            "wz0 expects 2 arguments (col window), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -2155,7 +2386,10 @@ fn builtin_wz0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Table-level wrapper: TableView -> TableView
 fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wz0-cols expects 2 arguments (table window), got {}", args.len()));
+        return Err(format!(
+            "wz0-cols expects 2 arguments (table window), got {}",
+            args.len()
+        ));
     }
 
     let window = args[1].as_int()? as usize;
@@ -2194,7 +2428,8 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
                                 if count > 1 {
                                     let mean = sum / count as f64;
-                                    let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                                    let variance =
+                                        (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
 
                                     if variance > 0.0 && !data[i].is_nan() {
                                         let stddev = variance.sqrt();
@@ -2212,7 +2447,10 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("wz0-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "wz0-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -2222,7 +2460,10 @@ fn builtin_wz0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
 /// This is the standard finance pipeline for z-score signals
 fn builtin_wzs(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("wzs expects 3 arguments (table window step), got {}", args.len()));
+        return Err(format!(
+            "wzs expects 3 arguments (table window step), got {}",
+            args.len()
+        ));
     }
 
     // Step 1: wz0-cols
@@ -2251,7 +2492,10 @@ fn builtin_wzs(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (dlog prices 5)  ; 5-day log returns
 fn builtin_dlog(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("dlog expects 2 arguments (frame/col lag), got {}", args.len()));
+        return Err(format!(
+            "dlog expects 2 arguments (frame/col lag), got {}",
+            args.len()
+        ));
     }
 
     let lag = args[1].as_int()? as usize;
@@ -2261,9 +2505,7 @@ fn builtin_dlog(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         Value::Frame(f) => {
             // BLADE: Use map_numeric_preserve_tags (Blueprint Phase 1)
             // Invariants: I1 (tags.index Arc), I2 (tags.colnames Arc), I3 (nrows)
-            let result = frame::map_numeric_preserve_tags(f, |col| {
-                dlog_column(col, lag)
-            });
+            let result = frame::map_numeric_preserve_tags(f, |col| dlog_column(col, lag));
             Ok(Value::Frame(Arc::new(result)))
         }
         Value::Col(col) => {
@@ -2271,7 +2513,10 @@ fn builtin_dlog(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             let result = dlog_column(col, lag);
             Ok(Value::Col(Arc::new(result)))
         }
-        _ => Err(format!("dlog expects frame or col, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "dlog expects frame or col, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -2284,7 +2529,10 @@ fn builtin_dlog(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (shift prices -1)  ; Tomorrow's prices (lead)
 fn builtin_shift(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("shift expects 2 arguments (col lag), got {}", args.len()));
+        return Err(format!(
+            "shift expects 2 arguments (col lag), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -2308,7 +2556,10 @@ fn builtin_shift(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (diff prices 5)  ; 5-day price changes
 fn builtin_diff(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("diff expects 2 arguments (col lag), got {}", args.len()));
+        return Err(format!(
+            "diff expects 2 arguments (col lag), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -2331,12 +2582,20 @@ fn builtin_diff(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (file "ES1I.csv")         ; Load S&P futures data
 fn builtin_file(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 1 {
-        return Err(format!("file expects 1 argument (filename), got {}", args.len()));
+        return Err(format!(
+            "file expects 1 argument (filename), got {}",
+            args.len()
+        ));
     }
 
     let filename = match &args[0] {
         Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("file expects string filename, got {}", args[0].type_name())),
+        _ => {
+            return Err(format!(
+                "file expects string filename, got {}",
+                args[0].type_name()
+            ))
+        }
     };
 
     crate::io::load_csv(filename, &mut rt.interner)
@@ -2352,12 +2611,20 @@ fn builtin_file(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (file-head "data.csv" 1)   ; Peek at first row
 fn builtin_file_head(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("file-head expects 2 arguments (filename n), got {}", args.len()));
+        return Err(format!(
+            "file-head expects 2 arguments (filename n), got {}",
+            args.len()
+        ));
     }
 
     let filename = match &args[0] {
         Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("file-head expects string filename, got {}", args[0].type_name())),
+        _ => {
+            return Err(format!(
+                "file-head expects string filename, got {}",
+                args[0].type_name()
+            ))
+        }
     };
 
     let n = args[1].as_int()?;
@@ -2386,12 +2653,20 @@ fn builtin_stdin(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (save "output.csv" results)
 fn builtin_save(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("save expects 2 arguments (filename table), got {}", args.len()));
+        return Err(format!(
+            "save expects 2 arguments (filename table), got {}",
+            args.len()
+        ));
     }
 
     let filename = match &args[0] {
         Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("save expects string filename, got {}", args[0].type_name())),
+        _ => {
+            return Err(format!(
+                "save expects string filename, got {}",
+                args[0].type_name()
+            ))
+        }
     };
 
     match &args[1] {
@@ -2409,7 +2684,10 @@ fn builtin_save(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             crate::io::save_csv(filename, t, &rt.interner)?;
             Ok(Value::Nil)
         }
-        _ => Err(format!("save expects table or tableview, got {}", args[1].type_name())),
+        _ => Err(format!(
+            "save expects table or tableview, got {}",
+            args[1].type_name()
+        )),
     }
 }
 
@@ -2420,7 +2698,10 @@ fn builtin_save(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (col data 'volume)        ; Extract 'volume' column
 fn builtin_col(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("col expects 2 arguments (table colname), got {}", args.len()));
+        return Err(format!(
+            "col expects 2 arguments (table colname), got {}",
+            args.len()
+        ));
     }
 
     let tv = ensure_tableview(&args[0], rt)?;
@@ -2428,11 +2709,20 @@ fn builtin_col(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let col_name = match &args[1] {
         Value::Sym(id) => rt.interner.resolve(*id).to_string(),
         Value::Str(s) => s.to_string(),
-        _ => return Err(format!("col expects symbol or string column name, got {}", args[1].type_name())),
+        _ => {
+            return Err(format!(
+                "col expects symbol or string column name, got {}",
+                args[1].type_name()
+            ))
+        }
     };
 
     // Find column by name
-    let col_idx = tv.table.names.iter().position(|n| n == &col_name)
+    let col_idx = tv
+        .table
+        .names
+        .iter()
+        .position(|n| n == &col_name)
         .ok_or_else(|| format!("Column '{}' not found in table", col_name))?;
 
     Ok(Value::Col(Arc::new(tv.table.columns[col_idx].clone())))
@@ -2446,7 +2736,10 @@ fn builtin_col(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (wkd prices)              ; Alias for (w prices 5)
 fn builtin_w(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("w expects 2 arguments (table index), got {}", args.len()));
+        return Err(format!(
+            "w expects 2 arguments (table index), got {}",
+            args.len()
+        ));
     }
 
     let table = args[0].as_table()?;
@@ -2473,7 +2766,10 @@ fn builtin_w(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (setcol prices "log_price" (dlog (col prices "price")))
 fn builtin_setcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("setcol expects 3 arguments (table colname column), got {}", args.len()));
+        return Err(format!(
+            "setcol expects 3 arguments (table colname column), got {}",
+            args.len()
+        ));
     }
 
     // Get table as TableView
@@ -2483,7 +2779,12 @@ fn builtin_setcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let col_name = match &args[1] {
         Value::Sym(id) => rt.interner.resolve(*id).to_string(),
         Value::Str(s) => s.to_string(),
-        _ => return Err(format!("setcol expects symbol or string column name, got {}", args[1].type_name())),
+        _ => {
+            return Err(format!(
+                "setcol expects symbol or string column name, got {}",
+                args[1].type_name()
+            ))
+        }
     };
 
     // Get new column
@@ -2542,7 +2843,10 @@ fn builtin_setcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 ///   (-> prices (withcol "close" dlog))           ; Same with threading
 fn builtin_withcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() < 3 {
-        return Err(format!("withcol expects at least 3 arguments (table colname fn [args...]), got {}", args.len()));
+        return Err(format!(
+            "withcol expects at least 3 arguments (table colname fn [args...]), got {}",
+            args.len()
+        ));
     }
 
     // Get table as TableView
@@ -2552,23 +2856,40 @@ fn builtin_withcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let col_name_sym = match &args[1] {
         Value::Sym(id) => *id,
         Value::Str(s) => rt.interner.intern(s.as_ref()),
-        _ => return Err(format!("withcol expects symbol or string column name, got {}", args[1].type_name())),
+        _ => {
+            return Err(format!(
+                "withcol expects symbol or string column name, got {}",
+                args[1].type_name()
+            ))
+        }
     };
 
     // Get function (must be a builtin symbol)
     let func_sym = match &args[2] {
         Value::Sym(id) => *id,
-        _ => return Err(format!("withcol currently only supports builtin function symbols, got {}", args[2].type_name())),
+        _ => {
+            return Err(format!(
+                "withcol currently only supports builtin function symbols, got {}",
+                args[2].type_name()
+            ))
+        }
     };
 
     if !rt.is_builtin(func_sym) {
         let func_name = rt.interner.resolve(func_sym);
-        return Err(format!("withcol: '{}' is not a builtin function", func_name));
+        return Err(format!(
+            "withcol: '{}' is not a builtin function",
+            func_name
+        ));
     }
 
     // Extract column
     let col_name = rt.interner.resolve(col_name_sym).to_string();
-    let col_idx = tv.table.names.iter().position(|n| n == &col_name)
+    let col_idx = tv
+        .table
+        .names
+        .iter()
+        .position(|n| n == &col_name)
         .ok_or_else(|| format!("Column '{}' not found in table", col_name))?;
     let existing_col = &tv.table.columns[col_idx];
 
@@ -2584,7 +2905,10 @@ fn builtin_withcol(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     // Use setcol to update the table
     let col_name_val = Value::Str(col_name.into());
-    builtin_setcol(rt, &[Value::tableview_arc(tv), col_name_val, Value::Col(new_col)])
+    builtin_setcol(
+        rt,
+        &[Value::tableview_arc(tv), col_name_val, Value::Col(new_col)],
+    )
 }
 
 /// (make-col v1 v2 v3 ...) - Create column from values
@@ -2662,74 +2986,18 @@ fn builtin_sum(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match &args[0] {
         Value::Col(col) => {
             // Single column: compute sum ignoring NAs
-            let data = match col.as_ref() {
-                blawktrust::Column::F64(data) => data,
-                _ => return Err("sum expects F64 column".to_string()),
-            };
-            let mut sum = 0.0;
-            for &val in data {
-                if !val.is_nan() {
-                    sum += val;
-                }
-            }
-            Ok(Value::Float(sum))
+            let sum_val = blawktrust::sum(col.as_ref());
+            Ok(Value::Float(sum_val))
         }
         Value::TableView(tv) => {
-            use crate::value::Axis;
-
-            // Axis-aware aggregation
-            match tv.axis {
-                Axis::Col => {
-                    // Sum down rows, per column → 1×N output (ignore NAs)
-                    let mut result_cols = Vec::new();
-                    let mut result_names = Vec::new();
-
-                    for (i, col) in tv.table.columns.iter().enumerate() {
-                        if let blawktrust::Column::F64(data) = col {
-                            // Compute sum ignoring NAs
-                            let mut sum = 0.0;
-                            for &val in data {
-                                if !val.is_nan() {
-                                    sum += val;
-                                }
-                            }
-                            result_cols.push(blawktrust::Column::new_f64(vec![sum]));
-                            result_names.push(tv.table.names[i].clone());
-                        }
-                    }
-
-                    if result_cols.is_empty() {
-                        return Err("sum: no numeric columns".to_string());
-                    }
-
-                    let result_table = blawktrust::Table::new(result_names, result_cols);
-                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
-                }
-                Axis::Row => {
-                    // Sum across columns, per row → M×1 output (single column)
-                    let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
-                    let mut sums = vec![0.0; nrows];
-
-                    // Sum each row across numeric columns
-                    for col in &tv.table.columns {
-                        if let blawktrust::Column::F64(data) = col {
-                            for (i, &val) in data.iter().enumerate() {
-                                if !val.is_nan() {
-                                    sums[i] += val;
-                                }
-                            }
-                        }
-                    }
-
-                    let result_table = blawktrust::Table::new(
-                        vec!["sum".to_string()],
-                        vec![blawktrust::Column::new_f64(sums)]
-                    );
-                    Ok(Value::tableview(blawktrust::TableView::new(result_table)))
-                }
-            }
+            // Delegate to blawktrust orientation-aware sum
+            let result_col = blawktrust::builtins::ori_ops::sum(&tv.view);
+            Ok(Value::Col(Arc::new(result_col)))
         }
-        _ => Err(format!("sum expects column or tableview, got {}", args[0].type_name()))
+        _ => Err(format!(
+            "sum expects column or tableview, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -2756,31 +3024,14 @@ fn builtin_mean(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
     match &args[0] {
         Value::Col(col) => {
-            // Single column: compute mean ignoring NAs
-            let data = match col.as_ref() {
-                blawktrust::Column::F64(data) => data,
-                _ => return Err("mean expects F64 column".to_string()),
-            };
-            let mut sum = 0.0;
-            let mut count = 0;
-            for &val in data {
-                if !val.is_nan() {
-                    sum += val;
-                    count += 1;
-                }
-            }
-            let result = if count > 0 {
-                sum / count as f64
-            } else {
-                f64::NAN
-            };
-            Ok(Value::Float(result))
+            // Single column: delegate to blawktrust
+            let mean_val = blawktrust::mean(col.as_ref());
+            Ok(Value::Float(mean_val))
         }
         Value::TableView(tv) => {
-            use crate::value::Axis;
-
-            match tv.axis {
-                Axis::Col => {
+            // Check orientation class
+            match tv.view.ori.class() {
+                blawktrust::OriClass::ColwiseLike => {
                     // Mean down rows, per column → 1×N output (ignore NAs)
                     let mut result_cols = Vec::new();
                     let mut result_names = Vec::new();
@@ -2813,7 +3064,7 @@ fn builtin_mean(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     let result_table = blawktrust::Table::new(result_names, result_cols);
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
-                Axis::Row => {
+                blawktrust::OriClass::RowwiseLike => {
                     // Mean across columns, per row → M×1 output
                     let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
                     let mut means = vec![0.0; nrows];
@@ -2842,13 +3093,17 @@ fn builtin_mean(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
                     let result_table = blawktrust::Table::new(
                         vec!["mean".to_string()],
-                        vec![blawktrust::Column::new_f64(means)]
+                        vec![blawktrust::Column::new_f64(means)],
                     );
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
+                _ => Err("mean not defined for this orientation".to_string()),
             }
         }
-        _ => Err(format!("mean expects column or tableview, got {}", args[0].type_name()))
+        _ => Err(format!(
+            "mean expects column or tableview, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -2902,10 +3157,8 @@ fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Float(variance.sqrt()))
         }
         Value::TableView(tv) => {
-            use crate::value::Axis;
-
-            match tv.axis {
-                Axis::Col => {
+            match tv.view.ori.class() {
+                blawktrust::OriClass::ColwiseLike => {
                     // Std down rows, per column → 1×N output
                     let mut result_cols = Vec::new();
                     let mut result_names = Vec::new();
@@ -2928,7 +3181,8 @@ fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                                 f64::NAN
                             } else {
                                 let mean = sum / count as f64;
-                                let variance = (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
+                                let variance =
+                                    (sum_sq - sum * sum / count as f64) / (count - 1) as f64;
                                 variance.sqrt()
                             };
 
@@ -2944,7 +3198,7 @@ fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     let result_table = blawktrust::Table::new(result_names, result_cols);
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
-                Axis::Row => {
+                blawktrust::OriClass::RowwiseLike => {
                     // Std across columns, per row → M×1 output (Welford algorithm)
                     let nrows = tv.table.columns.get(0).map(|c| c.len()).unwrap_or(0);
                     let mut stds = vec![0.0; nrows];
@@ -2977,13 +3231,17 @@ fn builtin_std(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
                     let result_table = blawktrust::Table::new(
                         vec!["std".to_string()],
-                        vec![blawktrust::Column::new_f64(stds)]
+                        vec![blawktrust::Column::new_f64(stds)],
                     );
                     Ok(Value::tableview(blawktrust::TableView::new(result_table)))
                 }
+                _ => Err("std not defined for this orientation".to_string()),
             }
         }
-        _ => Err(format!("std expects column or tableview, got {}", args[0].type_name()))
+        _ => Err(format!(
+            "std expects column or tableview, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -3024,7 +3282,10 @@ fn builtin_std0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (wstd col window) - Rolling standard deviation (propagates NaN)
 fn builtin_wstd(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wstd expects 2 arguments (col window), got {}", args.len()));
+        return Err(format!(
+            "wstd expects 2 arguments (col window), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -3037,7 +3298,10 @@ fn builtin_wstd(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (wstd0 col window) - Rolling standard deviation (ignores NaN)
 fn builtin_wstd0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wstd0 expects 2 arguments (col window), got {}", args.len()));
+        return Err(format!(
+            "wstd0 expects 2 arguments (col window), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -3050,7 +3314,10 @@ fn builtin_wstd0(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (wstd-cols table window) - Apply wstd to all F64 columns
 fn builtin_wstd_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wstd-cols expects 2 arguments (table window), got {}", args.len()));
+        return Err(format!(
+            "wstd-cols expects 2 arguments (table window), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
@@ -3059,14 +3326,20 @@ fn builtin_wstd_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
             let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd(col, window)))?;
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("wstd-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "wstd-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
 /// (wstd0-cols table window) - Apply wstd0 to all F64 columns
 fn builtin_wstd0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wstd0-cols expects 2 arguments (table window), got {}", args.len()));
+        return Err(format!(
+            "wstd0-cols expects 2 arguments (table window), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
@@ -3075,14 +3348,20 @@ fn builtin_wstd0_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
             let result = map_numeric_cols(tv.as_ref(), |col| Ok(wstd0(col, window)))?;
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("wstd0-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "wstd0-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
 /// (wv col window) - Rolling volatility: wstd0(col, window) * sqrt(252)
 fn builtin_wv(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wv expects 2 arguments (col window), got {}", args.len()));
+        return Err(format!(
+            "wv expects 2 arguments (col window), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -3106,7 +3385,10 @@ fn builtin_wv(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (wv-cols table window) - Apply wv to all F64 columns
 fn builtin_wv_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("wv-cols expects 2 arguments (table window), got {}", args.len()));
+        return Err(format!(
+            "wv-cols expects 2 arguments (table window), got {}",
+            args.len()
+        ));
     }
 
     match &args[0] {
@@ -3126,7 +3408,10 @@ fn builtin_wv_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             })?;
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("wv-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "wv-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -3158,7 +3443,9 @@ fn builtin_zscore(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     }
 
     if count < 2 {
-        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(vec![f64::NAN; n]))));
+        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(
+            vec![f64::NAN; n],
+        ))));
     }
 
     let mean = sum / count as f64;
@@ -3166,17 +3453,22 @@ fn builtin_zscore(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let std = variance.sqrt();
 
     if std == 0.0 || std.is_nan() {
-        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(vec![f64::NAN; n]))));
+        return Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(
+            vec![f64::NAN; n],
+        ))));
     }
 
     // Apply z-score transformation
-    let result: Vec<f64> = data.iter().map(|&x| {
-        if x.is_nan() {
-            f64::NAN
-        } else {
-            (x - mean) / std
-        }
-    }).collect();
+    let result: Vec<f64> = data
+        .iter()
+        .map(|&x| {
+            if x.is_nan() {
+                f64::NAN
+            } else {
+                (x - mean) / std
+            }
+        })
+        .collect();
 
     Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
 }
@@ -3184,7 +3476,10 @@ fn builtin_zscore(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (chop col min max) - Clip column values to [min, max]
 fn builtin_chop(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("chop expects 3 arguments (col min max), got {}", args.len()));
+        return Err(format!(
+            "chop expects 3 arguments (col min max), got {}",
+            args.len()
+        ));
     }
 
     let col = args[0].as_col()?;
@@ -3192,7 +3487,10 @@ fn builtin_chop(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let max_val = args[2].as_float()?;
 
     if min_val > max_val {
-        return Err(format!("chop: min ({}) must be <= max ({})", min_val, max_val));
+        return Err(format!(
+            "chop: min ({}) must be <= max ({})",
+            min_val, max_val
+        ));
     }
 
     let data = match col.as_ref() {
@@ -3200,17 +3498,20 @@ fn builtin_chop(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         _ => return Err("chop expects F64 column".to_string()),
     };
 
-    let result: Vec<f64> = data.iter().map(|&x| {
-        if x.is_nan() {
-            f64::NAN
-        } else if x < min_val {
-            min_val
-        } else if x > max_val {
-            max_val
-        } else {
-            x
-        }
-    }).collect();
+    let result: Vec<f64> = data
+        .iter()
+        .map(|&x| {
+            if x.is_nan() {
+                f64::NAN
+            } else if x < min_val {
+                min_val
+            } else if x > max_val {
+                max_val
+            } else {
+                x
+            }
+        })
+        .collect();
 
     Ok(Value::Col(Arc::new(blawktrust::Column::new_f64(result))))
 }
@@ -3219,16 +3520,24 @@ fn builtin_chop(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 // Column Operation Helpers
 // ============================================================================
 
-fn add_columns(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+fn add_columns(
+    a: &blawktrust::Column,
+    b: &blawktrust::Column,
+) -> Result<blawktrust::Column, String> {
     if a.len() != b.len() {
-        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+        return Err(format!(
+            "Column length mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
     }
 
     // Simple element-wise addition for F64 columns
     match (a, b) {
-        (blawktrust::Column::F64(a_data),
-         blawktrust::Column::F64(b_data)) => {
-            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+        (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
+            let result: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
                 .map(|(x, y)| x + y)
                 .collect();
             Ok(blawktrust::Column::new_f64(result))
@@ -3257,14 +3566,23 @@ fn mul_column_scalar(col: &blawktrust::Column, scalar: f64) -> Result<blawktrust
     }
 }
 
-fn mul_columns(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+fn mul_columns(
+    a: &blawktrust::Column,
+    b: &blawktrust::Column,
+) -> Result<blawktrust::Column, String> {
     if a.len() != b.len() {
-        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+        return Err(format!(
+            "Column length mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
     }
 
     match (a, b) {
         (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
-            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+            let result: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
                 .map(|(x, y)| x * y)
                 .collect();
             Ok(blawktrust::Column::new_f64(result))
@@ -3306,13 +3624,18 @@ fn abs_column(col: &blawktrust::Column) -> Result<blawktrust::Column, String> {
 /// Compare column elements with scalar using given comparison function
 ///
 /// Returns 1.0 where comparison is true, 0.0 where false, NA where col is NA
-fn compare_column_scalar<F>(col: &blawktrust::Column, scalar: f64, cmp: F) -> Result<blawktrust::Column, String>
+fn compare_column_scalar<F>(
+    col: &blawktrust::Column,
+    scalar: f64,
+    cmp: F,
+) -> Result<blawktrust::Column, String>
 where
     F: Fn(f64, f64) -> bool,
 {
     match col {
         blawktrust::Column::F64(data) => {
-            let result: Vec<f64> = data.iter()
+            let result: Vec<f64> = data
+                .iter()
                 .map(|&x| {
                     if x.is_nan() {
                         f64::NAN
@@ -3332,17 +3655,27 @@ where
 /// Compare two columns element-wise using given comparison function
 ///
 /// Returns 1.0 where comparison is true, 0.0 where false, NA if either element is NA
-fn compare_columns<F>(a: &blawktrust::Column, b: &blawktrust::Column, cmp: F) -> Result<blawktrust::Column, String>
+fn compare_columns<F>(
+    a: &blawktrust::Column,
+    b: &blawktrust::Column,
+    cmp: F,
+) -> Result<blawktrust::Column, String>
 where
     F: Fn(f64, f64) -> bool,
 {
     if a.len() != b.len() {
-        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+        return Err(format!(
+            "Column length mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
     }
 
     match (a, b) {
         (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
-            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+            let result: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
                 .map(|(&x, &y)| {
                     if x.is_nan() || y.is_nan() {
                         f64::NAN
@@ -3363,19 +3696,25 @@ where
 fn filter_column(col: &blawktrust::Column, mask: &[bool]) -> blawktrust::Column {
     match col {
         blawktrust::Column::F64(data) => {
-            let filtered: Vec<f64> = data.iter().zip(mask.iter())
+            let filtered: Vec<f64> = data
+                .iter()
+                .zip(mask.iter())
                 .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
                 .collect();
             blawktrust::Column::new_f64(filtered)
         }
         blawktrust::Column::Date(data) => {
-            let filtered: Vec<i32> = data.iter().zip(mask.iter())
+            let filtered: Vec<i32> = data
+                .iter()
+                .zip(mask.iter())
                 .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
                 .collect();
             blawktrust::Column::new_date(filtered)
         }
         blawktrust::Column::Timestamp(data) => {
-            let filtered: Vec<i64> = data.iter().zip(mask.iter())
+            let filtered: Vec<i64> = data
+                .iter()
+                .zip(mask.iter())
                 .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
                 .collect();
             blawktrust::Column::new_timestamp(filtered)
@@ -3384,14 +3723,23 @@ fn filter_column(col: &blawktrust::Column, mask: &[bool]) -> blawktrust::Column 
 }
 
 /// Subtract two columns element-wise (A - B)
-fn subtract_columns_pair(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+fn subtract_columns_pair(
+    a: &blawktrust::Column,
+    b: &blawktrust::Column,
+) -> Result<blawktrust::Column, String> {
     if a.len() != b.len() {
-        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+        return Err(format!(
+            "Column length mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
     }
 
     match (a, b) {
         (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
-            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+            let result: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
                 .map(|(x, y)| x - y)
                 .collect();
             Ok(blawktrust::Column::new_f64(result))
@@ -3418,9 +3766,11 @@ fn map_column_by_keys(
     // Map source values
     match source_col {
         blawktrust::Column::F64(source_data) => {
-            let result: Vec<f64> = target_key_strs.iter()
+            let result: Vec<f64> = target_key_strs
+                .iter()
                 .map(|key| {
-                    key_map.get(key)
+                    key_map
+                        .get(key)
                         .map(|&idx| source_data[idx])
                         .unwrap_or(f64::NAN)
                 })
@@ -3487,15 +3837,23 @@ fn shift_column(col: &blawktrust::Column, lag: usize) -> Result<blawktrust::Colu
 }
 
 /// Subtract two columns element-wise
-fn subtract_columns(a: &blawktrust::Column, b: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+fn subtract_columns(
+    a: &blawktrust::Column,
+    b: &blawktrust::Column,
+) -> Result<blawktrust::Column, String> {
     if a.len() != b.len() {
-        return Err(format!("Column length mismatch: {} vs {}", a.len(), b.len()));
+        return Err(format!(
+            "Column length mismatch: {} vs {}",
+            a.len(),
+            b.len()
+        ));
     }
 
     match (a, b) {
-        (blawktrust::Column::F64(a_data),
-         blawktrust::Column::F64(b_data)) => {
-            let result: Vec<f64> = a_data.iter().zip(b_data.iter())
+        (blawktrust::Column::F64(a_data), blawktrust::Column::F64(b_data)) => {
+            let result: Vec<f64> = a_data
+                .iter()
+                .zip(b_data.iter())
                 .map(|(x, y)| x - y)
                 .collect();
             Ok(blawktrust::Column::new_f64(result))
@@ -3517,7 +3875,9 @@ fn builtin_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let table = args[0].as_table()?;
 
     // Return column names as a list of strings
-    let names: Vec<Value> = table.columns.iter()
+    let names: Vec<Value> = table
+        .columns
+        .iter()
         .map(|(sym_id, _)| {
             let name_str = rt.interner.resolve(*sym_id).to_string();
             Value::Str(name_str.into())
@@ -3530,7 +3890,10 @@ fn builtin_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// (select table "col1" "col2" ...) → Table with selected columns
 fn builtin_select(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() < 2 {
-        return Err(format!("select expects at least 2 arguments (table + column names), got {}", args.len()));
+        return Err(format!(
+            "select expects at least 2 arguments (table + column names), got {}",
+            args.len()
+        ));
     }
 
     let table = args[0].as_table()?;
@@ -3545,7 +3908,8 @@ fn builtin_select(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 
         // Find column by name
         let col_sym = rt.interner.intern(col_name);
-        let col = table.get_column(col_sym)
+        let col = table
+            .get_column(col_sym)
             .ok_or_else(|| format!("select: column '{}' not found", col_name))?;
 
         new_table.add_column(col_sym, col.clone());
@@ -3577,7 +3941,10 @@ fn builtin_select_num(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
 /// Apply unary Col→Col function to each F64 column, preserve Ts columns unchanged
 fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("map-cols expects 2 arguments (table fn), got {}", args.len()));
+        return Err(format!(
+            "map-cols expects 2 arguments (table fn), got {}",
+            args.len()
+        ));
     }
 
     let table = args[0].as_table()?;
@@ -3604,7 +3971,12 @@ fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                     "log" => builtin_log(rt, &fn_args)?,
                     "exp" => builtin_exp(rt, &fn_args)?,
                     "abs" => builtin_abs(rt, &fn_args)?,
-                    _ => return Err(format!("map-cols: unsupported function '{}' (try: log, exp, abs)", fn_name)),
+                    _ => {
+                        return Err(format!(
+                            "map-cols: unsupported function '{}' (try: log, exp, abs)",
+                            fn_name
+                        ))
+                    }
                 };
 
                 let result_col = result.as_col()?;
@@ -3624,7 +3996,10 @@ fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
 /// Apply Col→scalar aggregation to each F64 column, skip Ts columns
 fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("apply-cols expects 2 arguments (table fn), got {}", args.len()));
+        return Err(format!(
+            "apply-cols expects 2 arguments (table fn), got {}",
+            args.len()
+        ));
     }
 
     let table = args[0].as_table()?;
@@ -3650,7 +4025,12 @@ fn builtin_apply_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 "sum0" => builtin_sum0(rt, &fn_args)?,
                 "mean" => builtin_mean(rt, &fn_args)?,
                 "mean0" => builtin_mean0(rt, &fn_args)?,
-                _ => return Err(format!("apply-cols: unknown aggregation function '{}'", fn_name)),
+                _ => {
+                    return Err(format!(
+                        "apply-cols: unknown aggregation function '{}'",
+                        fn_name
+                    ))
+                }
             };
 
             // Convert scalar to 1-element column
@@ -3677,9 +4057,7 @@ fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
     match &args[0] {
         Value::Frame(f) => {
             // BLADE: Use map_numeric_preserve_tags (preserves I1-I3)
-            let result = frame::map_numeric_preserve_tags(f, |col| {
-                dlog_column(col, lag)
-            });
+            let result = frame::map_numeric_preserve_tags(f, |col| dlog_column(col, lag));
             Ok(Value::Frame(Arc::new(result)))
         }
         Value::TableView(tv) => {
@@ -3689,7 +4067,10 @@ fn builtin_dlog_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
             })?;
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("dlog expects Frame or TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "dlog expects Frame or TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -3708,13 +4089,14 @@ fn builtin_shift_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String
 
     match &args[0] {
         Value::TableView(tv) => {
-            let result = map_numeric_cols(tv.as_ref(), |col| {
-                shift_column(col, lag as usize)
-            })?;
+            let result = map_numeric_cols(tv.as_ref(), |col| shift_column(col, lag as usize))?;
 
             Ok(Value::tableview(result))
         }
-        _ => Err(format!("shift-cols expects TableView, got {}", args[0].type_name())),
+        _ => Err(format!(
+            "shift-cols expects TableView, got {}",
+            args[0].type_name()
+        )),
     }
 }
 
@@ -3757,73 +4139,155 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
 /// (o table orientation) - Change table orientation
 /// Example: (o data WENS) rotates to row-wise view
 /// Example: (o data H) or (o data NSWE) for horizontal (default) view
+/// (o ORI table) - Set absolute orientation
+///
+/// Sets the table's orientation using blawktrust's D4 system.
+/// Supports all 10 orientations: H, N, _N, _H, Z, S, _Z, _S, X, R
+///
+/// Examples:
+///   (o 'H table)   ; Column-major, normal order
+///   (o 'Z table)   ; Row-major, normal order (transpose)
+///   (o 'N table)   ; Column-major, rows reversed
+///   (o 'X table)   ; Elementwise mode
+///   (o 'R table)   ; Scalar reduce mode
 fn builtin_o(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
-    use crate::value::{Axis, Layout, TableViewWithMetadata};
+    use crate::value::TableViewWithMetadata;
 
-    match args.len() {
-        1 => {
-            // Unary form: (o MODE) returns a function
-            // This is a special case - we return a lambda-like value
-            // For now, just return an error - proper lambda support needs more work
-            Err("o: unary form (o MODE) not yet implemented - use (o MODE table) instead".to_string())
+    if args.len() != 2 {
+        return Err(format!("o expects 2 arguments, got {}", args.len()));
+    }
+
+    let mode_arg = &args[0];
+    let table_arg = &args[1];
+
+    // Parse orientation symbol
+    let mode_name = match mode_arg {
+        Value::Sym(s) => rt.interner.resolve(*s),
+        Value::Str(s) => s.as_ref(),
+        _ => return Err(format!("o expects symbol or string, got {}", mode_arg.type_name())),
+    };
+
+    // Map symbol to blawktrust Ori constant
+    let ori = match mode_name {
+        // Column-major (ColwiseLike)
+        "H" | "NSWE" => blawktrust::ORI_H,
+        "N" | "SNWE" => blawktrust::ORI_N,
+        "_N" | "NSEW" => blawktrust::ORI__N,
+        "_H" | "SNEW" => blawktrust::ORI__H,
+
+        // Row-major (RowwiseLike)
+        "Z" | "WENS" => blawktrust::ORI_Z,
+        "S" | "EWNS" => blawktrust::ORI_S,
+        "_Z" | "EWSN" => blawktrust::ORI__Z,
+        "_S" | "WESN" => blawktrust::ORI__S,
+
+        // Special modes
+        "X" => blawktrust::ORI_X,
+        "R" => blawktrust::ORI_R,
+
+        _ => return Err(format!(
+            "o: unknown orientation '{}'. Valid: H, N, _N, _H, Z, S, _Z, _S, X, R (or compass: NSWE, SNWE, etc.)",
+            mode_name
+        )),
+    };
+
+    // Get table and set orientation
+    match table_arg {
+        Value::TableView(tv) => {
+            // Call blawktrust API to create new view with orientation
+            let new_view = tv.view.with_orientation(ori);
+            Ok(Value::TableView(Arc::new(TableViewWithMetadata {
+                view: Arc::new(new_view),
+            })))
         }
-        2 => {
-            // Binary form: (o MODE table) returns modified table
-            let mode_arg = &args[0];
-            let table_arg = &args[1];
-
-            // Parse the mode argument (keyword or symbol)
-            let mode_name = match mode_arg {
-                Value::Sym(s) => rt.interner.resolve(*s),
-                Value::Str(s) => s.as_ref(),
-                _ => return Err(format!("o expects keyword (:col/:row/:reset) or symbol (NSWE/WENS/...), got {}", mode_arg.type_name())),
-            };
-
-            // Check if it's a keyword (starts with :) for axis semantics
-            if mode_name.starts_with(':') {
-                // Keyword form: axis semantics
-                let keyword = &mode_name[1..]; // Strip leading ':'
-                let axis = match keyword {
-                    "col" => Axis::Col,
-                    "row" => Axis::Row,
-                    "reset" => Axis::Col, // :reset = back to column-wise default
-                    _ => return Err(format!("o: unknown axis keyword :{}. Valid: :col, :row, :reset", keyword)),
-                };
-
-                // Get table and set axis
-                match table_arg {
-                    Value::TableView(tv) => {
-                        let new_tv = tv.with_axis(axis);
-                        Ok(Value::TableView(Arc::new(new_tv)))
-                    }
-                    _ => {
-                        // Try to convert to TableView first
-                        let tv = ensure_tableview(table_arg, rt)?;
-                        let tv_meta = TableViewWithMetadata::from_view(tv).with_axis(axis);
-                        Ok(Value::TableView(Arc::new(tv_meta)))
-                    }
-                }
-            } else {
-                // Symbol form: layout (physical orientation)
-                let layout = Layout::from_str(mode_name)
-                    .ok_or_else(|| format!("o: unknown layout symbol '{}'. Valid: NSWE, WENS, SNWE, EWNS, H, Z, N, S, etc.", mode_name))?;
-
-                // Get table and set layout
-                match table_arg {
-                    Value::TableView(tv) => {
-                        let new_tv = tv.with_layout(layout);
-                        Ok(Value::TableView(Arc::new(new_tv)))
-                    }
-                    _ => {
-                        // Try to convert to TableView first
-                        let tv = ensure_tableview(table_arg, rt)?;
-                        let tv_meta = TableViewWithMetadata::from_view(tv).with_layout(layout);
-                        Ok(Value::TableView(Arc::new(tv_meta)))
-                    }
-                }
-            }
+        _ => {
+            // Try to convert to TableView first
+            let view = ensure_tableview(table_arg, rt)?;
+            let new_view = view.with_orientation(ori);
+            Ok(Value::TableView(Arc::new(TableViewWithMetadata {
+                view: Arc::new(new_view),
+            })))
         }
-        _ => Err(format!("o expects 1 or 2 arguments, got {}", args.len())),
+    }
+}
+
+/// (ro ORI table) - Relative orientation (D4 composition)
+///
+/// Composes current orientation with given orientation using D4 group rules.
+/// Only works with D4 orientations (H, N, _N, _H, Z, S, _Z, _S).
+/// Returns error for X and R modes (not composable).
+///
+/// Examples:
+///   (ro 'Z table)          ; Transpose from current state
+///   (ro 'Z (ro 'Z table))  ; Z∘Z = H (identity)
+///   (ro 'N (o 'H table))   ; Compose N with H
+fn builtin_ro(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    use crate::value::TableViewWithMetadata;
+
+    if args.len() != 2 {
+        return Err(format!("ro expects 2 arguments, got {}", args.len()));
+    }
+
+    let mode_arg = &args[0];
+    let table_arg = &args[1];
+
+    // Parse orientation symbol
+    let mode_name = match mode_arg {
+        Value::Sym(s) => rt.interner.resolve(*s),
+        Value::Str(s) => s.as_ref(),
+        _ => return Err(format!("ro expects symbol or string, got {}", mode_arg.type_name())),
+    };
+
+    // Map symbol to blawktrust Ori constant (D4 only)
+    let ori = match mode_name {
+        // Column-major (D4)
+        "H" | "NSWE" => blawktrust::ORI_H,
+        "N" | "SNWE" => blawktrust::ORI_N,
+        "_N" | "NSEW" => blawktrust::ORI__N,
+        "_H" | "SNEW" => blawktrust::ORI__H,
+
+        // Row-major (D4)
+        "Z" | "WENS" => blawktrust::ORI_Z,
+        "S" | "EWNS" => blawktrust::ORI_S,
+        "_Z" | "EWSN" => blawktrust::ORI__Z,
+        "_S" | "WESN" => blawktrust::ORI__S,
+
+        // Reject non-D4 modes
+        "X" | "R" => return Err(format!(
+            "ro only works with D4 orientations (H,N,_N,_H,Z,S,_Z,_S), not '{}'",
+            mode_name
+        )),
+
+        _ => return Err(format!(
+            "ro: unknown orientation '{}'. Valid: H, N, _N, _H, Z, S, _Z, _S (or compass: NSWE, SNWE, etc.)",
+            mode_name
+        )),
+    };
+
+    // Get table and compose orientation
+    match table_arg {
+        Value::TableView(tv) => {
+            // Call blawktrust D4 composition API
+            let new_view = tv.view.compose_orientation(ori)
+                .ok_or_else(|| format!(
+                    "Cannot compose orientation (current={:?}, transform={:?})",
+                    tv.view.ori, ori
+                ))?;
+
+            Ok(Value::TableView(Arc::new(TableViewWithMetadata {
+                view: Arc::new(new_view),
+            })))
+        }
+        _ => {
+            // Try to convert to TableView first
+            let view = ensure_tableview(table_arg, rt)?;
+            let new_view = view.compose_orientation(ori)
+                .ok_or_else(|| "Cannot compose orientation".to_string())?;
+
+            Ok(Value::TableView(Arc::new(TableViewWithMetadata {
+                view: Arc::new(new_view),
+            })))
+        }
     }
 }
 
@@ -3879,8 +4343,14 @@ mod tests {
     #[test]
     fn test_abs() {
         let mut rt = Runtime::new();
-        assert_eq!(builtin_abs(&mut rt, &[Value::Int(-5)]).unwrap(), Value::Int(5));
-        assert_eq!(builtin_abs(&mut rt, &[Value::Float(-3.14)]).unwrap(), Value::Float(3.14));
+        assert_eq!(
+            builtin_abs(&mut rt, &[Value::Int(-5)]).unwrap(),
+            Value::Int(5)
+        );
+        assert_eq!(
+            builtin_abs(&mut rt, &[Value::Float(-3.14)]).unwrap(),
+            Value::Float(3.14)
+        );
     }
 
     #[test]
@@ -3984,8 +4454,8 @@ mod tests {
         if let Value::Col(result_col) = result {
             if let blawktrust::Column::F64(data) = &*result_col {
                 assert!(data[0].is_nan()); // First element is NA
-                assert_eq!(data[1], 2.0);  // 102 - 100
-                assert_eq!(data[2], 3.0);  // 105 - 102
+                assert_eq!(data[1], 2.0); // 102 - 100
+                assert_eq!(data[2], 3.0); // 105 - 102
                 assert_eq!(data[3], -2.0); // 103 - 105
             }
         } else {
@@ -4113,58 +4583,58 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_sum_aggregation() {
-        let mut rt = Runtime::new();
-        
-        // Test sum without NaN
-        let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
-        let args = vec![Value::Col(Arc::new(col))];
-        let result = builtin_sum(&mut rt, &args).unwrap();
-        assert_eq!(result.as_float().unwrap(), 10.0);
-        
-        // Test sum with NaN (propagates)
-        let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
-        let args_na = vec![Value::Col(Arc::new(col_na))];
-        let result_na = builtin_sum(&mut rt, &args_na).unwrap();
-        assert!(result_na.as_float().unwrap().is_nan());
-    }
+#[test]
+fn test_sum_aggregation() {
+    let mut rt = Runtime::new();
 
-    #[test]
-    fn test_sum0_aggregation() {
-        let mut rt = Runtime::new();
-        
-        // Test sum0 with NaN (ignores)
-        let col = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0, 4.0]);
-        let args = vec![Value::Col(Arc::new(col))];
-        let result = builtin_sum0(&mut rt, &args).unwrap();
-        assert_eq!(result.as_float().unwrap(), 8.0);
-    }
+    // Test sum without NaN
+    let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
+    let args = vec![Value::Col(Arc::new(col))];
+    let result = builtin_sum(&mut rt, &args).unwrap();
+    assert_eq!(result.as_float().unwrap(), 10.0);
 
-    #[test]
-    fn test_mean_aggregation() {
-        let mut rt = Runtime::new();
-        
-        // Test mean without NaN
-        let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
-        let args = vec![Value::Col(Arc::new(col))];
-        let result = builtin_mean(&mut rt, &args).unwrap();
-        assert_eq!(result.as_float().unwrap(), 2.5);
-        
-        // Test mean with NaN (propagates)
-        let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
-        let args_na = vec![Value::Col(Arc::new(col_na))];
-        let result_na = builtin_mean(&mut rt, &args_na).unwrap();
-        assert!(result_na.as_float().unwrap().is_nan());
-    }
+    // Test sum with NaN (propagates)
+    let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
+    let args_na = vec![Value::Col(Arc::new(col_na))];
+    let result_na = builtin_sum(&mut rt, &args_na).unwrap();
+    assert!(result_na.as_float().unwrap().is_nan());
+}
 
-    #[test]
-    fn test_mean0_aggregation() {
-        let mut rt = Runtime::new();
-        
-        // Test mean0 with NaN (ignores)
-        let col = blawktrust::Column::new_f64(vec![2.0, f64::NAN, 4.0, 6.0]);
-        let args = vec![Value::Col(Arc::new(col))];
-        let result = builtin_mean0(&mut rt, &args).unwrap();
-        assert_eq!(result.as_float().unwrap(), 4.0);
-    }
+#[test]
+fn test_sum0_aggregation() {
+    let mut rt = Runtime::new();
+
+    // Test sum0 with NaN (ignores)
+    let col = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0, 4.0]);
+    let args = vec![Value::Col(Arc::new(col))];
+    let result = builtin_sum0(&mut rt, &args).unwrap();
+    assert_eq!(result.as_float().unwrap(), 8.0);
+}
+
+#[test]
+fn test_mean_aggregation() {
+    let mut rt = Runtime::new();
+
+    // Test mean without NaN
+    let col = blawktrust::Column::new_f64(vec![1.0, 2.0, 3.0, 4.0]);
+    let args = vec![Value::Col(Arc::new(col))];
+    let result = builtin_mean(&mut rt, &args).unwrap();
+    assert_eq!(result.as_float().unwrap(), 2.5);
+
+    // Test mean with NaN (propagates)
+    let col_na = blawktrust::Column::new_f64(vec![1.0, f64::NAN, 3.0]);
+    let args_na = vec![Value::Col(Arc::new(col_na))];
+    let result_na = builtin_mean(&mut rt, &args_na).unwrap();
+    assert!(result_na.as_float().unwrap().is_nan());
+}
+
+#[test]
+fn test_mean0_aggregation() {
+    let mut rt = Runtime::new();
+
+    // Test mean0 with NaN (ignores)
+    let col = blawktrust::Column::new_f64(vec![2.0, f64::NAN, 4.0, 6.0]);
+    let args = vec![Value::Col(Arc::new(col))];
+    let result = builtin_mean0(&mut rt, &args).unwrap();
+    assert_eq!(result.as_float().unwrap(), 4.0);
+}
