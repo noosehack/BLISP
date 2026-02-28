@@ -1660,7 +1660,7 @@ fn rolling_std_partial_mask_aware_legacy(
 /// This is NOT the same as positional lag dlog (OFS). See dlog_ofs_column().
 /// - OBS: [100,NA,NA,110] → [NA,NA,NA,ln(110/100)] (skipped NAs)
 /// - OFS: [100,NA,NA,110] → [NA,NA,NA,NA] (used x[i-1]=NA)
-pub(crate) fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
+pub fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(data.len());

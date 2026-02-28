@@ -968,19 +968,15 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 2);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
             assert_eq!(table.columns.len(), 2);
 
             // Check column names
-            let names: Vec<String> = table
-                .columns
-                .iter()
-                .map(|(sym, _)| interner.resolve(*sym).to_string())
-                .collect();
-            assert_eq!(names, vec!["px", "vol"]);
+            assert_eq!(table.names, vec!["px", "vol"]);
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -992,12 +988,13 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 4);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 4);
 
             // Check that NA values became NaN
-            let px_col = table.get_column(interner.intern("px")).unwrap();
-            match px_col {
+            let px_idx = table.names.iter().position(|n| n == "px").unwrap();
+            match &table.columns[px_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 100.0);
                     assert!(data[1].is_nan(), "NA should become NaN");
@@ -1007,8 +1004,8 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
 
-            let vol_col = table.get_column(interner.intern("vol")).unwrap();
-            match vol_col {
+            let vol_idx = table.names.iter().position(|n| n == "vol").unwrap();
+            match &table.columns[vol_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 1000.0);
                     assert_eq!(data[1], 1200.0);
@@ -1018,7 +1015,7 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1030,13 +1027,14 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 3);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 3);
             assert_eq!(table.columns.len(), 3);
 
             // Check date column is Date type
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
                 blawktrust::Column::Date(data) => {
                     assert_eq!(data.len(), 3);
                     // Valid dates should be positive days since epoch
@@ -1055,8 +1053,8 @@ mod tests {
             }
 
             // Check numeric columns still work
-            let px_col = table.get_column(interner.intern("px")).unwrap();
-            match px_col {
+            let px_idx = table.names.iter().position(|n| n == "px").unwrap();
+            match &table.columns[px_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 100.0);
                     assert_eq!(data[1], 102.0);
@@ -1065,7 +1063,7 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1078,25 +1076,20 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
             // Check that headers were trimmed
-            let names: Vec<String> = table
-                .columns
-                .iter()
-                .map(|(sym, _)| interner.resolve(*sym).to_string())
-                .collect();
-
-            assert_eq!(names[0], "ES2 Index", "Trailing space should be trimmed");
+            assert_eq!(table.names[0], "ES2 Index", "Trailing space should be trimmed");
             assert_eq!(
-                names[1], "SPY US Equity",
+                table.names[1], "SPY US Equity",
                 "Trailing space should be trimmed"
             );
 
             // Verify we can access by trimmed name
-            assert!(table.get_column(interner.intern("ES2 Index")).is_some());
-            assert!(table.get_column(interner.intern("SPY US Equity")).is_some());
+            assert!(table.names.contains(&"ES2 Index".to_string()));
+            assert!(table.names.contains(&"SPY US Equity".to_string()));
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1109,13 +1102,14 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 3);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 3);
             assert_eq!(table.columns.len(), 3);
 
             // Check date column (with NA → NULL_DATE)
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
                 blawktrust::Column::Date(data) => {
                     assert!(data[0] != NULL_DATE, "Valid date");
                     assert!(data[1] != NULL_DATE, "Valid date");
@@ -1125,8 +1119,8 @@ mod tests {
             }
 
             // Check numeric column with space in name
-            let spy_col = table.get_column(interner.intern("SPY US Equity")).unwrap();
-            match spy_col {
+            let spy_idx = table.names.iter().position(|n| n == "SPY US Equity").unwrap();
+            match &table.columns[spy_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 145.438);
                     assert!(data[1].is_nan(), "NA should become NaN");
@@ -1135,7 +1129,7 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1148,12 +1142,13 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 4);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 4);
 
             // Should detect as Date despite leading NAs (K-row lookahead)
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
                 blawktrust::Column::Date(data) => {
                     assert_eq!(data[0], NULL_DATE, "First NA");
                     assert_eq!(data[1], NULL_DATE, "Second NA");
@@ -1163,7 +1158,7 @@ mod tests {
                 _ => panic!("Should detect as Date despite leading NAs"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1239,11 +1234,11 @@ mod tests {
         // Load back
         let loaded = load_csv(filename, &mut interner).unwrap();
 
-        if let Value::Table(loaded_table) = loaded {
-            assert_eq!(loaded_table.row_count, 3);
-            assert_eq!(loaded_table.columns.len(), 2);
+        if let Value::Frame(frame) = loaded {
+            assert_eq!(frame.tags.index.len(), 3);
+            assert_eq!(frame.cols.len(), 2);
         } else {
-            panic!("Expected Table");
+            panic!("Expected Frame from load_csv");
         }
 
         // Cleanup
@@ -1317,19 +1312,20 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 2);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
             assert_eq!(table.columns.len(), 2);
 
             // Check that first column is Date type
-            match &table.columns[0].1 {
+            match &table.columns[0] {
                 blawktrust::Column::Date(data) => {
                     assert_eq!(data.len(), 2);
                 }
                 _ => panic!("Expected Date column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1340,19 +1336,20 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 2);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
             assert_eq!(table.columns.len(), 2);
 
             // Check that first column is Timestamp type
-            match &table.columns[0].1 {
+            match &table.columns[0] {
                 blawktrust::Column::Timestamp(data) => {
                     assert_eq!(data.len(), 2);
                 }
                 _ => panic!("Expected Timestamp column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -1363,25 +1360,26 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 1);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 1);
             assert_eq!(table.columns.len(), 3);
 
             // Check column types
-            match &table.columns[0].1 {
+            match &table.columns[0] {
                 blawktrust::Column::Date(_) => {}
                 _ => panic!("Expected Date column for 'date'"),
             }
-            match &table.columns[1].1 {
+            match &table.columns[1] {
                 blawktrust::Column::Timestamp(_) => {}
                 _ => panic!("Expected Timestamp column for 'timestamp'"),
             }
-            match &table.columns[2].1 {
+            match &table.columns[2] {
                 blawktrust::Column::F64(_) => {}
                 _ => panic!("Expected F64 column for 'value'"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 }

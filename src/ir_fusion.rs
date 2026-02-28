@@ -46,7 +46,7 @@ fn is_pure_elementwise(func: &NumericFunc) -> bool {
 /// 3. Preserve all I1-I3 invariants (tags identity preserved)
 ///
 /// Example transformation:
-/// ```
+/// ```text
 /// Before:  x → ABS → LOG → EXP
 /// After:   x → FusedElementwise([ABS, LOG, EXP])
 /// ```

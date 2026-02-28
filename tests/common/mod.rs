@@ -310,7 +310,7 @@ pub fn direct_eval(expr: &Expr, env: &Env, interner: &Interner) -> Result<Arc<Fr
                         }
                         let input = direct_eval(&elements[1], env, interner)?;
                         let result = map_numeric_preserve_tags(&input, |col| {
-                            blawktrust::builtins::ops::dlog_column(col, 1)
+                            dlog_obs_column(col, 1)
                         });
                         Ok(Arc::new(result))
                     }
@@ -717,29 +717,68 @@ fn shift_column(col: &Column, k: usize) -> Column {
     }
 }
 
-#[allow(clippy::needless_range_loop)] // Loop computes window boundaries from i
+/// Observation-based dlog: skips NAs when computing differences
+///
+/// Contract:
+/// - [100, NA, NA, 110] → [NA, NA, NA, ln(110/100)] (skips NAs)
+/// - Matches IR execution semantics (OBS variant)
+fn dlog_obs_column(col: &Column, _lag: usize) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut last_valid: Option<f64> = None;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    // Current NA → output NA, but keep last_valid for next valid value
+                    result.push(f64::NAN);
+                } else if let Some(prev) = last_valid {
+                    // Valid current, valid previous → compute dlog
+                    if prev > 0.0 && x > 0.0 {
+                        result.push(x.ln() - prev.ln());
+                    } else {
+                        result.push(f64::NAN);
+                    }
+                    last_valid = Some(x);
+                } else {
+                    // Valid current, no previous → output NA (first valid)
+                    result.push(f64::NAN);
+                    last_valid = Some(x);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+#[allow(clippy::needless_range_loop)]
 fn rolling_mean_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
             let nrows = data.len();
             let mut result = vec![f64::NAN; nrows];
 
-            // Trailing window [i-w+1 .. i], strict min_periods, skip NA
-            for i in (w - 1)..nrows {
-                let window_start = i + 1 - w;
-                let window_end = i + 1;
-
-                let mut sum = 0.0;
+            // OBS semantics: Look back to find w valid observations (skip NAs)
+            for i in 0..nrows {
                 let mut count = 0;
+                let mut sum = 0.0;
 
-                for &x in &data[window_start..window_end] {
-                    if !x.is_nan() {
-                        sum += x;
+                // Look back from position i to find w valid (non-NA) observations
+                for j in (0..=i).rev() {
+                    let value = data[j];
+                    if !value.is_nan() {
+                        sum += value;
                         count += 1;
+                        if count >= w {
+                            break;
+                        }
                     }
                 }
 
-                if count >= w {
+                // Strict: emit only if we found exactly w observations
+                if count == w {
                     result[i] = sum / (w as f64);
                 }
             }
@@ -750,28 +789,29 @@ fn rolling_mean_column(col: &Column, w: usize) -> Column {
     }
 }
 
-#[allow(clippy::needless_range_loop)] // Loop computes window boundaries from i
+#[allow(clippy::needless_range_loop)]
 fn rolling_std_column(col: &Column, w: usize) -> Column {
     match col {
         Column::F64(data) => {
             let nrows = data.len();
             let mut result = vec![f64::NAN; nrows];
 
-            // Trailing window [i-w+1 .. i], strict min_periods, skip NA
-            for i in (w - 1)..nrows {
-                let window_start = i + 1 - w;
-                let window_end = i + 1;
-
-                // Collect valid values
+            // OBS semantics: Look back to find w valid observations (skip NAs)
+            for i in 0..nrows {
+                // Collect w valid values by looking back
                 let mut values = Vec::with_capacity(w);
-                for &x in &data[window_start..window_end] {
-                    if !x.is_nan() {
-                        values.push(x);
+                for j in (0..=i).rev() {
+                    let value = data[j];
+                    if !value.is_nan() {
+                        values.push(value);
+                        if values.len() >= w {
+                            break;
+                        }
                     }
                 }
 
-                // Strict min_periods: require w valid values
-                if values.len() >= w {
+                // Strict min_periods: require exactly w valid values
+                if values.len() == w {
                     // Compute mean
                     let sum: f64 = values.iter().sum();
                     let mean = sum / (w as f64);
