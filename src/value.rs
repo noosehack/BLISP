@@ -181,6 +181,41 @@ fn display_column(col: &blawktrust::Column) -> String {
             parts.push(format!("] (n={})", len));
             parts.concat()
         }
+        blawktrust::Column::Ts(data) => {
+            // Treat Ts like Timestamp for display
+            let len = data.len();
+            if len == 0 {
+                return "Ts[]".to_string();
+            }
+
+            let mut parts = vec!["Ts[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(val));
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(data[i]));
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    parts.push(format_timestamp(data[i]));
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
     }
 }
 
@@ -324,6 +359,14 @@ pub fn write_table_to<W: std::io::Write>(
                     }
                 }
                 blawktrust::Column::Timestamp(data) => {
+                    if row_idx < data.len() {
+                        write!(writer, "{}", format_timestamp(data[row_idx]))?;
+                    } else {
+                        write!(writer, "?")?;
+                    }
+                }
+                blawktrust::Column::Ts(data) => {
+                    // Treat Ts like Timestamp
                     if row_idx < data.len() {
                         write!(writer, "{}", format_timestamp(data[row_idx]))?;
                     } else {

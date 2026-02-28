@@ -9,7 +9,16 @@ use crate::value::Value;
 use std::sync::Arc;
 
 // Import blawktrust's optimized operations
-use blawktrust::builtins::ops::{dlog_column, wstd, wstd0, wzscore};
+use blawktrust::builtins::ops::dlog_column;
+
+// TODO: wstd, wstd0, wzscore not yet implemented in blawktrust
+// Temporary stubs
+fn wstd(_col: &blawktrust::Column, _window: usize) -> blawktrust::Column {
+    panic!("wstd not yet implemented - rolling std needs proper implementation")
+}
+fn wstd0(_col: &blawktrust::Column, _window: usize) -> blawktrust::Column {
+    panic!("wstd0 not yet implemented - rolling std needs proper implementation")
+}
 
 // Import orientation support
 use blawktrust::lookup_ori;
@@ -96,6 +105,7 @@ fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, St
                 blawktrust::Column::F64(v) => v.len(),
                 blawktrust::Column::Date(v) => v.len(),
                 blawktrust::Column::Timestamp(v) => v.len(),
+                blawktrust::Column::Ts(v) => v.len(),
             };
             let index_strings: Vec<String> = (0..nrows).map(|i| i.to_string()).collect();
             let index = IndexColumn::String(Arc::new(index_strings));
@@ -406,7 +416,7 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             if !b.table.columns.is_empty() {
                 if matches!(
                     &b.table.columns[0],
-                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)
+                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_)
                 ) {
                     result_names.push(b.table.names[0].clone());
                     result_columns.push(b.table.columns[0].clone());
@@ -468,7 +478,7 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             if !tv_a.table.columns.is_empty() {
                 if matches!(
                     &tv_a.table.columns[0],
-                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_)
+                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_)
                 ) {
                     result_names.push(tv_a.table.names[0].clone());
                     result_columns.push(tv_a.table.columns[0].clone());
@@ -3719,6 +3729,14 @@ fn filter_column(col: &blawktrust::Column, mask: &[bool]) -> blawktrust::Column 
                 .collect();
             blawktrust::Column::new_timestamp(filtered)
         }
+        blawktrust::Column::Ts(data) => {
+            let filtered: Vec<i64> = data
+                .iter()
+                .zip(mask.iter())
+                .filter_map(|(&val, &keep)| if keep { Some(val) } else { None })
+                .collect();
+            blawktrust::Column::new_ts(filtered)
+        }
     }
 }
 
@@ -3806,7 +3824,7 @@ where
                 new_names.push(name.clone());
                 new_columns.push(transformed);
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
                 // Preserve non-numeric columns unchanged
                 new_names.push(name.clone());
                 new_columns.push(col.clone());
@@ -3982,7 +4000,7 @@ fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 let result_col = result.as_col()?;
                 new_table.add_column(*name, (*result_col).clone());
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
                 // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
@@ -4122,7 +4140,7 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 let result_col = subtract_columns(col, &shifted)?;
                 new_table.add_column(*name, result_col);
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) => {
+            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
                 // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
