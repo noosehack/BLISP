@@ -590,22 +590,7 @@ impl Value {
             Value::TableView(tv) => {
                 // Show orientation and shape
                 let (nr, nc) = tv.logical_shape();
-                let ori_name = match tv.ori {
-                    // Column-major (ColwiseLike)
-                    blawktrust::ORI_H => "H",
-                    blawktrust::ORI_N => "N",
-                    blawktrust::ORI__N => "_N",
-                    blawktrust::ORI__H => "_H",
-                    // Row-major (RowwiseLike)
-                    blawktrust::ORI_Z => "Z",
-                    blawktrust::ORI_S => "S",
-                    blawktrust::ORI__Z => "_Z",
-                    blawktrust::ORI__S => "_S",
-                    // Special modes
-                    blawktrust::ORI_X => "X",
-                    blawktrust::ORI_R => "R",
-                    _ => "?",
-                };
+                let ori_name = tv.ori.canonical_name();
                 format!("TableView[ori={}, shape={}×{}]", ori_name, nr, nc)
             }
             Value::Frame(f) => {
