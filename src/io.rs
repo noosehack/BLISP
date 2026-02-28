@@ -2,7 +2,7 @@
 //!
 //! Handles CSV file loading, stdin reading, and CSV writing.
 
-use crate::ast::{Interner, SymbolId};
+use crate::ast::Interner;
 use crate::frame::{Frame, IndexColumn, Tags};
 use crate::value::{Table, Value};
 use std::io::{self, Read};

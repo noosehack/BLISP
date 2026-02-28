@@ -1,6 +1,6 @@
 //! S-expression reader/parser
 
-use crate::ast::{Expr, Interner, SymbolId};
+use crate::ast::{Expr, Interner};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -105,7 +105,14 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             _ => {
                 let mut token_str = String::new();
                 while let Some(&ch) = chars.peek() {
-                    if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '\'' || ch == '`' || ch == ',' || ch == ';' {
+                    if ch.is_whitespace()
+                        || ch == '('
+                        || ch == ')'
+                        || ch == '\''
+                        || ch == '`'
+                        || ch == ','
+                        || ch == ';'
+                    {
                         break;
                     }
                     token_str.push(ch);

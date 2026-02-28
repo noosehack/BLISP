@@ -21,7 +21,7 @@ fn wstd0(_col: &blawktrust::Column, _window: usize) -> blawktrust::Column {
 }
 
 // Import orientation support
-use blawktrust::lookup_ori;
+// (removed unused import)
 
 /// Convert Table/Frame to TableView automatically
 fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView>, String> {
@@ -65,7 +65,7 @@ fn ensure_tableview(v: &Value, rt: &Runtime) -> Result<Arc<blawktrust::TableView
 
 /// Convert TableView to Frame (inverse of ensure_tableview)
 fn tableview_to_frame(v: &Value, rt: &Runtime) -> Result<crate::frame::Frame, String> {
-    use crate::frame::{ColData, Frame, IndexColumn, Tags};
+    use crate::frame::{Frame, IndexColumn, Tags};
 
     let tv = ensure_tableview(v, rt)?;
 
@@ -381,9 +381,8 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             // Add data columns
             for (i, colname) in a.tags.colnames.iter().enumerate() {
                 names_a.push(colname.clone());
-                if let ColData::Mat(col_arc) = &a.cols[i] {
-                    cols_a.push((**col_arc).clone());
-                }
+                let ColData::Mat(col_arc) = &a.cols[i];
+                cols_a.push((**col_arc).clone());
             }
             let tv_a = blawktrust::TableView::new(blawktrust::Table::new(names_a, cols_a));
 
@@ -416,7 +415,9 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             if !b.table.columns.is_empty() {
                 if matches!(
                     &b.table.columns[0],
-                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_)
+                    blawktrust::Column::Date(_)
+                        | blawktrust::Column::Timestamp(_)
+                        | blawktrust::Column::Ts(_)
                 ) {
                     result_names.push(b.table.names[0].clone());
                     result_columns.push(b.table.columns[0].clone());
@@ -441,7 +442,7 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::tableview(blawktrust::TableView::new(result_table)))
         }
 
-        (Value::TableView(a), Value::Frame(b)) => {
+        (Value::TableView(_a), Value::Frame(_b)) => {
             // Swap arguments and call recursively
             builtin_mul(_rt, &[args[1].clone(), args[0].clone()])
         }
@@ -478,7 +479,9 @@ fn builtin_mul(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             if !tv_a.table.columns.is_empty() {
                 if matches!(
                     &tv_a.table.columns[0],
-                    blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_)
+                    blawktrust::Column::Date(_)
+                        | blawktrust::Column::Timestamp(_)
+                        | blawktrust::Column::Ts(_)
                 ) {
                     result_names.push(tv_a.table.names[0].clone());
                     result_columns.push(tv_a.table.columns[0].clone());
@@ -1290,12 +1293,9 @@ fn builtin_mask_weekend(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let crate::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let crate::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -1349,12 +1349,9 @@ fn builtin_with_mask(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> 
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let crate::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let crate::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -1439,12 +1436,9 @@ pub fn builtin_mask_off(rt: &mut Runtime, args: &[Value]) -> Result<Value, Strin
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let crate::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let crate::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -1589,12 +1583,9 @@ pub fn builtin_mask_define(rt: &mut Runtime, args: &[Value]) -> Result<Value, St
         frame
             .cols
             .iter()
-            .filter_map(|cd| {
-                if let crate::frame::ColData::Mat(col) = cd {
-                    Some(Arc::clone(col))
-                } else {
-                    None
-                }
+            .map(|cd| {
+                let crate::frame::ColData::Mat(col) = cd;
+                Arc::clone(col)
             })
             .collect(),
     );
@@ -3772,7 +3763,6 @@ fn map_column_by_keys(
     source_col: &blawktrust::Column,
     key_map: &std::collections::HashMap<String, usize>,
 ) -> Result<blawktrust::Column, String> {
-    use std::collections::HashMap;
 
     // Extract target keys as strings
     let target_key_strs: Vec<String> = match target_keys {
@@ -3824,7 +3814,9 @@ where
                 new_names.push(name.clone());
                 new_columns.push(transformed);
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
+            blawktrust::Column::Date(_)
+            | blawktrust::Column::Timestamp(_)
+            | blawktrust::Column::Ts(_) => {
                 // Preserve non-numeric columns unchanged
                 new_names.push(name.clone());
                 new_columns.push(col.clone());
@@ -4000,7 +3992,9 @@ fn builtin_map_cols(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
                 let result_col = result.as_col()?;
                 new_table.add_column(*name, (*result_col).clone());
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
+            blawktrust::Column::Date(_)
+            | blawktrust::Column::Timestamp(_)
+            | blawktrust::Column::Ts(_) => {
                 // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
@@ -4140,7 +4134,9 @@ fn builtin_diff_cols(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String>
                 let result_col = subtract_columns(col, &shifted)?;
                 new_table.add_column(*name, result_col);
             }
-            blawktrust::Column::Date(_) | blawktrust::Column::Timestamp(_) | blawktrust::Column::Ts(_) => {
+            blawktrust::Column::Date(_)
+            | blawktrust::Column::Timestamp(_)
+            | blawktrust::Column::Ts(_) => {
                 // Keep Date/Timestamp columns unchanged
                 new_table.add_column(*name, col.clone());
             }
@@ -4182,7 +4178,12 @@ fn builtin_o(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let mode_name = match mode_arg {
         Value::Sym(s) => rt.interner.resolve(*s),
         Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("o expects symbol or string, got {}", mode_arg.type_name())),
+        _ => {
+            return Err(format!(
+                "o expects symbol or string, got {}",
+                mode_arg.type_name()
+            ))
+        }
     };
 
     // Map symbol to blawktrust Ori constant
@@ -4253,7 +4254,12 @@ fn builtin_ro(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     let mode_name = match mode_arg {
         Value::Sym(s) => rt.interner.resolve(*s),
         Value::Str(s) => s.as_ref(),
-        _ => return Err(format!("ro expects symbol or string, got {}", mode_arg.type_name())),
+        _ => {
+            return Err(format!(
+                "ro expects symbol or string, got {}",
+                mode_arg.type_name()
+            ))
+        }
     };
 
     // Map symbol to blawktrust Ori constant (D4 only)
@@ -4286,11 +4292,12 @@ fn builtin_ro(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     match table_arg {
         Value::TableView(tv) => {
             // Call blawktrust D4 composition API
-            let new_view = tv.view.compose_orientation(ori)
-                .ok_or_else(|| format!(
+            let new_view = tv.view.compose_orientation(ori).ok_or_else(|| {
+                format!(
                     "Cannot compose orientation (current={:?}, transform={:?})",
                     tv.view.ori, ori
-                ))?;
+                )
+            })?;
 
             Ok(Value::TableView(Arc::new(TableViewWithMetadata {
                 view: Arc::new(new_view),
@@ -4299,7 +4306,8 @@ fn builtin_ro(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
         _ => {
             // Try to convert to TableView first
             let view = ensure_tableview(table_arg, rt)?;
-            let new_view = view.compose_orientation(ori)
+            let new_view = view
+                .compose_orientation(ori)
                 .ok_or_else(|| "Cannot compose orientation".to_string())?;
 
             Ok(Value::TableView(Arc::new(TableViewWithMetadata {
