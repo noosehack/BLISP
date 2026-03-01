@@ -713,11 +713,8 @@ pub fn log_column(col: &Column) -> Column {
             let result = data
                 .iter()
                 .map(|&x| {
-                    if x > 0.0 && !x.is_nan() {
-                        x.ln()
-                    } else {
-                        f64::NAN
-                    }
+                    // IEEE-754: ln(0) = -inf, ln(negative) = NaN, ln(NaN) = NaN
+                    x.ln()
                 })
                 .collect();
             Column::F64(result)
@@ -950,11 +947,8 @@ fn apply_elementwise_op(x: f64, op: crate::ir::NumericFunc) -> f64 {
     match op {
         NumericFunc::ABS => x.abs(),
         NumericFunc::LOG => {
-            if x > 0.0 {
-                x.ln()
-            } else {
-                f64::NAN
-            }
+            // IEEE-754: ln(0) = -inf, ln(negative) = NaN, ln(NaN) = NaN
+            x.ln()
         }
         NumericFunc::EXP => x.exp(),
         NumericFunc::SQRT => {
@@ -1059,11 +1053,9 @@ pub fn fused_cs1_dlog_ofs_column(col: &Column, lag: usize) -> Column {
                     let lagged = data[i - lag];
 
                     // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
-                    let dlog_val = if current.is_finite()
-                        && lagged.is_finite()
-                        && current > 0.0
-                        && lagged > 0.0
-                    {
+                    // IEEE-754: ln(0) = -inf, ln(negative) = NaN, ln(inf) = inf
+                    // Keep is_finite() check to treat inf as NA (matches blawktrust semantics)
+                    let dlog_val = if current.is_finite() && lagged.is_finite() {
                         current.ln() - lagged.ln()
                     } else {
                         f64::NAN
@@ -1216,11 +1208,9 @@ pub fn fused_dlog_ofs_elementwise_column(col: &Column, lag: usize, ops: &[Numeri
                     let lagged = data[i - lag];
 
                     // Compute dlog-ofs: ln(x[i]) - ln(x[i-k])
-                    let dlog_val = if current.is_finite()
-                        && lagged.is_finite()
-                        && current > 0.0
-                        && lagged > 0.0
-                    {
+                    // IEEE-754: ln(0) = -inf, ln(negative) = NaN, ln(inf) = inf
+                    // Keep is_finite() check to treat inf as NA (matches blawktrust semantics)
+                    let dlog_val = if current.is_finite() && lagged.is_finite() {
                         current.ln() - lagged.ln()
                     } else {
                         f64::NAN
