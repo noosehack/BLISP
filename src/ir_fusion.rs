@@ -1145,10 +1145,19 @@ mod proptests {
                     return false;
                 }
                 for (a_val, b_val) in a_data.iter().zip(b_data.iter()) {
+                    // IEEE-754 special values must match exactly
                     match (a_val.is_nan(), b_val.is_nan()) {
-                        (true, true) => continue,
+                        (true, true) => continue, // Both NaN - OK
                         (false, false) => {
-                            // Relative error for floating point comparison
+                            // Check for infinity match
+                            if a_val.is_infinite() && b_val.is_infinite() {
+                                if a_val.signum() == b_val.signum() {
+                                    continue; // Both +inf or both -inf - OK
+                                } else {
+                                    return false; // +inf vs -inf - FAIL
+                                }
+                            }
+                            // Finite values - use relative error comparison
                             let diff = (a_val - b_val).abs();
                             let magnitude = a_val.abs().max(b_val.abs());
                             if magnitude > 1e-10 {
@@ -1159,7 +1168,7 @@ mod proptests {
                                 return false;
                             }
                         }
-                        _ => return false,
+                        _ => return false, // One NaN, one not - FAIL
                     }
                 }
                 true

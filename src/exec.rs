@@ -1119,12 +1119,10 @@ pub fn fused_cs1_dlog_obs_column(col: &Column) -> Column {
                     // NA input → NA output, states unchanged
                     result.push(f64::NAN);
                 } else if let Some(prev) = prev_valid {
-                    // Valid current + valid previous → compute dlog
-                    let dlog_val = if x > 0.0 && prev > 0.0 {
-                        x.ln() - prev.ln()
-                    } else {
-                        f64::NAN
-                    };
+                    // Valid current + valid previous → compute dlog (IEEE-754)
+                    // ln() handles edge cases: 0.0→-inf, negative→NaN
+                    // Subtraction propagates: -inf-val=-inf, val-(-inf)=+inf, NaN±x=NaN
+                    let dlog_val = x.ln() - prev.ln();
 
                     // cs1 accumulation
                     if dlog_val.is_nan() {
@@ -1169,12 +1167,10 @@ pub fn fused_dlog_obs_elementwise_column(col: &Column, ops: &[NumericFunc]) -> C
                     // Current NA → output NA
                     result.push(f64::NAN);
                 } else if let Some(prev) = last_valid {
-                    // Valid current, valid previous → compute dlog
-                    let dlog_val = if prev > 0.0 && x > 0.0 {
-                        x.ln() - prev.ln()
-                    } else {
-                        f64::NAN
-                    };
+                    // Valid current, valid previous → compute dlog (IEEE-754)
+                    // ln() handles edge cases: 0.0→-inf, negative→NaN
+                    // Subtraction propagates: -inf-val=-inf, val-(-inf)=+inf, NaN±x=NaN
+                    let dlog_val = x.ln() - prev.ln();
 
                     // Apply elementwise chain to dlog result
                     let mut y = dlog_val;
