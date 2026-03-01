@@ -1,0 +1,4 @@
+# Ignore all files in scratch/ by default except specific WIP directories
+*
+!.gitignore
+!*/
