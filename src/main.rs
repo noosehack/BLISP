@@ -9,25 +9,163 @@ use blisp::{ast, eval, exec, io, normalize, planner};
 use std::env;
 use std::io::Write;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Debug, PartialEq)]
+enum Subcommand {
+    Run,
+    Verify,
+    Selftest,
+}
+
+fn print_help() {
+    eprintln!("blisp v{} (IR-optimized)", VERSION);
+    eprintln!();
+    eprintln!("USAGE:");
+    eprintln!("  blisp [OPTIONS] [SUBCOMMAND]");
+    eprintln!();
+    eprintln!("SUBCOMMANDS:");
+    eprintln!("  run <script.lisp>              Run a BLISP script (default)");
+    eprintln!("  verify <actual> <expected>     Verify CSV outputs match");
+    eprintln!("  selftest                       Run embedded self-tests");
+    eprintln!();
+    eprintln!("OPTIONS:");
+    eprintln!("  --version                      Show version and exit");
+    eprintln!("  --help                         Show this help message");
+    eprintln!("  --load <file>                  Load stdlib file before execution");
+    eprintln!("  -e '<expression>'              Evaluate expression");
+    eprintln!("  --legacy                       Force legacy AST evaluator");
+    eprintln!("  --ir-only                      Force IR-only mode (experimental)");
+    eprintln!("  --dic                          List all builtin operations");
+    eprintln!();
+    eprintln!("VERIFY OPTIONS:");
+    eprintln!("  --tol <value>                  Tolerance for numerical comparison (default: 1e-6)");
+    eprintln!("  --verbose                      Show all failures (not just first 10)");
+    eprintln!();
+    eprintln!("EXAMPLES:");
+    eprintln!("  blisp -e '(+ 1 2)'             Evaluate expression");
+    eprintln!("  blisp script.lisp              Run script (implicit 'run' subcommand)");
+    eprintln!("  blisp run examples/hello.blisp Run example");
+    eprintln!("  blisp --selftest               Run self-tests");
+    eprintln!("  blisp verify out.csv exp.csv   Verify outputs match");
+    eprintln!();
+    eprintln!("ENVIRONMENT:");
+    eprintln!("  BLISP_LEGACY=1                 Force legacy evaluator");
+    eprintln!("  BLISP_IR_ONLY=1                Force IR-only mode");
+}
+
+fn parse_subcommand(args: &[String]) -> Subcommand {
+    // Check explicit subcommands
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "selftest" | "--selftest" => return Subcommand::Selftest,
+            "verify" => return Subcommand::Verify,
+            "run" => return Subcommand::Run,
+            _ => {}
+        }
+    }
+
+    // Auto-detect based on file extension or flags
+    for arg in args.iter().skip(1) {
+        if arg.ends_with(".lisp") || arg.ends_with(".cl") || arg.ends_with(".blisp") {
+            return Subcommand::Run;
+        }
+        if arg == "-e" {
+            return Subcommand::Run;
+        }
+    }
+
+    // Default to Run for backward compatibility
+    Subcommand::Run
+}
+
+fn handle_verify_subcommand(args: &[String]) {
+    // Parse verify arguments: blisp verify <actual> <expected> [--tol <value>] [--verbose]
+    let mut actual = None;
+    let mut expected = None;
+    let mut tolerance = 1e-6;
+    let mut verbose = false;
+    let mut i = 2; // Skip "blisp" and "verify"
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--tol" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --tol requires a value");
+                    std::process::exit(1);
+                }
+                tolerance = args[i + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("Error: invalid tolerance value");
+                    std::process::exit(1);
+                });
+                i += 2;
+            }
+            "--verbose" => {
+                verbose = true;
+                i += 1;
+            }
+            _ => {
+                if actual.is_none() {
+                    actual = Some(args[i].clone());
+                } else if expected.is_none() {
+                    expected = Some(args[i].clone());
+                } else {
+                    eprintln!("Error: unexpected argument: {}", args[i]);
+                    std::process::exit(1);
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let actual = actual.unwrap_or_else(|| {
+        eprintln!("Error: verify requires <actual> <expected> arguments");
+        std::process::exit(1);
+    });
+
+    let expected = expected.unwrap_or_else(|| {
+        eprintln!("Error: verify requires <actual> <expected> arguments");
+        std::process::exit(1);
+    });
+
+    let opts = blisp::verify::VerifyOptions { tolerance, verbose };
+
+    match blisp::verify::verify_csv(&actual, &expected, &opts) {
+        Ok(results) => {
+            println!("✅ Verification PASSED");
+            println!("  Rows compared: {}", results.rows_compared);
+            println!("  Max difference: {:.2e}", results.max_diff);
+            if results.max_diff > 0.0 {
+                println!("  Max diff at row: {}", results.max_diff_row);
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("❌ Verification FAILED");
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // Handle --version flag
+    if args.len() > 1 && args[1] == "--version" {
+        println!("blisp v{}", VERSION);
+        std::process::exit(0);
+    }
+
+    // Handle --help flag
+    if args.len() > 1 && args[1] == "--help" {
+        print_help();
+        std::process::exit(0);
+    }
+
     // Parse command line arguments
     if args.len() < 2 {
-        eprintln!("blisp v0.2.0 (IR-optimized)");
-        eprintln!("Usage:");
-        eprintln!("  blisp [--load <file>]... -e '<expression>'");
-        eprintln!("  blisp [--load <file>]... <script.lisp>");
-        eprintln!("  blisp --legacy  # Force legacy AST evaluator");
-        eprintln!("  blisp --dic     # List all builtin operations");
-        eprintln!();
-        eprintln!("Examples:");
-        eprintln!("  blisp -e '(+ 1 2)'");
-        eprintln!("  blisp --load stdlib/core.cl -e '(inc 2)'");
-        eprintln!("  blisp script.lisp");
-        eprintln!();
-        eprintln!("Environment:");
-        eprintln!("  BLISP_LEGACY=1   Force legacy evaluator");
+        print_help();
         std::process::exit(1);
     }
 
@@ -35,6 +173,27 @@ fn main() {
     if args.contains(&"--dic".to_string()) {
         print_dictionary();
         std::process::exit(0);
+    }
+
+    // Determine subcommand
+    let subcommand = parse_subcommand(&args);
+
+    // Dispatch to subcommand handlers
+    match subcommand {
+        Subcommand::Selftest => {
+            let results = blisp::selftest::run_all_tests();
+            if results.failed > 0 {
+                std::process::exit(1);
+            } else {
+                std::process::exit(0);
+            }
+        }
+        Subcommand::Verify => {
+            handle_verify_subcommand(&args);
+        }
+        Subcommand::Run => {
+            // Fall through to existing run logic below
+        }
     }
 
     let mut rt = Runtime::new();
@@ -54,13 +213,19 @@ fn main() {
 
     // Parse arguments
     let mut i = 1;
+
+    // Skip "run" subcommand if present
+    if i < args.len() && args[i] == "run" {
+        i += 1;
+    }
+
     let mut load_files = Vec::new();
     let mut expression = None;
     let mut script_file = None;
 
     while i < args.len() {
         match args[i].as_str() {
-            "--legacy" | "--ir-only" | "--dic" => {
+            "--legacy" | "--ir-only" | "--dic" | "selftest" | "--selftest" => {
                 // Already handled above, just skip
                 i += 1;
             }

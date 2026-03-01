@@ -40,27 +40,54 @@ cargo build --locked --release
 
 ### 3. Verify the build
 
+#### Check version
 ```bash
-./target/release/blisp
+./target/release/blisp --version
 ```
 
 **Expected output:**
 ```
-blisp v0.2.0 (IR-optimized)
-Usage:
-  blisp [--load <file>]... -e '<expression>'
-  blisp [--load <file>]... <script.lisp>
-  blisp --legacy  # Force legacy AST evaluator
-  blisp --dic     # List all builtin operations
-
-Examples:
-  blisp -e '(+ 1 2)'
-  blisp --load stdlib/core.cl -e '(inc 2)'
-  blisp script.lisp
-
-Environment:
-  BLISP_LEGACY=1   Force legacy evaluator
+blisp v0.2.0
 ```
+
+#### Run self-tests
+```bash
+./target/release/blisp --selftest
+```
+
+**Expected output:**
+```
+Running BLISP self-tests...
+
+  [1/6] IEEE: ln(0) = -inf ... ✅
+  [2/6] IEEE: 0/0 = NaN ... ✅
+  [3/6] IEEE: Fusion preserves edge cases ... ✅
+  [4/6] Orientation: H vs Z different shapes ... ✅
+  [5/6] Mask: Weekend detection ... ✅
+  [6/6] Platform: f64 size check ... ✅
+
+=== Self-Test Results ===
+Total:  6
+Passed: 6
+Failed: 0
+
+✅ All self-tests PASSED
+```
+
+**What the self-tests validate:**
+- IEEE-754 edge cases (ln(0)=-inf, 0/0=NaN, fusion correctness)
+- Orientation system (H vs Z produce different shapes)
+- Mask operations (weekend detection logic)
+- Platform sanity (f64 size check)
+
+**If self-tests fail:** This indicates a critical regression. Do not proceed - investigate the failure.
+
+#### Show help
+```bash
+./target/release/blisp --help
+```
+
+**Expected output:** Full usage documentation with subcommands (run, verify, selftest)
 
 ### 4. Optional: Install to PATH
 
@@ -74,6 +101,67 @@ After installation, you can run `blisp` from anywhere:
 ```bash
 blisp --version
 ```
+
+---
+
+---
+
+## Verification Workflow (v0.2.0+)
+
+BLISP v0.2.0 introduces a complete verification workflow for validating outputs.
+
+### Run Examples
+
+```bash
+# Basic hello world
+./target/release/blisp run examples/quickstart/hello.blisp
+
+# Load and display CSV
+./target/release/blisp run examples/quickstart/load_csv.blisp
+```
+
+### Verify Output Matches Expected
+
+Generate output and verify numerically:
+```bash
+./target/release/blisp run examples/quickstart/load_csv.blisp 2>&1 | grep -v "Running in" > output.csv
+./target/release/blisp verify output.csv expected/quickstart_load_csv.csv --tol 1e-6
+```
+
+**Expected output:**
+```
+✅ Verification PASSED
+  Rows compared: 10
+  Max difference: 0.00e0
+```
+
+**What verify checks:**
+- ✅ Row count matches
+- ✅ Column names match
+- ✅ Numerical values within tolerance (default: 1e-6)
+- ✅ IEEE-754 special values (NaN=NaN, inf=inf)
+
+**Options:**
+- `--tol <value>`: Set tolerance (e.g., `--tol 1e-9` for stricter matching)
+- `--verbose`: Show all failures (not just first 10)
+
+### Complete Smoke Test
+
+Run the complete smoke test suite:
+```bash
+./scripts/smoke.sh
+```
+
+**Expected:** All 7 tests pass in <10 seconds
+
+**What smoke.sh tests:**
+1. Build succeeds
+2. `--version` flag works
+3. `--selftest` passes
+4. Basic expression evaluation
+5. Quickstart examples run
+6. Verify subcommand works correctly
+7. Example output matches expected
 
 ---
 

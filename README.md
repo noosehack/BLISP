@@ -24,6 +24,53 @@ cargo test
 
 ---
 
+## User Quick Start (v0.2.0+)
+
+**For users installing BLISP as a tool (not developing it):**
+
+### Install from Git
+```bash
+cargo install blisp --git https://github.com/noosehack/BLISP --locked
+```
+
+### Verify Installation
+```bash
+# Check version
+blisp --version
+
+# Run self-tests (validates IEEE-754, orientation, masks)
+blisp --selftest
+```
+
+### Run Examples
+```bash
+# Evaluate expression
+blisp -e '(+ 1 2)'
+
+# Run script
+blisp run examples/quickstart/hello.blisp
+
+# Load CSV and process
+blisp run examples/quickstart/load_csv.blisp
+
+# Verify output matches expected
+blisp run examples/quickstart/load_csv.blisp > output.csv
+blisp verify output.csv expected/quickstart_load_csv.csv --tol 1e-6
+```
+
+### Help
+```bash
+# Show all commands and options
+blisp --help
+
+# List all builtin operations
+blisp --dic
+```
+
+**See:** [`INSTALL.md`](INSTALL.md) for detailed installation and verification instructions.
+
+---
+
 ## What is blisp?
 
 **blisp** is a Common Lisp interpreter that executes columnar data operations at blazing speed by calling the optimized **blawktrust** backend (1.89× faster than C++).

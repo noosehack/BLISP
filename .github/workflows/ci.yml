@@ -137,6 +137,71 @@ jobs:
           EOF
           echo -e "a;b\n1;2\n3;4" | ./target/release/blisp test_orientation.lisp
 
+  # User-facing smoke tests (installation validation)
+  user-smoke:
+    name: User Smoke Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build BLISP
+        run: cargo build --locked --release --bin blisp
+
+      - name: Test --version flag
+        run: |
+          VERSION=$(./target/release/blisp --version)
+          echo "Version: $VERSION"
+          if [[ ! "$VERSION" =~ ^blisp\ v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            exit 1
+          fi
+
+      - name: Test --selftest flag
+        run: ./target/release/blisp --selftest
+
+      - name: Test verify subcommand (matching CSVs)
+        run: |
+          echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
+          echo -e "a;b\n1;2\n3;4" > /tmp/test2.csv
+          ./target/release/blisp verify /tmp/test1.csv /tmp/test2.csv
+
+      - name: Test verify subcommand (different CSVs should fail)
+        run: |
+          echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
+          echo -e "a;b\n1;2.5\n3;4" > /tmp/test2.csv
+          if ./target/release/blisp verify /tmp/test1.csv /tmp/test2.csv; then
+            echo "❌ Verify should have failed for different CSVs"
+            exit 1
+          fi
+          echo "✅ Verify correctly detected differences"
+
+      - name: Test quickstart examples
+        run: |
+          ./target/release/blisp run examples/quickstart/hello.blisp
+          ./target/release/blisp run examples/quickstart/load_csv.blisp > /dev/null
+
+      - name: Verify example output
+        run: |
+          ./target/release/blisp run examples/quickstart/load_csv.blisp 2>&1 | grep -v "Running in" > /tmp/output.csv
+          ./target/release/blisp verify /tmp/output.csv expected/quickstart_load_csv.csv --tol 1e-6
+
   # Tripwire: prevent silent growth of ignored tests
   check-ignored-tests:
     name: Check Ignored Test Count
@@ -165,7 +230,7 @@ jobs:
   # Final gate: everything must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, test, build, smoke-test, check-ignored-tests]
+    needs: [fmt, clippy, test, build, smoke-test, user-smoke, check-ignored-tests]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

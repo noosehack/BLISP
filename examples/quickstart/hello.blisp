@@ -1,0 +1,17 @@
+; Hello World - Basic BLISP operations
+; This is a simple quickstart example demonstrating basic arithmetic
+
+; Simple addition
+(print (+ 1 2))
+
+; Multiplication
+(print (* 3 4))
+
+; Division
+(print (/ 10 2))
+
+; Subtraction
+(print (- 10 3))
+
+; Nested expressions
+(print (+ (* 2 3) (- 10 5)))

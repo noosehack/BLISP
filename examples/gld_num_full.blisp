@@ -1,0 +1,25 @@
+; GLD_NUM Full - Complete Golden Test (6826 rows)
+; Requires full RAW_FUT_PRC.csv and GC1C.csv files
+; This is the canonical accuracy benchmark for BLISP
+
+; Note: This script expects the data files in the parent directory
+; Run from blisp/ directory as: blisp run examples/gld_num_full.blisp > GLD_NUM_BLISP.csv
+
+(save "GLD_NUM_BLISP.csv"
+  (let* ((fut_data (file "../RAW_FUT_PRC.csv"))
+         (bz1_tp1 (-> fut_data
+                      (select "BZ1 Index" "TP1 Index")))
+         (s (-> bz1_tp1
+                (w5)
+                (dlog)
+                (x- 1)
+                (cs1)
+                (wzs 25 1)
+                (> -1)
+                (shift 2))))
+    (-> (file "../GC1C.csv")
+        (mapr s)
+        (dlog)
+        (ur 250 5)
+        (* s)
+        (cs1))))

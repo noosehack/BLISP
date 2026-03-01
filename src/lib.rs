@@ -24,4 +24,6 @@ pub mod normalize;
 pub mod planner;
 pub mod reader;
 pub mod runtime;
+pub mod selftest;
 pub mod value;
+pub mod verify;

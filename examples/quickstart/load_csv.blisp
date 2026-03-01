@@ -1,0 +1,4 @@
+; CSV Loading Example
+; Demonstrates how to load and display CSV data
+
+(file "data/quickstart/prices_10.csv")

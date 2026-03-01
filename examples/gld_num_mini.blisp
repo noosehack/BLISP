@@ -1,0 +1,19 @@
+; GLD_NUM Mini - 100-row Golden Test
+; Demonstrates a complex financial pipeline
+
+(save "gld_num_mini_output.csv"
+  (let* ((s (-> (file "data/gld_num_mini/RAW_FUT_PRC_100.csv")
+                (select "BZ1 Index" "TP1 Index")
+                (w5)
+                (dlog)
+                (x- 1)
+                (cs1)
+                (wzs 25 1)
+                (> -1)
+                (shift 2))))
+    (-> (file "data/gld_num_mini/GC1C_100.csv")
+        (mapr s)
+        (dlog)
+        (ur 25 5)
+        (* s)
+        (cs1))))
