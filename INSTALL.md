@@ -8,7 +8,67 @@
 
 - Rust toolchain 1.93.1 (pinned for reproducibility)
 - Git
-- Linux/macOS (tested on Ubuntu)
+- **Supported platforms:**
+  - Linux (Ubuntu 20.04+) - ✅ **Fully tested**
+  - macOS - ✅ **Supported** (smoke tests pass)
+  - Windows - ⚠️ **Best effort** (PowerShell script provided, not CI-tested)
+
+### Platform Notes
+
+**Linux/macOS:**
+- Full CI coverage on GitHub Actions `ubuntu-latest`
+- Smoke tests validate all features
+- Use `scripts/smoke.sh` for validation
+
+**Windows:**
+- PowerShell script provided (`scripts/smoke.ps1`)
+- Not tested in CI (use at your own discretion)
+- CSV handling should respect CRLF (verify module is robust)
+- If Windows support is critical for you, please test and report issues
+
+---
+
+## Security and Safety
+
+BLISP is designed for safe, reproducible execution:
+
+### Dependency Pinning ✅
+- `Cargo.lock` committed and enforced via `--locked`
+- blawktrust pinned to `v0.1.1-orientation-stable`
+- Rust toolchain pinned to 1.93.1 via `rust-toolchain.toml`
+
+### No Network Access During Execution ✅
+- BLISP does not make network calls during runtime
+- Only local file I/O (CSV reading/writing)
+- Installation requires network (cargo fetch), execution does not
+
+### Memory Safety ✅
+- Written in Rust (memory-safe by design)
+- No unsafe blocks in user-facing code paths
+- Borrow checker prevents use-after-free, buffer overflows
+
+### Supply Chain Hygiene
+- Dependencies: minimal surface (rustyline, csv, bitvec)
+- All transitive dependencies locked in `Cargo.lock`
+- No binary blobs or proprietary dependencies
+
+### Execution Safety
+- Scripts (`smoke.sh`, `smoke.ps1`) are non-destructive
+- No `curl | sh` patterns
+- No modification of system files
+- Writes only to `/tmp` or user-specified paths
+
+**Audit checklist:**
+```bash
+# Verify no network calls in source
+rg -i "http|curl|wget|fetch" src/
+
+# Check for unsafe blocks
+rg "unsafe" src/
+
+# Review dependencies
+cargo tree
+```
 
 ---
 

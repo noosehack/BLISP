@@ -33,24 +33,43 @@ cargo test
 cargo install blisp --git https://github.com/noosehack/BLISP --locked
 ```
 
+**Note:** This installs the `blisp` binary only. For examples and data files, clone the repository:
+```bash
+git clone https://github.com/noosehack/BLISP
+cd BLISP
+```
+
 ### Verify Installation
 ```bash
 # Check version
 blisp --version
 
 # Run self-tests (validates IEEE-754, orientation, masks)
+# Works without cloning - self-tests are embedded
 blisp --selftest
 ```
 
+**Expected output:** 6/6 tests pass (IEEE-754 edge cases, orientation, masks, platform)
+
 ### Run Examples
+
+#### Without Repository (binary only)
 ```bash
-# Evaluate expression
+# Evaluate expression (works anywhere)
 blisp -e '(+ 1 2)'
 
-# Run script
-blisp run examples/quickstart/hello.blisp
+# Verify CSV outputs
+echo -e "a;b\n1;2\n3;4" > test.csv
+blisp verify test.csv test.csv --tol 1e-6
+```
 
-# Load CSV and process
+#### With Repository (examples included)
+```bash
+git clone https://github.com/noosehack/BLISP
+cd BLISP
+
+# Run bundled examples
+blisp run examples/quickstart/hello.blisp
 blisp run examples/quickstart/load_csv.blisp
 
 # Verify output matches expected
@@ -67,7 +86,10 @@ blisp --help
 blisp --dic
 ```
 
-**See:** [`INSTALL.md`](INSTALL.md) for detailed installation and verification instructions.
+**Documentation:**
+- [`INSTALL.md`](INSTALL.md) - Detailed installation and verification
+- [`SEMANTICS.md`](SEMANTICS.md) - Semantic guarantees and tripwire tests
+- Run `blisp --help` for all commands and options
 
 ---
 
