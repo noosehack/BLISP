@@ -63,11 +63,7 @@ fn tripwire_orientation_z_affects_sum() {
         _ => panic!("Expected F64 column from sum"),
     };
 
-    assert_eq!(
-        data_z.len(),
-        3,
-        "Z orientation should produce 3 row sums"
-    );
+    assert_eq!(data_z.len(), 3, "Z orientation should produce 3 row sums");
     assert!(
         (data_z[0] - 3.0).abs() < 1e-9,
         "Z orientation: sum of row 0 should be 3.0, got {}",
