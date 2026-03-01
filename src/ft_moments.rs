@@ -143,8 +143,7 @@ pub fn builtin_ft_wmoments_cols(rt: &mut Runtime, args: &[Value]) -> Result<Valu
 
         if let Column::F64(data) = col {
             // blawktrust uses kdb-style embedded nulls (NaN for F64), no validity bitmap
-            let output =
-                rolling_moments_past_only_f64(data, window, Some(min_periods), mask, None);
+            let output = rolling_moments_past_only_f64(data, window, Some(min_periods), mask, None);
 
             // Add requested moment columns
             if let Some(mean_vec) = output.mean {
