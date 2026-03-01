@@ -59,7 +59,11 @@ pub fn verify_csv(
         .map_err(|e| format!("Error reading expected header: {}", e))?;
 
     // Detect separator (semicolon or comma)
-    let separator = if actual_header.contains(';') { ';' } else { ',' };
+    let separator = if actual_header.contains(';') {
+        ';'
+    } else {
+        ','
+    };
 
     // Parse headers
     let actual_cols: Vec<&str> = actual_header.split(separator).collect();
@@ -113,8 +117,10 @@ pub fn verify_csv(
                 ));
             }
             (Some(actual), Some(expected)) => {
-                let actual = actual.map_err(|e| format!("Error reading actual row {}: {}", row_num, e))?;
-                let expected = expected.map_err(|e| format!("Error reading expected row {}: {}", row_num, e))?;
+                let actual =
+                    actual.map_err(|e| format!("Error reading actual row {}: {}", row_num, e))?;
+                let expected = expected
+                    .map_err(|e| format!("Error reading expected row {}: {}", row_num, e))?;
 
                 // Parse row values
                 let actual_values: Vec<&str> = actual.split(separator).collect();
@@ -130,17 +136,15 @@ pub fn verify_csv(
                 }
 
                 // Compare each value
-                for (col_idx, (actual_val, expected_val)) in actual_values
-                    .iter()
-                    .zip(expected_values.iter())
-                    .enumerate()
+                for (col_idx, (actual_val, expected_val)) in
+                    actual_values.iter().zip(expected_values.iter()).enumerate()
                 {
                     if let Err(failure) = compare_values(
                         actual_val,
                         expected_val,
                         opts.tolerance,
                         row_num,
-                        &actual_cols[col_idx],
+                        actual_cols[col_idx],
                     ) {
                         // Track max diff
                         if let Some(diff) = failure.diff {
@@ -252,7 +256,12 @@ fn format_failures(results: &VerifyResults, verbose: bool) -> String {
     };
 
     for (i, failure) in results.failures.iter().take(display_count).enumerate() {
-        msg.push_str(&format!("\n  [{}] Row {}, Column '{}':\n", i + 1, failure.row, failure.col));
+        msg.push_str(&format!(
+            "\n  [{}] Row {}, Column '{}':\n",
+            i + 1,
+            failure.row,
+            failure.col
+        ));
         msg.push_str(&format!("      Expected: {}\n", failure.expected));
         msg.push_str(&format!("      Actual:   {}\n", failure.actual));
         if let Some(diff) = failure.diff {

@@ -39,7 +39,9 @@ fn print_help() {
     eprintln!("  --dic                          List all builtin operations");
     eprintln!();
     eprintln!("VERIFY OPTIONS:");
-    eprintln!("  --tol <value>                  Tolerance for numerical comparison (default: 1e-6)");
+    eprintln!(
+        "  --tol <value>                  Tolerance for numerical comparison (default: 1e-6)"
+    );
     eprintln!("  --verbose                      Show all failures (not just first 10)");
     eprintln!();
     eprintln!("EXAMPLES:");

@@ -254,7 +254,7 @@ fn test_ieee_fusion_preserves_edge_cases() -> Result<(), String> {
     }
 
     // Test critical edge cases: ln(0) → -inf
-    let test_cases = vec![
+    let test_cases = [
         vec![1.0, 0.0],           // prev>0 x=0 → -inf
         vec![0.0, 1.0],           // prev=0 x>0 → +inf
         vec![0.0, 0.0],           // prev=0 x=0 → NaN
