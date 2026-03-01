@@ -9,9 +9,9 @@
 //!
 //! If these tests fail, fusion is breaking IEEE-754 semantics.
 
+use blawktrust::Column;
 use blisp::exec::{dlog_obs_column, fused_cs1_dlog_obs_column, fused_dlog_obs_elementwise_column};
 use blisp::ir::NumericFunc;
-use blawktrust::Column;
 
 /// Helper: bitwise equality for IEEE-754 special values
 /// - Both NaN → true
@@ -39,7 +39,10 @@ fn columns_ieee_equal(a: &Column, b: &Column) -> bool {
             if a_data.len() != b_data.len() {
                 return false;
             }
-            a_data.iter().zip(b_data.iter()).all(|(a, b)| ieee_equal(*a, *b))
+            a_data
+                .iter()
+                .zip(b_data.iter())
+                .all(|(a, b)| ieee_equal(*a, *b))
         }
         _ => false,
     }
@@ -58,9 +61,15 @@ fn tripwire_dlog_obs_ln_zero_gives_neg_inf() {
         _ => panic!("Expected F64 column"),
     };
 
-    assert!(result[0].is_nan(), "First value (no predecessor) should be NaN");
-    assert!(result[1].is_infinite() && result[1].is_sign_negative(),
-            "ln(0) - ln(1) should be -inf, got {}", result[1]);
+    assert!(
+        result[0].is_nan(),
+        "First value (no predecessor) should be NaN"
+    );
+    assert!(
+        result[1].is_infinite() && result[1].is_sign_negative(),
+        "ln(0) - ln(1) should be -inf, got {}",
+        result[1]
+    );
     assert_eq!(result[1], f64::NEG_INFINITY, "Expected exactly -inf");
 }
 
@@ -76,9 +85,15 @@ fn tripwire_dlog_obs_zero_denominator_gives_pos_inf() {
         _ => panic!("Expected F64 column"),
     };
 
-    assert!(result[0].is_nan(), "First value (no predecessor) should be NaN");
-    assert!(result[1].is_infinite() && result[1].is_sign_positive(),
-            "ln(1) - ln(0) should be +inf, got {}", result[1]);
+    assert!(
+        result[0].is_nan(),
+        "First value (no predecessor) should be NaN"
+    );
+    assert!(
+        result[1].is_infinite() && result[1].is_sign_positive(),
+        "ln(1) - ln(0) should be +inf, got {}",
+        result[1]
+    );
     assert_eq!(result[1], f64::INFINITY, "Expected exactly +inf");
 }
 
@@ -94,8 +109,15 @@ fn tripwire_dlog_obs_zero_over_zero_gives_nan() {
         _ => panic!("Expected F64 column"),
     };
 
-    assert!(result[0].is_nan(), "First value (no predecessor) should be NaN");
-    assert!(result[1].is_nan(), "ln(0) - ln(0) should be NaN, got {}", result[1]);
+    assert!(
+        result[0].is_nan(),
+        "First value (no predecessor) should be NaN"
+    );
+    assert!(
+        result[1].is_nan(),
+        "ln(0) - ln(0) should be NaN, got {}",
+        result[1]
+    );
 }
 
 #[test]
@@ -133,13 +155,22 @@ fn tripwire_dlog_obs_na_propagation() {
         _ => panic!("Expected F64 column"),
     };
 
-    assert!(data[0].is_nan(), "First value (no predecessor) should be NaN");
+    assert!(
+        data[0].is_nan(),
+        "First value (no predecessor) should be NaN"
+    );
     assert!(data[1].is_nan(), "NA input should produce NA output");
     // OBS: skips NA, uses last_valid=1.0 for comparison with 2.0
-    assert!(!data[2].is_nan() && data[2].is_finite(),
-            "OBS should skip NA and compute ln(2/1), got {}", data[2]);
-    assert!((data[2] - 2.0f64.ln()).abs() < 1e-10,
-            "Expected ln(2) ≈ 0.693, got {}", data[2]);
+    assert!(
+        !data[2].is_nan() && data[2].is_finite(),
+        "OBS should skip NA and compute ln(2/1), got {}",
+        data[2]
+    );
+    assert!(
+        (data[2] - 2.0f64.ln()).abs() < 1e-10,
+        "Expected ln(2) ≈ 0.693, got {}",
+        data[2]
+    );
 }
 
 // ============================================================================
@@ -275,10 +306,16 @@ fn tripwire_regression_cs1_exp_inv_dlog_cs1() {
     assert!(data[0].is_nan(), "First value should be NaN");
 
     // Position 1: ln(0) - ln(1e-300) = -inf - large_negative = -inf
-    assert!(data[1].is_infinite() && data[1].is_sign_negative(),
-            "ln(0/tiny) should be -inf, got {}", data[1]);
-    assert_eq!(data[1], f64::NEG_INFINITY,
-               "Expected exactly -inf from ln(0)");
+    assert!(
+        data[1].is_infinite() && data[1].is_sign_negative(),
+        "ln(0/tiny) should be -inf, got {}",
+        data[1]
+    );
+    assert_eq!(
+        data[1],
+        f64::NEG_INFINITY,
+        "Expected exactly -inf from ln(0)"
+    );
 
     // Now test with cs1 accumulation (the full fused case)
     let fused = fused_cs1_dlog_obs_column(&input);
@@ -288,8 +325,11 @@ fn tripwire_regression_cs1_exp_inv_dlog_cs1() {
     };
 
     // cs1 should propagate -inf correctly: 1.0 + (-inf) = -inf
-    assert!(fused_data[1].is_infinite() && fused_data[1].is_sign_negative(),
-            "cs1 should propagate -inf, got {}", fused_data[1]);
+    assert!(
+        fused_data[1].is_infinite() && fused_data[1].is_sign_negative(),
+        "cs1 should propagate -inf, got {}",
+        fused_data[1]
+    );
 }
 
 // Unused helper functions removed - test was simplified
