@@ -235,21 +235,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.1
 
       - name: Print toolchain versions (zero-state proof)
-        env:
-          CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
-          RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
         run: |
           rustc -Vv
           cargo -V
-          echo "CARGO_HOME=$CARGO_HOME"
-          echo "RUSTUP_HOME=$RUSTUP_HOME"
+          echo "Using fresh CARGO_HOME for zero-state install proof"
+          echo "CARGO_HOME will be: ${{ runner.temp }}/cargo-home-fresh"
 
       - name: Install from git (zero-state proof)
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
-          RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
         run: |
           # This is what users actually run - no checkout, no cache
+          # Fresh CARGO_HOME ensures clean cargo registry + binary install location
           cargo install blisp \
             --git https://github.com/${{ github.repository }} \
             --branch ${{ github.ref_name }} \
