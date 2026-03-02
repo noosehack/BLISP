@@ -16,9 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           components: rustfmt
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+          rustfmt -V
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -27,9 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           components: clippy
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -53,7 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -79,7 +92,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -109,7 +126,11 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -144,7 +165,11 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -206,8 +231,18 @@ jobs:
   user-install-fresh:
     name: Fresh Install Test (cargo install --git)
     runs-on: ubuntu-latest
+    env:
+      CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
+      RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
     steps:
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Print toolchain versions (zero-state proof)
+        run: |
+          rustc -Vv
+          cargo -V
+          echo "CARGO_HOME=$CARGO_HOME"
+          echo "RUSTUP_HOME=$RUSTUP_HOME"
 
       - name: Install from git (zero-state proof)
         run: |
@@ -220,15 +255,15 @@ jobs:
 
       - name: Verify installation location
         run: |
-          which blisp
-          blisp --version
+          ls -la ${{ runner.temp }}/cargo-home-fresh/bin/
+          ${{ runner.temp }}/cargo-home-fresh/bin/blisp --version
 
       - name: Run selftest (no external files)
-        run: blisp --selftest
+        run: ${{ runner.temp }}/cargo-home-fresh/bin/blisp --selftest
 
       - name: Test basic expression
         run: |
-          RESULT=$(blisp -e '(+ 1 2)' 2>&1 | grep -v "Running in" | tail -1)
+          RESULT=$(${{ runner.temp }}/cargo-home-fresh/bin/blisp -e '(+ 1 2)' 2>&1 | grep -v "Running in" | tail -1)
           if [[ "$RESULT" != "3" ]]; then
             echo "❌ Expected '3', got '$RESULT'"
             exit 1
@@ -239,7 +274,7 @@ jobs:
         run: |
           echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
           echo -e "a;b\n1;2\n3;4" > /tmp/test2.csv
-          blisp verify /tmp/test1.csv /tmp/test2.csv
+          ${{ runner.temp }}/cargo-home-fresh/bin/blisp verify /tmp/test1.csv /tmp/test2.csv
 
       - name: Verify examples are bundled
         run: |
