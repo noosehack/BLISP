@@ -231,13 +231,13 @@ jobs:
   user-install-fresh:
     name: Fresh Install Test (cargo install --git)
     runs-on: ubuntu-latest
-    env:
-      CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
-      RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
     steps:
       - uses: dtolnay/rust-toolchain@1.93.1
 
       - name: Print toolchain versions (zero-state proof)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
+          RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
         run: |
           rustc -Vv
           cargo -V
@@ -245,6 +245,9 @@ jobs:
           echo "RUSTUP_HOME=$RUSTUP_HOME"
 
       - name: Install from git (zero-state proof)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
+          RUSTUP_HOME: ${{ runner.temp }}/rustup-home-fresh
         run: |
           # This is what users actually run - no checkout, no cache
           cargo install blisp \
