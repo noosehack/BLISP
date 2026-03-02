@@ -1,12 +1,16 @@
 //! S-expression reader/parser
+#![allow(clippy::doc_lazy_continuation)]
 
-use crate::ast::{Expr, Interner, SymbolId};
+use crate::ast::{Expr, Interner};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     LParen,
     RParen,
     Quote,
+    QuasiQuote,
+    Unquote,
+    UnquoteSplicing,
     Int(i64),
     Float(f64),
     Str(String),
@@ -53,6 +57,23 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 chars.next();
             }
 
+            // QuasiQuote
+            '`' => {
+                tokens.push(Token::QuasiQuote);
+                chars.next();
+            }
+
+            // Unquote and UnquoteSplicing
+            ',' => {
+                chars.next();
+                if let Some(&'@') = chars.peek() {
+                    chars.next();
+                    tokens.push(Token::UnquoteSplicing);
+                } else {
+                    tokens.push(Token::Unquote);
+                }
+            }
+
             // String
             '"' => {
                 chars.next(); // Skip opening "
@@ -85,7 +106,14 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             _ => {
                 let mut token_str = String::new();
                 while let Some(&ch) = chars.peek() {
-                    if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '\'' || ch == ';' {
+                    if ch.is_whitespace()
+                        || ch == '('
+                        || ch == ')'
+                        || ch == '\''
+                        || ch == '`'
+                        || ch == ','
+                        || ch == ';'
+                    {
                         break;
                     }
                     token_str.push(ch);
@@ -97,11 +125,8 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     tokens.push(Token::Int(n));
                 } else if let Ok(f) = token_str.parse::<f64>() {
                     tokens.push(Token::Float(f));
-                } else if token_str == "nil" {
-                    tokens.push(Token::Sym(token_str));
-                } else if token_str == "t" || token_str == "true" {
-                    tokens.push(Token::Sym(token_str));
                 } else {
+                    // All remaining tokens are symbols (including nil, t, true, false)
                     tokens.push(Token::Sym(token_str));
                 }
             }
@@ -147,6 +172,9 @@ impl Reader {
         match token {
             Token::LParen => self.read_list(interner),
             Token::Quote => self.read_quote(interner),
+            Token::QuasiQuote => self.read_quasiquote(interner),
+            Token::Unquote => self.read_unquote(interner),
+            Token::UnquoteSplicing => self.read_unquote_splicing(interner),
             Token::Int(n) => {
                 let n = *n;
                 self.advance();
@@ -200,6 +228,24 @@ impl Reader {
         self.advance(); // Skip '
         let expr = self.read(interner)?;
         Ok(Expr::Quote(Box::new(expr)))
+    }
+
+    fn read_quasiquote(&mut self, interner: &mut Interner) -> Result<Expr, String> {
+        self.advance(); // Skip `
+        let expr = self.read(interner)?;
+        Ok(Expr::QuasiQuote(Box::new(expr)))
+    }
+
+    fn read_unquote(&mut self, interner: &mut Interner) -> Result<Expr, String> {
+        self.advance(); // Skip ,
+        let expr = self.read(interner)?;
+        Ok(Expr::Unquote(Box::new(expr)))
+    }
+
+    fn read_unquote_splicing(&mut self, interner: &mut Interner) -> Result<Expr, String> {
+        self.advance(); // Skip ,@
+        let expr = self.read(interner)?;
+        Ok(Expr::UnquoteSplicing(Box::new(expr)))
     }
 }
 

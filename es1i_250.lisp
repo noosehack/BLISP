@@ -1,0 +1,7 @@
+;; ES1I pipeline: locf → ft-zscore(250)
+(-> (read-csv "/home/ubuntu/ES1I.csv")
+    (locf)
+    (let ((data _)
+          (mean (rolling-mean-partial-excl-current 250 data))
+          (std (rolling-std-partial-excl-current 250 data)))
+      (/ (- data mean) std)))

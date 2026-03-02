@@ -1,0 +1,7 @@
+; Rolling Window Operations
+; Demonstrates dlog (log returns) and wstd (rolling standard deviation)
+
+(-> (file "data/quickstart/prices_10.csv")
+    (col "PRICE")
+    (dlog 1)
+    (wstd 3 1))

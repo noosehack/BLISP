@@ -24,6 +24,75 @@ cargo test
 
 ---
 
+## User Quick Start (v0.2.0+)
+
+**For users installing BLISP as a tool (not developing it):**
+
+### Install from Git
+```bash
+cargo install blisp --git https://github.com/noosehack/BLISP --locked
+```
+
+**Note:** This installs the `blisp` binary only. For examples and data files, clone the repository:
+```bash
+git clone https://github.com/noosehack/BLISP
+cd BLISP
+```
+
+### Verify Installation
+```bash
+# Check version
+blisp --version
+
+# Run self-tests (validates IEEE-754, orientation, masks)
+# Works without cloning - self-tests are embedded
+blisp --selftest
+```
+
+**Expected output:** 6/6 tests pass (IEEE-754 edge cases, orientation, masks, platform)
+
+### Run Examples
+
+#### Without Repository (binary only)
+```bash
+# Evaluate expression (works anywhere)
+blisp -e '(+ 1 2)'
+
+# Verify CSV outputs
+echo -e "a;b\n1;2\n3;4" > test.csv
+blisp verify test.csv test.csv --tol 1e-6
+```
+
+#### With Repository (examples included)
+```bash
+git clone https://github.com/noosehack/BLISP
+cd BLISP
+
+# Run bundled examples
+blisp run examples/quickstart/hello.blisp
+blisp run examples/quickstart/load_csv.blisp
+
+# Verify output matches expected
+blisp run examples/quickstart/load_csv.blisp > output.csv
+blisp verify output.csv expected/quickstart_load_csv.csv --tol 1e-6
+```
+
+### Help
+```bash
+# Show all commands and options
+blisp --help
+
+# List all builtin operations
+blisp --dic
+```
+
+**Documentation:**
+- [`INSTALL.md`](INSTALL.md) - Detailed installation and verification
+- [`SEMANTICS.md`](SEMANTICS.md) - Semantic guarantees and tripwire tests
+- Run `blisp --help` for all commands and options
+
+---
+
 ## What is blisp?
 
 **blisp** is a Common Lisp interpreter that executes columnar data operations at blazing speed by calling the optimized **blawktrust** backend (1.89× faster than C++).

@@ -1,63 +1,65 @@
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::single_match)]
 //! Runtime values for blisp
 //!
 //! Step 4: Full implementation with Col and Table types.
 
-use crate::ast::SymbolId;
+use crate::ast::{Expr, SymbolId};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Convert days since Unix epoch to YYYY-MM-DD string
-fn days_to_date(days: i64) -> String {
-    if days == blawktrust::NULL_TS {
+/// Captured lexical environment for closures
+pub type LexicalSnapshot = Vec<HashMap<SymbolId, Value>>;
+
+/// Convert days since epoch to YYYY-MM-DD (Howard Hinnant algorithm)
+fn format_date(days: i32) -> String {
+    if days == blawktrust::NULL_DATE {
         return "NA".to_string();
     }
 
-    // Unix epoch: 1970-01-01
-    // Simple algorithm: approximate year, then calculate exact date
-    let mut remaining = days;
-    let mut year = 1970;
+    // Howard Hinnant's inverse algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i32 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
 
-    // Handle negative days (before 1970)
-    if remaining < 0 {
-        // Each year before 1970 has roughly 365.25 days
-        let years_back = (-remaining / 366) + 1;
-        year -= years_back;
-        // Account for leap years approximately
-        remaining += years_back * 365 + (years_back / 4);
-    }
-
-    // Find the year
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        year += 1;
-    }
-
-    // Find month and day
-    let days_in_months = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    let mut day = remaining + 1; // Days are 1-indexed
-
-    for &days_in_month in &days_in_months {
-        if day <= days_in_month {
-            break;
-        }
-        day -= days_in_month;
-        month += 1;
-    }
-
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    format!("{:04}-{:02}-{:02}", year, m, d)
 }
 
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+/// Format nanoseconds as YYYY-MM-DD HH:MM:SS[.fffffffff]
+fn format_timestamp(nanos: i64) -> String {
+    if nanos == blawktrust::NULL_TIMESTAMP {
+        return "NA".to_string();
+    }
+
+    let total_seconds = nanos / 1_000_000_000;
+    let frac_nanos = nanos % 1_000_000_000;
+
+    let days = total_seconds / 86400;
+    let remaining_secs = total_seconds % 86400;
+
+    let hour = remaining_secs / 3600;
+    let minute = (remaining_secs % 3600) / 60;
+    let second = remaining_secs % 60;
+
+    let date_str = format_date(days as i32);
+
+    if frac_nanos == 0 {
+        format!("{} {:02}:{:02}:{:02}", date_str, hour, minute, second)
+    } else {
+        let frac_str = format!("{:09}", frac_nanos);
+        let trimmed = frac_str.trim_end_matches('0');
+        format!(
+            "{} {:02}:{:02}:{:02}.{}",
+            date_str, hour, minute, second, trimmed
+        )
+    }
 }
 
 /// Display a column with proper formatting
@@ -75,7 +77,9 @@ fn display_column(col: &blawktrust::Column) -> String {
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     if val.is_nan() {
                         parts.push("NA".to_string());
                     } else {
@@ -85,7 +89,9 @@ fn display_column(col: &blawktrust::Column) -> String {
             } else {
                 // Show first 10
                 for i in 0..10 {
-                    if i > 0 { parts.push(", ".to_string()); }
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
                     let val = data[i];
                     if val.is_nan() {
                         parts.push("NA".to_string());
@@ -109,7 +115,76 @@ fn display_column(col: &blawktrust::Column) -> String {
             parts.push(format!("] (n={})", len));
             parts.concat()
         }
+        blawktrust::Column::Date(data) => {
+            let len = data.len();
+            if len == 0 {
+                return "Date[]".to_string();
+            }
+
+            let mut parts = vec!["Date[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_date(val));
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_date(data[i]));
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    parts.push(format_date(data[i]));
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
+        blawktrust::Column::Timestamp(data) => {
+            let len = data.len();
+            if len == 0 {
+                return "Timestamp[]".to_string();
+            }
+
+            let mut parts = vec!["Timestamp[".to_string()];
+
+            if len <= MAX_SHOW {
+                for (i, &val) in data.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(val));
+                }
+            } else {
+                // Show first 10
+                for i in 0..10 {
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(data[i]));
+                }
+                parts.push(", ...".to_string());
+                // Show last 2
+                for i in (len - 2)..len {
+                    parts.push(", ".to_string());
+                    parts.push(format_timestamp(data[i]));
+                }
+            }
+
+            parts.push(format!("] (n={})", len));
+            parts.concat()
+        }
         blawktrust::Column::Ts(data) => {
+            // Treat Ts like Timestamp for display
             let len = data.len();
             if len == 0 {
                 return "Ts[]".to_string();
@@ -119,20 +194,24 @@ fn display_column(col: &blawktrust::Column) -> String {
 
             if len <= MAX_SHOW {
                 for (i, &val) in data.iter().enumerate() {
-                    if i > 0 { parts.push(", ".to_string()); }
-                    parts.push(days_to_date(val));
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(val));
                 }
             } else {
                 // Show first 10
                 for i in 0..10 {
-                    if i > 0 { parts.push(", ".to_string()); }
-                    parts.push(days_to_date(data[i]));
+                    if i > 0 {
+                        parts.push(", ".to_string());
+                    }
+                    parts.push(format_timestamp(data[i]));
                 }
                 parts.push(", ...".to_string());
                 // Show last 2
                 for i in (len - 2)..len {
                     parts.push(", ".to_string());
-                    parts.push(days_to_date(data[i]));
+                    parts.push(format_timestamp(data[i]));
                 }
             }
 
@@ -140,6 +219,92 @@ fn display_column(col: &blawktrust::Column) -> String {
             parts.concat()
         }
     }
+}
+
+/// Write Frame as CSV with INDEX FIRST (Blueprint Invariant I3)
+///
+/// Always renders: index_name, col1, col2, ...
+/// Streaming output to avoid memory bloat.
+pub fn write_frame_to<W: std::io::Write>(
+    writer: &mut W,
+    frame: &crate::frame::Frame,
+    _interner: &crate::ast::Interner,
+    max_rows: Option<usize>,
+) -> std::io::Result<()> {
+    let n_rows = frame.nrows();
+    let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
+
+    // Header: index_name, colnames...
+    write!(writer, "{}", frame.tags.index_name)?;
+    for colname in frame.tags.colnames.iter() {
+        write!(writer, ";{}", colname)?;
+    }
+    writeln!(writer)?;
+
+    // Data rows: index first, then numeric columns
+    for row_idx in 0..display_rows {
+        // Write index value
+        match &*frame.tags.index {
+            crate::frame::IndexColumn::Date(dates) => {
+                if row_idx < dates.len() {
+                    write!(writer, "{}", format_date(dates[row_idx]))?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+            crate::frame::IndexColumn::Timestamp(timestamps) => {
+                if row_idx < timestamps.len() {
+                    write!(writer, "{}", format_timestamp(timestamps[row_idx]))?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+            crate::frame::IndexColumn::String(strings) => {
+                if row_idx < strings.len() {
+                    write!(writer, "{}", strings[row_idx])?;
+                } else {
+                    write!(writer, "?")?;
+                }
+            }
+        }
+
+        // Write numeric columns
+        for col_data in &frame.cols {
+            write!(writer, ";")?;
+            match col_data {
+                crate::frame::ColData::Mat(col) => match &**col {
+                    blawktrust::Column::F64(data) => {
+                        if row_idx < data.len() {
+                            let v = data[row_idx];
+                            if v.is_nan() {
+                                write!(writer, "NA")?;
+                            } else {
+                                write!(writer, "{}", v)?;
+                            }
+                        } else {
+                            write!(writer, "?")?;
+                        }
+                    }
+                    _ => {
+                        write!(writer, "?")?;
+                    }
+                },
+            }
+        }
+        writeln!(writer)?;
+    }
+
+    // Show summary if truncated
+    if display_rows < n_rows {
+        writeln!(
+            writer,
+            "... ({} more rows, {} total)",
+            n_rows - display_rows,
+            n_rows
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Write table as CSV (semicolon-separated) with streaming output
@@ -160,7 +325,9 @@ pub fn write_table_to<W: std::io::Write>(
     let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
 
     // Column headers
-    let col_names: Vec<String> = table.columns.iter()
+    let col_names: Vec<String> = table
+        .columns
+        .iter()
         .map(|(sym, _)| interner.resolve(*sym).to_string())
         .collect();
 
@@ -186,9 +353,24 @@ pub fn write_table_to<W: std::io::Write>(
                         write!(writer, "?")?;
                     }
                 }
-                blawktrust::Column::Ts(data) => {
+                blawktrust::Column::Date(data) => {
                     if row_idx < data.len() {
-                        write!(writer, "{}", days_to_date(data[row_idx]))?;
+                        write!(writer, "{}", format_date(data[row_idx]))?;
+                    } else {
+                        write!(writer, "?")?;
+                    }
+                }
+                blawktrust::Column::Timestamp(data) => {
+                    if row_idx < data.len() {
+                        write!(writer, "{}", format_timestamp(data[row_idx]))?;
+                    } else {
+                        write!(writer, "?")?;
+                    }
+                }
+                blawktrust::Column::Ts(data) => {
+                    // Treat Ts like Timestamp
+                    if row_idx < data.len() {
+                        write!(writer, "{}", format_timestamp(data[row_idx]))?;
                     } else {
                         write!(writer, "?")?;
                     }
@@ -200,7 +382,12 @@ pub fn write_table_to<W: std::io::Write>(
 
     // Show summary if truncated
     if display_rows < n_rows {
-        writeln!(writer, "... ({} more rows, {} total)", n_rows - display_rows, n_rows)?;
+        writeln!(
+            writer,
+            "... ({} more rows, {} total)",
+            n_rows - display_rows,
+            n_rows
+        )?;
     }
 
     Ok(())
@@ -211,6 +398,67 @@ pub fn write_table_to<W: std::io::Write>(
 pub struct Table {
     pub columns: Vec<(SymbolId, blawktrust::Column)>,
     pub row_count: usize,
+}
+
+/// TableView wrapper (orientation lives in view.ori)
+#[derive(Debug, Clone)]
+pub struct TableViewWithMetadata {
+    pub view: Arc<blawktrust::TableView>,
+}
+
+impl TableViewWithMetadata {
+    /// Create from Arc<TableView>
+    #[inline]
+    pub fn from_view(view: Arc<blawktrust::TableView>) -> Self {
+        Self { view }
+    }
+
+    /// Create from raw TableView
+    #[inline]
+    pub fn new(view: blawktrust::TableView) -> Self {
+        Self::from_view(Arc::new(view))
+    }
+
+    /// Create from blawktrust::Table
+    #[inline]
+    pub fn from_table(table: blawktrust::Table) -> Self {
+        Self::from_view(Arc::new(blawktrust::TableView::new(table)))
+    }
+
+    // ==================== View Access Helpers ====================
+
+    /// Get reference to underlying TableView (&TableView)
+    #[inline]
+    pub fn view_ref(&self) -> &blawktrust::TableView {
+        self.view.as_ref()
+    }
+
+    /// Clone the underlying TableView Arc (Arc<TableView>)
+    #[inline]
+    pub fn view_arc(&self) -> Arc<blawktrust::TableView> {
+        Arc::clone(&self.view)
+    }
+
+    // ==================== Metadata Manipulation Helpers ====================
+
+    /// Create shallow clone (shares underlying view)
+    #[inline]
+    pub fn clone_shallow(&self) -> Self {
+        Self {
+            view: Arc::clone(&self.view),
+        }
+    }
+}
+
+/// Deref to TableView for maximum compatibility
+/// This allows tv.method() to resolve methods on TableView automatically
+impl std::ops::Deref for TableViewWithMetadata {
+    type Target = blawktrust::TableView;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.view.as_ref()
+    }
 }
 
 /// Runtime value
@@ -224,7 +472,19 @@ pub enum Value {
     Sym(SymbolId),
     List(Vec<Value>),
     Col(Arc<blawktrust::Column>),
-    Table(Arc<Table>),
+    Table(Arc<Table>), // Deprecated - use Frame instead
+    TableView(Arc<TableViewWithMetadata>),
+    Frame(Arc<crate::frame::Frame>), // BLADE Frame (P2 policy)
+    Lambda {
+        params: Vec<SymbolId>,
+        body: Vec<Expr>,
+        env: LexicalSnapshot,
+    },
+    Macro {
+        params: Vec<SymbolId>,
+        body: Vec<Expr>,
+        env: LexicalSnapshot,
+    },
 }
 
 // Manual PartialEq because Column doesn't implement it
@@ -241,6 +501,34 @@ impl PartialEq for Value {
             // Columns compare by pointer for now
             (Value::Col(a), Value::Col(b)) => Arc::ptr_eq(a, b),
             (Value::Table(a), Value::Table(b)) => Arc::ptr_eq(a, b),
+            (Value::TableView(a), Value::TableView(b)) => Arc::ptr_eq(a, b),
+            (Value::Frame(a), Value::Frame(b)) => Arc::ptr_eq(a, b),
+            // Lambdas compare by pointer (params and body)
+            (
+                Value::Lambda {
+                    params: p1,
+                    body: b1,
+                    ..
+                },
+                Value::Lambda {
+                    params: p2,
+                    body: b2,
+                    ..
+                },
+            ) => p1 == p2 && b1 == b2,
+            // Macros compare by pointer (params and body)
+            (
+                Value::Macro {
+                    params: p1,
+                    body: b1,
+                    ..
+                },
+                Value::Macro {
+                    params: p2,
+                    body: b2,
+                    ..
+                },
+            ) => p1 == p2 && b1 == b2,
             _ => false,
         }
     }
@@ -259,6 +547,10 @@ impl Value {
             Value::List(_) => "list",
             Value::Col(_) => "col",
             Value::Table(_) => "table",
+            Value::TableView(_) => "tableview",
+            Value::Frame(_) => "frame",
+            Value::Lambda { .. } => "lambda",
+            Value::Macro { .. } => "macro",
         }
     }
 
@@ -300,6 +592,22 @@ impl Value {
         }
     }
 
+    /// Extract as tableview
+    pub fn as_tableview(&self) -> Result<Arc<blawktrust::TableView>, String> {
+        match self {
+            Value::TableView(tv) => Ok(tv.view_arc()),
+            _ => Err(format!("Expected tableview, got {}", self.type_name())),
+        }
+    }
+
+    /// Extract as frame
+    pub fn as_frame(&self) -> Result<Arc<crate::frame::Frame>, String> {
+        match self {
+            Value::Frame(f) => Ok(Arc::clone(f)),
+            _ => Err(format!("Expected frame, got {}", self.type_name())),
+        }
+    }
+
     /// Pretty-print value
     pub fn display(&self, interner: &crate::ast::Interner) -> String {
         match self {
@@ -310,9 +618,7 @@ impl Value {
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(id) => format!("'{}", interner.resolve(*id)),
             Value::List(items) => {
-                let item_strs: Vec<String> = items.iter()
-                    .map(|v| v.display(interner))
-                    .collect();
+                let item_strs: Vec<String> = items.iter().map(|v| v.display(interner)).collect();
                 format!("({})", item_strs.join(" "))
             }
             Value::Col(c) => display_column(c),
@@ -326,7 +632,57 @@ impl Value {
                     format!("Table[{} rows × {} cols]", t.row_count, t.columns.len())
                 }
             }
+            Value::TableView(tv) => {
+                // Show orientation and shape
+                let (nr, nc) = tv.logical_shape();
+                let ori_name = tv.ori.canonical_name();
+                format!("TableView[ori={}, shape={}×{}]", ori_name, nr, nc)
+            }
+            Value::Frame(f) => {
+                // Write Frame as CSV with index first (Blueprint I3)
+                let mut buf = Vec::new();
+                if write_frame_to(&mut buf, f, interner, Some(30)).is_ok() {
+                    String::from_utf8_lossy(&buf).to_string()
+                } else {
+                    format!("Frame[{} rows × {} cols]", f.nrows(), f.ncols())
+                }
+            }
+            Value::Lambda { params, .. } => {
+                let param_names: Vec<String> = params
+                    .iter()
+                    .map(|p| interner.resolve(*p).to_string())
+                    .collect();
+                format!("#<lambda ({})>", param_names.join(" "))
+            }
+            Value::Macro { params, .. } => {
+                let param_names: Vec<String> = params
+                    .iter()
+                    .map(|p| interner.resolve(*p).to_string())
+                    .collect();
+                format!("#<macro ({})>", param_names.join(" "))
+            }
         }
+    }
+
+    // ==================== TableView Constructor Helpers ====================
+    // These make it easy to create Value::TableView from various sources
+
+    /// Create Value::TableView from a raw blawktrust::TableView
+    #[inline]
+    pub fn tableview(view: blawktrust::TableView) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::new(view)))
+    }
+
+    /// Create Value::TableView from Arc<blawktrust::TableView>
+    #[inline]
+    pub fn tableview_arc(view: Arc<blawktrust::TableView>) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::from_view(view)))
+    }
+
+    /// Create Value::TableView from blawktrust::Table
+    #[inline]
+    pub fn from_table(table: blawktrust::Table) -> Self {
+        Value::TableView(Arc::new(TableViewWithMetadata::from_table(table)))
     }
 }
 
@@ -350,7 +706,8 @@ impl Table {
 
     /// Get a column by name
     pub fn get_column(&self, name: SymbolId) -> Option<&blawktrust::Column> {
-        self.columns.iter()
+        self.columns
+            .iter()
             .find(|(n, _)| *n == name)
             .map(|(_, c)| c)
     }
@@ -363,6 +720,7 @@ impl Default for Table {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // Test literals, not actual PI
 mod tests {
     use super::*;
 

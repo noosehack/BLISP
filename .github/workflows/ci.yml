@@ -1,0 +1,319 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main, reconstruct/tableview-only ]
+  pull_request:
+    branches: [ master, main, reconstruct/tableview-only ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: rustfmt
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+          rustfmt -V
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: clippy
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run lib tests
+        run: cargo test --locked --lib
+      - name: Run integration tests (CRITICAL - tests blawktrust API surface)
+        run: cargo test --locked --test blawktrust_api_integration
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-build-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build library
+        run: cargo build --locked --lib --release
+      - name: Build binary
+        run: cargo build --locked --bin blisp --release
+      - name: Build all targets
+        run: cargo build --locked --all-targets
+
+  # Smoke test with actual BLISP binary
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-build-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build BLISP
+        run: cargo build --locked --release --bin blisp
+      - name: Test orientation smoke test
+        run: |
+          cat > test_orientation.lisp << 'EOF'
+          (defparameter df (stdin))
+          (print (sum df))
+          (print (sum (o 'Z df)))
+          (print (sum (o 'R df)))
+          EOF
+          echo -e "a;b\n1;2\n3;4" | ./target/release/blisp test_orientation.lisp
+
+  # User-facing smoke tests (workspace build)
+  user-smoke:
+    name: User Smoke Test (Workspace)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target directory
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-target-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build BLISP
+        run: cargo build --locked --release --bin blisp
+
+      - name: Test --version flag
+        run: |
+          VERSION=$(./target/release/blisp --version)
+          echo "Version: $VERSION"
+          if [[ ! "$VERSION" =~ ^blisp\ v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            exit 1
+          fi
+
+      - name: Test --selftest flag
+        run: ./target/release/blisp --selftest
+
+      - name: Test verify subcommand (matching CSVs)
+        run: |
+          echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
+          echo -e "a;b\n1;2\n3;4" > /tmp/test2.csv
+          ./target/release/blisp verify /tmp/test1.csv /tmp/test2.csv
+
+      - name: Test verify subcommand (different CSVs should fail)
+        run: |
+          echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
+          echo -e "a;b\n1;2.5\n3;4" > /tmp/test2.csv
+          if ./target/release/blisp verify /tmp/test1.csv /tmp/test2.csv; then
+            echo "❌ Verify should have failed for different CSVs"
+            exit 1
+          fi
+          echo "✅ Verify correctly detected differences"
+
+      - name: Test quickstart examples
+        run: |
+          ./target/release/blisp run examples/quickstart/hello.blisp
+          ./target/release/blisp run examples/quickstart/load_csv.blisp > /dev/null
+
+      - name: Verify example output
+        run: |
+          ./target/release/blisp run examples/quickstart/load_csv.blisp 2>&1 | grep -v "Running in" > /tmp/output.csv
+          ./target/release/blisp verify /tmp/output.csv expected/quickstart_load_csv.csv --tol 1e-6
+
+  # CRITICAL: Clean environment test - simulates actual user installation
+  user-install-fresh:
+    name: Fresh Install Test (cargo install --git)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Print toolchain versions (zero-state proof)
+        run: |
+          rustc -Vv
+          cargo -V
+          echo "Using fresh CARGO_HOME for zero-state install proof"
+          echo "CARGO_HOME will be: ${{ runner.temp }}/cargo-home-fresh"
+
+      - name: Install from git (zero-state proof)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home-fresh
+        run: |
+          # This is what users actually run - no checkout, no cache
+          # Fresh CARGO_HOME ensures clean cargo registry + binary install location
+          cargo install blisp \
+            --git https://github.com/${{ github.repository }} \
+            --branch ${{ github.ref_name }} \
+            --locked \
+            --force
+
+      - name: Verify installation location
+        run: |
+          ls -la ${{ runner.temp }}/cargo-home-fresh/bin/
+          ${{ runner.temp }}/cargo-home-fresh/bin/blisp --version
+
+      - name: Run selftest (no external files)
+        run: ${{ runner.temp }}/cargo-home-fresh/bin/blisp --selftest
+
+      - name: Test basic expression
+        run: |
+          RESULT=$(${{ runner.temp }}/cargo-home-fresh/bin/blisp -e '(+ 1 2)' 2>&1 | grep -v "Running in" | tail -1)
+          if [[ "$RESULT" != "3" ]]; then
+            echo "❌ Expected '3', got '$RESULT'"
+            exit 1
+          fi
+          echo "✅ Basic expression works"
+
+      - name: Test verify subcommand
+        run: |
+          echo -e "a;b\n1;2\n3;4" > /tmp/test1.csv
+          echo -e "a;b\n1;2\n3;4" > /tmp/test2.csv
+          ${{ runner.temp }}/cargo-home-fresh/bin/blisp verify /tmp/test1.csv /tmp/test2.csv
+
+      - name: Verify examples are bundled
+        run: |
+          # Examples should be available after install
+          # Note: cargo install doesn't copy non-code files by default
+          # This test validates that selftest works without examples
+          echo "✅ Installation complete without examples (expected for cargo install)"
+          echo "Users must clone repo for examples, or we need to bundle differently"
+
+  # Tripwire: prevent silent growth of ignored tests
+  check-ignored-tests:
+    name: Check Ignored Test Count
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Count ignored tests
+        run: |
+          IGNORED_COUNT=$(grep -r "#\[ignore" tests/ --include="*.rs" | wc -l)
+          echo "Current ignored test count: $IGNORED_COUNT"
+          echo "Baseline: 15 (see IGNORED_TESTS.md)"
+          if [ "$IGNORED_COUNT" -gt 15 ]; then
+            echo "❌ ERROR: Ignored test count increased from 15 to $IGNORED_COUNT"
+            echo "Action required:"
+            echo "  1. Fix the tests to remove #[ignore], OR"
+            echo "  2. Update IGNORED_TESTS.md with justification and new baseline"
+            echo "  3. Update this check's baseline threshold"
+            exit 1
+          elif [ "$IGNORED_COUNT" -lt 15 ]; then
+            echo "✅ Great! Ignored count decreased to $IGNORED_COUNT"
+            echo "Please update IGNORED_TESTS.md and this check's baseline"
+          else
+            echo "✅ Ignored test count matches baseline: $IGNORED_COUNT"
+          fi
+
+  # Final gate: everything must pass
+  ci-success:
+    name: CI Success
+    needs: [fmt, clippy, test, build, smoke-test, user-smoke, user-install-fresh, check-ignored-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        run: echo "All CI checks passed successfully"

@@ -1,4 +1,5 @@
 //! Lexical and global environments for variable binding
+#![allow(clippy::doc_lazy_continuation)]
 
 use crate::ast::SymbolId;
 use crate::value::Value;
@@ -14,9 +15,7 @@ pub struct LexicalEnv {
 
 impl LexicalEnv {
     pub fn new() -> Self {
-        Self {
-            frames: Vec::new(),
-        }
+        Self { frames: Vec::new() }
     }
 
     /// Push a new lexical frame (enter new scope)
@@ -43,8 +42,9 @@ impl LexicalEnv {
     /// Returns true if found and updated
     pub fn set(&mut self, sym: SymbolId, val: Value) -> bool {
         for frame in self.frames.iter_mut().rev() {
-            if frame.contains_key(&sym) {
-                frame.insert(sym, val);
+            use std::collections::hash_map::Entry;
+            if let Entry::Occupied(mut e) = frame.entry(sym) {
+                e.insert(val);
                 return true;
             }
         }
@@ -63,6 +63,17 @@ impl LexicalEnv {
     #[allow(dead_code)]
     pub fn depth(&self) -> usize {
         self.frames.len()
+    }
+
+    /// Create a snapshot of the current lexical environment (for closures)
+    pub fn snapshot(&self) -> crate::value::LexicalSnapshot {
+        self.frames.clone()
+    }
+
+    /// Restore a captured environment and push a new frame for parameters
+    pub fn restore_and_push(&mut self, snapshot: &crate::value::LexicalSnapshot) {
+        self.frames = snapshot.clone();
+        self.push_frame();
     }
 }
 

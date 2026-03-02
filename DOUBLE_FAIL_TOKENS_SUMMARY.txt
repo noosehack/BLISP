@@ -1,0 +1,53 @@
+BLISP Double-Fail Audit Summary
+================================
+19 builtin-only computational tokens that cause double-fail when nested in IR trees
+
+P0: CRITICAL (5 tokens) - Comparison Operators
+-----------------------------------------------
+<        builtin_lss      Example: (dlog (< PRC 100))
+>=       builtin_gte      Example: (shift 1 (>= VOL 1000000))
+<=       builtin_lte      Example: (locf (<= VOL 0))
+==       builtin_eql      Example: (cs1 (== SECTOR "TECH"))
+!=       builtin_neq      Example: (ur 250 (!= COUNTRY "US"))
+
+Action: Add BinaryFunc::{LSS,GTE,LTE,EQL,NEQ} to planner.rs
+
+P1: HIGH (5 tokens) - Dangerous Aliases
+----------------------------------------
+w5         builtin_wkd → wkd        Example: (dlog (w5 20 PRC))
+dlog-col   builtin_dlog → dlog      Example: (shift 1 (dlog-col PRC))
+shift-col  builtin_shift → shift    Example: (ret (shift-col 5 PRC))
+cs1-col    builtin_cs1 → cs1        Example: (dlog (cs1-col VOL))
+ur-col     builtin_ur → ur          Example: (locf (ur-col 250 STD_RET))
+
+Action: Add alias mappings in planner.rs (delegate to canonical names)
+
+P2: MEDIUM (9 tokens) - Frame Transform Operations
+---------------------------------------------------
+diff         builtin_diff          Example: (cs1 (diff PRC))
+zscore       builtin_zscore        Example: (ret (zscore PRC))
+chop         builtin_chop          Example: (dlog (chop PRC))
+keep-shape   builtin_keep_shape    Example: (shift 1 (keep-shape X))
+ecs1         builtin_ecs1          Example: (ur 250 (ecs1 0.9 RET))
+wstd         builtin_wstd          Example: (dlog (wstd 20 PRC))
+wstd0        builtin_wstd0         Example: (shift 1 (wstd0 50 VOL))
+wv           builtin_wv            Example: (cs1 (wv 20 RET))
+wz0          builtin_wz0           Example: (locf (wz0 250 0 1 RET))
+
+Action: Add NumericFunc/SchemaOp variants, check for existing aliases first
+
+EXCLUDED from migration (43 tokens):
+- Aggregations (6): sum, mean, std, etc. → scalar output, not compositional
+- Column-wise (2): >-col, >-cols → use map-cols instead
+- Multi-column suffixed (12): *-cols variants → use map-cols composition
+- Schema ops (10): col, setcol, select, etc. → table manipulation, not numeric
+- Mask ops (5): mask-on, mask-off, etc. → side effects
+- I/O (3): file-head, save, print → side effects
+- Introspection (3): type-of, len, o → meta-operations
+
+Implementation Priority:
+1. Phase 1 (P0): Comparison operators - BLOCKS IR predicates
+2. Phase 2 (P1): Dangerous aliases - BREAKS nested expressions
+3. Phase 3 (P2): Frame transforms - Performance + coverage (incremental)
+
+See BLISP_DOUBLE_FAIL_AUDIT.md for full analysis with examples and mappings.

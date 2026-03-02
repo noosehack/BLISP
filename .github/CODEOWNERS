@@ -1,0 +1,87 @@
+# CODEOWNERS - Code review requirements for BLISP
+#
+# This file defines who must approve changes to critical files.
+# Protects safeguards from accidental or malicious deletion.
+#
+# Syntax: <path-pattern> @github-username @org/team-name
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# =============================================================================
+# CRITICAL SAFEGUARDS - DO NOT MODIFY WITHOUT APPROVAL
+# =============================================================================
+#
+# These files are part of the API stability contract with blawktrust.
+# They prevent the 2026-02-28 incident (blawktrust API removal causing
+# 48 compile errors) from recurring.
+
+# CI/CD Infrastructure
+/.github/workflows/                @noosehack/core-maintainers
+/.github/CODEOWNERS                @noosehack/core-maintainers
+
+# ⭐ CRITICAL: blawktrust API Integration Test
+# This is the PRIMARY safeguard - provides compile-time API coupling verification.
+# If blawktrust removes Column::Date, this test won't compile, blocking CI.
+# NEVER delete this file without replacing with equivalent protection.
+/tests/blawktrust_api_integration.rs    @noosehack/core-maintainers
+
+# Release Gating Scripts
+# These enforce blawktrust dependency locking and pre-release validation
+/scripts/release_check.sh          @noosehack/core-maintainers
+/scripts/release_check.ps1         @noosehack/core-maintainers
+
+# Release Process Documentation
+/RELEASE.md                        @noosehack/core-maintainers
+
+# =============================================================================
+# DEPENDENCY MANAGEMENT - REQUIRES CAREFUL REVIEW
+# =============================================================================
+#
+# Cargo.toml contains blawktrust dependency lock.
+# Changes must ensure:
+# 1. blawktrust uses git tag (not path/branch)
+# 2. Integration test passes with new version
+# 3. Release gate script validates dependency
+
+/Cargo.toml                        @noosehack/core-maintainers
+/Cargo.lock                        @noosehack/core-maintainers
+
+# =============================================================================
+# BLAWKTRUST INTEGRATION LAYER
+# =============================================================================
+#
+# These files directly use blawktrust's API.
+# Changes may require updating integration test or coordinating with blawktrust.
+
+# CSV I/O (uses Column::Date, Column::Timestamp extensively)
+/src/io.rs                         @noosehack/core-maintainers
+
+# Value types (uses Column pattern matching)
+/src/value.rs                      @noosehack/core-maintainers
+
+# Builtins (uses blawktrust operations)
+/src/builtins.rs                   @noosehack/core-maintainers
+
+# =============================================================================
+# NOTES
+# =============================================================================
+#
+# To use this file:
+# 1. Replace @noosehack/core-maintainers with actual GitHub team
+#    (or individual usernames like @alice @bob @charlie)
+# 2. Create the team in GitHub: Settings → Teams → New team
+# 3. Add team members with appropriate permissions
+# 4. Enable "Require review from Code Owners" in branch protection
+#
+# Alternative (individual reviewers):
+# /tests/blawktrust_api_integration.rs    @alice @bob @charlie
+#
+# This file only works if:
+# - Repository is owned by an organization (not personal account)
+# - CODEOWNERS feature is enabled
+# - Branch protection requires review from code owners
+#
+# Special note about the integration test:
+# This file is THE critical safeguard. If someone creates a PR to delete it,
+# CODEOWNERS ensures it requires explicit approval from core maintainers.
+# This adds a human checkpoint before removing compile-time safety.

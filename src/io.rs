@@ -2,37 +2,215 @@
 //!
 //! Handles CSV file loading, stdin reading, and CSV writing.
 
-use crate::value::{Value, Table};
-use crate::ast::{Interner, SymbolId};
-use std::sync::Arc;
+use crate::ast::Interner;
+use crate::frame::{Frame, IndexColumn, Tags};
+use crate::value::{Table, Value};
 use std::io::{self, Read};
+use std::sync::Arc;
 
-// Import NULL_TS sentinel from blawktrust (kdb-style null date)
-use blawktrust::NULL_TS;
+// Import null sentinels from blawktrust (kdb-style null date/timestamp)
+use blawktrust::{NULL_DATE, NULL_TIMESTAMP};
 
 /// Number of rows to sample for type detection (bounded lookahead)
 const TYPE_DETECTION_ROWS: usize = 8;
 
-/// Load CSV file into a Table
+/// Load CSV file into a Frame (BLADE P2 policy)
 ///
-/// Format: First row is headers (column names), rest are data rows.
-/// All columns are assumed to be F64 for now.
+/// Format: First row is headers, rest are data rows.
+/// First column becomes index if it's DATE/TIMESTAMP or date/timestamp type.
+/// Remaining columns must be F64 (P2 policy).
 ///
 /// Example CSV:
 /// ```csv
-/// date,px,vol
-/// 2020-01-01,100.0,1000
-/// 2020-01-02,102.0,1200
+/// DATE;px;vol
+/// 2020-01-01;100.0;1000
+/// 2020-01-02;102.0;1200
 /// ```
 pub fn load_csv(filename: &str, interner: &mut Interner) -> Result<Value, String> {
-    parse_csv_from_file(filename, interner, None)
+    let file = std::fs::File::open(filename)
+        .map_err(|e| format!("Error opening file '{}': {}", filename, e))?;
+
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b';')
+        .from_reader(file);
+
+    parse_csv_to_frame(&mut csv_reader, interner, None)
 }
 
 /// Load CSV file with row limit (preview mode)
 ///
 /// Only parses header + first `row_limit` rows for fast display/pipelines.
-pub fn load_csv_limit(filename: &str, interner: &mut Interner, row_limit: usize) -> Result<Value, String> {
+pub fn load_csv_limit(
+    filename: &str,
+    interner: &mut Interner,
+    row_limit: usize,
+) -> Result<Value, String> {
     parse_csv_from_file(filename, interner, Some(row_limit))
+}
+
+/// Load CSV file with only selected columns (column subsetting)
+///
+/// Parses only requested columns by name. Dramatically faster for wide CSVs.
+/// Returns Table with columns in the order requested.
+/// Error if column name not found (lists available headers).
+pub fn load_csv_cols(
+    filename: &str,
+    col_names: &[String],
+    interner: &mut Interner,
+) -> Result<Value, String> {
+    let file = std::fs::File::open(filename)
+        .map_err(|e| format!("Error opening file '{}': {}", filename, e))?;
+
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b';')
+        .from_reader(file);
+
+    // Read headers
+    let headers = csv_reader
+        .headers()
+        .map_err(|e| format!("Error reading CSV headers: {}", e))?;
+
+    let all_column_names: Vec<String> = headers.iter().map(|s| s.trim().to_string()).collect();
+
+    // Map requested column names to indices
+    let mut selected_indices: Vec<usize> = Vec::new();
+    for col_name in col_names {
+        match all_column_names.iter().position(|h| h == col_name) {
+            Some(idx) => selected_indices.push(idx),
+            None => {
+                // Column not found - provide helpful error with available columns
+                let available = all_column_names.join("\", \"");
+                return Err(format!(
+                    "file-cols: column '{}' not found. Available: \"{}\"",
+                    col_name, available
+                ));
+            }
+        }
+    }
+
+    let num_selected = selected_indices.len();
+
+    // Sample first TYPE_DETECTION_ROWS rows to detect types of selected columns
+    let mut sample_rows: Vec<csv::ByteRecord> = Vec::new();
+    for result in csv_reader.byte_records().take(TYPE_DETECTION_ROWS) {
+        sample_rows.push(result.map_err(|e| format!("Error reading CSV record: {}", e))?);
+    }
+
+    if sample_rows.is_empty() {
+        // Empty CSV - return empty table with selected columns
+        let empty_bt = blawktrust::Table::new(vec![], vec![]);
+        return Ok(Value::tableview(blawktrust::TableView::new(empty_bt)));
+    }
+
+    // Detect types for selected columns only
+    let col_types: Vec<ColType> = selected_indices
+        .iter()
+        .map(|&col_idx| {
+            // Look for any non-NA value that indicates type
+            for row in &sample_rows {
+                if col_idx < row.len() {
+                    let field = row.get(col_idx).unwrap();
+                    let field_str = std::str::from_utf8(field).unwrap_or("").trim();
+                    // Skip NA tokens - they don't tell us the type
+                    if !is_na_token(field_str) {
+                        return detect_column_type(field_str);
+                    }
+                }
+            }
+            // All values were NA/empty - default to F64
+            ColType::F64
+        })
+        .collect();
+
+    // Initialize column data vectors
+    let mut f64_columns: Vec<Vec<f64>> =
+        (0..num_selected).map(|_| Vec::with_capacity(256)).collect();
+    let mut date_columns: Vec<Vec<i32>> =
+        (0..num_selected).map(|_| Vec::with_capacity(256)).collect();
+    let mut timestamp_columns: Vec<Vec<i64>> =
+        (0..num_selected).map(|_| Vec::with_capacity(256)).collect();
+
+    // Process sample rows (already collected)
+    for record in &sample_rows {
+        for (i, &col_idx) in selected_indices.iter().enumerate() {
+            if col_idx < record.len() {
+                let field = record.get(col_idx).unwrap();
+                let field_str = std::str::from_utf8(field).unwrap_or("").trim();
+                match col_types[i] {
+                    ColType::F64 => {
+                        f64_columns[i].push(parse_numeric_with_na(field_str));
+                    }
+                    ColType::Date => {
+                        date_columns[i].push(parse_date_or_null(field_str));
+                    }
+                    ColType::Timestamp => {
+                        timestamp_columns[i].push(parse_timestamp_or_null(field_str));
+                    }
+                }
+            } else {
+                // Missing field - treat as NA
+                match col_types[i] {
+                    ColType::F64 => f64_columns[i].push(f64::NAN),
+                    ColType::Date => date_columns[i].push(NULL_DATE),
+                    ColType::Timestamp => timestamp_columns[i].push(NULL_TIMESTAMP),
+                }
+            }
+        }
+    }
+
+    // Process remaining rows
+    for result in csv_reader.byte_records() {
+        let record = result.map_err(|e| format!("Error reading CSV record: {}", e))?;
+        for (i, &col_idx) in selected_indices.iter().enumerate() {
+            if col_idx < record.len() {
+                let field = record.get(col_idx).unwrap();
+                let field_str = std::str::from_utf8(field).unwrap_or("").trim();
+                match col_types[i] {
+                    ColType::F64 => {
+                        f64_columns[i].push(parse_numeric_with_na(field_str));
+                    }
+                    ColType::Date => {
+                        date_columns[i].push(parse_date_or_null(field_str));
+                    }
+                    ColType::Timestamp => {
+                        timestamp_columns[i].push(parse_timestamp_or_null(field_str));
+                    }
+                }
+            } else {
+                // Missing field - treat as NA
+                match col_types[i] {
+                    ColType::F64 => f64_columns[i].push(f64::NAN),
+                    ColType::Date => date_columns[i].push(NULL_DATE),
+                    ColType::Timestamp => timestamp_columns[i].push(NULL_TIMESTAMP),
+                }
+            }
+        }
+    }
+
+    // Build table with selected columns in requested order
+    let mut table = Table::new();
+    for (i, col_name) in col_names.iter().enumerate() {
+        let sym_id = interner.intern(col_name);
+        let column = match col_types[i] {
+            ColType::F64 => blawktrust::Column::new_f64(f64_columns[i].clone()),
+            ColType::Date => blawktrust::Column::new_date(date_columns[i].clone()),
+            ColType::Timestamp => blawktrust::Column::new_timestamp(timestamp_columns[i].clone()),
+        };
+        table.add_column(sym_id, column);
+    }
+
+    // Wrap in TableView for TableView-only runtime
+    let bt = blawktrust::Table::new(
+        table
+            .columns
+            .iter()
+            .map(|(sym_id, _)| interner.resolve(*sym_id).to_string())
+            .collect(),
+        table.columns.iter().map(|(_, col)| col.clone()).collect(),
+    );
+    Ok(Value::tableview(blawktrust::TableView::new(bt)))
 }
 
 /// Read CSV from stdin into a Table
@@ -49,7 +227,11 @@ pub fn load_stdin(interner: &mut Interner) -> Result<Value, String> {
 ///
 /// Streams directly from file without reading entire contents into memory.
 /// If row_limit is Some(n), only parse header + first n data rows.
-fn parse_csv_from_file(filename: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
+fn parse_csv_from_file(
+    filename: &str,
+    interner: &mut Interner,
+    row_limit: Option<usize>,
+) -> Result<Value, String> {
     let file = std::fs::File::open(filename)
         .map_err(|e| format!("Error opening file '{}': {}", filename, e))?;
 
@@ -59,7 +241,11 @@ fn parse_csv_from_file(filename: &str, interner: &mut Interner, row_limit: Optio
 /// Parse CSV from a reader with optional row limit
 ///
 /// Generic function that works with any Read source (file, string, stdin, etc.)
-fn parse_csv_from_reader<R: std::io::Read>(reader: R, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
+fn parse_csv_from_reader<R: std::io::Read>(
+    reader: R,
+    interner: &mut Interner,
+    row_limit: Option<usize>,
+) -> Result<Value, String> {
     let mut csv_reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b';')
@@ -72,8 +258,169 @@ fn parse_csv_from_reader<R: std::io::Read>(reader: R, interner: &mut Interner, r
 ///
 /// If row_limit is Some(n), only parse header + first n data rows.
 /// This is the "preview parser" fast path for display/pipelines.
-fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -> Result<Value, String> {
+fn parse_csv(
+    content: &str,
+    interner: &mut Interner,
+    row_limit: Option<usize>,
+) -> Result<Value, String> {
     parse_csv_from_reader(content.as_bytes(), interner, row_limit)
+}
+
+/// BLADE: Parse CSV to Frame with index preservation (Blueprint Phase 1)
+///
+/// First column is index if:
+/// - Name matches DATE/TIMESTAMP/TIME/date/timestamp, OR
+/// - Type is Date or Timestamp
+///
+/// Remaining columns must be F64 (P2 policy: numeric only).
+/// Returns Frame with Tags (index + colnames).
+pub fn parse_csv_to_frame<R: std::io::Read>(
+    reader: &mut csv::Reader<R>,
+    _interner: &mut Interner,
+    row_limit: Option<usize>,
+) -> Result<Value, String> {
+    // Read headers
+    let headers = reader
+        .headers()
+        .map_err(|e| format!("Error reading CSV headers: {}", e))?;
+
+    let column_names: Vec<String> = headers.iter().map(|s| s.trim().to_string()).collect();
+
+    if column_names.is_empty() {
+        return Err("CSV has no columns".to_string());
+    }
+
+    let num_cols = column_names.len();
+
+    // Sample rows for type detection
+    let sample_size = row_limit
+        .map(|lim| lim.min(TYPE_DETECTION_ROWS))
+        .unwrap_or(TYPE_DETECTION_ROWS);
+    let mut sample_rows: Vec<csv::StringRecord> = Vec::new();
+    for result in reader.records().take(sample_size) {
+        sample_rows.push(result.map_err(|e| format!("Error reading CSV record: {}", e))?);
+    }
+
+    if sample_rows.is_empty() {
+        // Empty CSV - return Frame with empty index and no columns
+        let index = IndexColumn::Date(Arc::new(vec![]));
+        let tags = Tags::new("DATE".to_string(), index, vec![]);
+        return Ok(Value::Frame(Arc::new(Frame::new(tags, vec![]))));
+    }
+
+    // Detect column types
+    let col_types: Vec<ColType> = (0..num_cols)
+        .map(|col_idx| {
+            for row in &sample_rows {
+                if col_idx < row.len() {
+                    let field = row.get(col_idx).unwrap().trim();
+                    if !is_na_token(field) {
+                        return detect_column_type(field);
+                    }
+                }
+            }
+            ColType::F64
+        })
+        .collect();
+
+    // Determine if first column is index
+    let first_col_is_index = matches!(col_types[0], ColType::Date | ColType::Timestamp)
+        || column_names[0].eq_ignore_ascii_case("DATE")
+        || column_names[0].eq_ignore_ascii_case("TIMESTAMP")
+        || column_names[0].eq_ignore_ascii_case("TIME");
+
+    let (index_name, index_start, numeric_start) = if first_col_is_index {
+        (column_names[0].clone(), 0, 1)
+    } else {
+        // No explicit index - create synthetic row numbers
+        ("ROW".to_string(), num_cols, 0) // Special marker: index_start == num_cols
+    };
+
+    // Parse columns
+    let initial_capacity = row_limit.unwrap_or(256);
+    let mut index_dates: Vec<i32> = Vec::with_capacity(initial_capacity);
+    let mut index_timestamps: Vec<i64> = Vec::with_capacity(initial_capacity);
+    let mut index_strings: Vec<String> = Vec::with_capacity(initial_capacity);
+    let mut f64_columns: Vec<Vec<f64>> = (0..num_cols)
+        .map(|_| Vec::with_capacity(initial_capacity))
+        .collect();
+
+    // Process sample rows
+    let mut rows_parsed = 0;
+    for record in sample_rows {
+        // Parse index if exists
+        if index_start < num_cols {
+            let field = record.get(index_start).unwrap().trim();
+            match col_types[index_start] {
+                ColType::Date => index_dates.push(parse_date_or_null(field)),
+                ColType::Timestamp => index_timestamps.push(parse_timestamp_or_null(field)),
+                ColType::F64 => index_strings.push(field.to_string()),
+            }
+        } else {
+            // Synthetic row numbers
+            index_strings.push(rows_parsed.to_string());
+        }
+
+        // Parse numeric columns (P2: only F64)
+        for i in numeric_start..num_cols {
+            let field = record.get(i).unwrap().trim();
+            f64_columns[i].push(parse_numeric_with_na(field));
+        }
+        rows_parsed += 1;
+    }
+
+    // Read remaining rows
+    for result in reader.records() {
+        if let Some(limit) = row_limit {
+            if rows_parsed >= limit {
+                break;
+            }
+        }
+        let record = result.map_err(|e| format!("Error reading CSV record: {}", e))?;
+
+        // Parse index
+        if index_start < num_cols {
+            let field = record.get(index_start).unwrap().trim();
+            match col_types[index_start] {
+                ColType::Date => index_dates.push(parse_date_or_null(field)),
+                ColType::Timestamp => index_timestamps.push(parse_timestamp_or_null(field)),
+                ColType::F64 => index_strings.push(field.to_string()),
+            }
+        } else {
+            index_strings.push(rows_parsed.to_string());
+        }
+
+        // Parse numeric columns
+        for i in numeric_start..num_cols {
+            let field = record.get(i).unwrap().trim();
+            f64_columns[i].push(parse_numeric_with_na(field));
+        }
+        rows_parsed += 1;
+    }
+
+    // Build IndexColumn
+    let index_col = if index_start < num_cols {
+        match col_types[index_start] {
+            ColType::Date => IndexColumn::Date(Arc::new(index_dates)),
+            ColType::Timestamp => IndexColumn::Timestamp(Arc::new(index_timestamps)),
+            ColType::F64 => IndexColumn::String(Arc::new(index_strings)),
+        }
+    } else {
+        IndexColumn::String(Arc::new(index_strings))
+    };
+
+    // Build numeric column names and data (P2: F64 only)
+    let numeric_colnames: Vec<String> = column_names.iter().skip(numeric_start).cloned().collect();
+
+    let numeric_cols: Vec<Arc<blawktrust::Column>> = (numeric_start..num_cols)
+        .map(|i| Arc::new(blawktrust::Column::new_f64(f64_columns[i].clone())))
+        .collect();
+
+    // Create Frame with Tags
+    let tags = Tags::new(index_name, index_col, numeric_colnames);
+    let frame = Frame::new(tags, numeric_cols);
+
+    Ok(Value::Frame(Arc::new(frame)))
 }
 
 /// Core CSV parsing logic that works with any csv::Reader
@@ -82,21 +429,25 @@ fn parse_csv(content: &str, interner: &mut Interner, row_limit: Option<usize>) -
 fn parse_csv_from_csv_reader<R: std::io::Read>(
     reader: &mut csv::Reader<R>,
     interner: &mut Interner,
-    row_limit: Option<usize>
+    row_limit: Option<usize>,
 ) -> Result<Value, String> {
     // Read headers (TASK C: trim whitespace)
-    let headers = reader.headers()
+    let headers = reader
+        .headers()
         .map_err(|e| format!("Error reading CSV headers: {}", e))?;
 
-    let column_names: Vec<String> = headers.iter()
-        .map(|s| s.trim().to_string())  // Trim header names
+    let column_names: Vec<String> = headers
+        .iter()
+        .map(|s| s.trim().to_string()) // Trim header names
         .collect();
 
     let num_cols = column_names.len();
 
     // Detect column types by sampling first K rows (robust type inference)
     // Collect first TYPE_DETECTION_ROWS rows for sampling (capped by row_limit if specified)
-    let sample_size = row_limit.map(|lim| lim.min(TYPE_DETECTION_ROWS)).unwrap_or(TYPE_DETECTION_ROWS);
+    let sample_size = row_limit
+        .map(|lim| lim.min(TYPE_DETECTION_ROWS))
+        .unwrap_or(TYPE_DETECTION_ROWS);
     let mut sample_rows: Vec<csv::StringRecord> = Vec::new();
     for result in reader.records().take(sample_size) {
         sample_rows.push(result.map_err(|e| format!("Error reading CSV record: {}", e))?);
@@ -104,7 +455,8 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
 
     if sample_rows.is_empty() {
         // Empty CSV
-        return Ok(Value::Table(Arc::new(Table::new())));
+        let empty_bt = blawktrust::Table::new(vec![], vec![]);
+        return Ok(Value::tableview(blawktrust::TableView::new(empty_bt)));
     }
 
     // Detect types by checking first K rows, skipping NA/empty values
@@ -130,7 +482,10 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
     let mut f64_columns: Vec<Vec<f64>> = (0..num_cols)
         .map(|_| Vec::with_capacity(initial_capacity))
         .collect();
-    let mut ts_columns: Vec<Vec<i64>> = (0..num_cols)
+    let mut date_columns: Vec<Vec<i32>> = (0..num_cols)
+        .map(|_| Vec::with_capacity(initial_capacity))
+        .collect();
+    let mut timestamp_columns: Vec<Vec<i64>> = (0..num_cols)
         .map(|_| Vec::with_capacity(initial_capacity))
         .collect();
 
@@ -142,8 +497,11 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
                 ColType::F64 => {
                     f64_columns[i].push(parse_numeric_with_na(field.trim()));
                 }
-                ColType::Ts => {
-                    ts_columns[i].push(parse_date_or_null(field.trim()));
+                ColType::Date => {
+                    date_columns[i].push(parse_date_or_null(field.trim()));
+                }
+                ColType::Timestamp => {
+                    timestamp_columns[i].push(parse_timestamp_or_null(field.trim()));
                 }
             }
         }
@@ -174,9 +532,13 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
                     // Handle NA tokens
                     f64_columns[i].push(parse_numeric_with_na(field.trim()));
                 }
-                ColType::Ts => {
-                    // Parse dates (NA tokens → NULL_TS)
-                    ts_columns[i].push(parse_date_or_null(field.trim()));
+                ColType::Date => {
+                    // Parse dates (NA tokens → NULL_DATE)
+                    date_columns[i].push(parse_date_or_null(field.trim()));
+                }
+                ColType::Timestamp => {
+                    // Parse timestamps (NA tokens → NULL_TIMESTAMP)
+                    timestamp_columns[i].push(parse_timestamp_or_null(field.trim()));
                 }
             }
         }
@@ -190,28 +552,43 @@ fn parse_csv_from_csv_reader<R: std::io::Read>(
         let sym = interner.intern(name);
         let col = match col_types[i] {
             ColType::F64 => blawktrust::Column::new_f64(f64_columns[i].clone()),
-            ColType::Ts => blawktrust::Column::new_ts(ts_columns[i].clone()),
+            ColType::Date => blawktrust::Column::new_date(date_columns[i].clone()),
+            ColType::Timestamp => blawktrust::Column::new_timestamp(timestamp_columns[i].clone()),
         };
         table.add_column(sym, col);
     }
 
-    Ok(Value::Table(Arc::new(table)))
+    // Wrap in TableView for TableView-only runtime
+    let bt = blawktrust::Table::new(
+        table
+            .columns
+            .iter()
+            .map(|(sym_id, _)| interner.resolve(*sym_id).to_string())
+            .collect(),
+        table.columns.iter().map(|(_, col)| col.clone()).collect(),
+    );
+    Ok(Value::tableview(blawktrust::TableView::new(bt)))
 }
 
 /// Column type detected from CSV
 #[derive(Debug, Clone, Copy)]
 enum ColType {
-    F64,  // Numeric column
-    Ts,   // Timestamp column (YYYY-MM-DD)
+    F64,       // Numeric column
+    Date,      // Date column (YYYY-MM-DD, stored as i32 days)
+    Timestamp, // Timestamp column (YYYY-MM-DD HH:MM:SS[.nanos], stored as i64 nanoseconds)
 }
 
 /// Detect column type from a sample value
+///
+/// Priority: Timestamp > Date > F64
 fn detect_column_type(sample: &str) -> ColType {
     let trimmed = sample.trim();
 
-    // Check if it looks like a date: YYYY-MM-DD
-    if is_date_format(trimmed) {
-        ColType::Ts
+    // Check if it looks like a timestamp first (more specific)
+    if is_timestamp_format(trimmed) {
+        ColType::Timestamp
+    } else if is_date_format(trimmed) {
+        ColType::Date
     } else {
         ColType::F64
     }
@@ -232,10 +609,63 @@ fn is_date_format(s: &str) -> bool {
         return false;
     }
     // Check format: YYYY-MM-DD
-    parts[0].len() == 4 && parts[1].len() == 2 && parts[2].len() == 2
+    parts[0].len() == 4
+        && parts[1].len() == 2
+        && parts[2].len() == 2
         && parts[0].chars().all(|c| c.is_ascii_digit())
         && parts[1].chars().all(|c| c.is_ascii_digit())
         && parts[2].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Check if string matches YYYY-MM-DD HH:MM:SS[.fffffffff] format
+fn is_timestamp_format(s: &str) -> bool {
+    if s.len() < 19 {
+        return false;
+    }
+
+    let space_pos = match s.find(' ') {
+        Some(pos) if pos == 10 => pos,
+        _ => return false,
+    };
+
+    let date_part = &s[..10];
+    if !is_date_format(date_part) {
+        return false;
+    }
+
+    let time_part = &s[11..];
+    let base_len = if let Some(dot_pos) = time_part.find('.') {
+        if dot_pos != 8 {
+            return false;
+        }
+        let frac = &time_part[9..];
+        if frac.is_empty() || frac.len() > 9 {
+            return false;
+        }
+        if !frac.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        8
+    } else {
+        if time_part.len() != 8 {
+            return false;
+        }
+        8
+    };
+
+    let time_base = &time_part[..base_len];
+    if time_base.len() != 8 {
+        return false;
+    }
+    if &time_base[2..3] != ":" || &time_base[5..6] != ":" {
+        return false;
+    }
+
+    let parts: Vec<&str> = time_base.split(':').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Parse numeric value, treating NA tokens as NaN
@@ -248,91 +678,185 @@ fn parse_numeric_with_na(s: &str) -> f64 {
     }
 }
 
-/// Parse date or return NULL_TS sentinel for missing dates (kdb-style)
+/// Parse date or return NULL_DATE sentinel for missing dates (kdb-style)
 ///
-/// Handles NA tokens and invalid formats by returning NULL_TS.
-fn parse_date_or_null(s: &str) -> i64 {
-    // NA tokens → NULL_TS
+/// Handles NA tokens and invalid formats by returning NULL_DATE.
+fn parse_date_or_null(s: &str) -> i32 {
+    // NA tokens → NULL_DATE
     if is_na_token(s) {
-        return NULL_TS;
+        return NULL_DATE;
     }
 
     // Try parsing as date
-    parse_date_to_days_internal(s).unwrap_or(NULL_TS)
+    parse_date_to_days(s).unwrap_or(NULL_DATE)
 }
 
-/// Parse YYYY-MM-DD date to days since Unix epoch (1970-01-01)
+/// Parse YYYY-MM-DD to days since epoch using Howard Hinnant algorithm
+///
+/// This correctly handles all leap years including Feb 29.
+/// Algorithm: https://howardhinnant.github.io/date_algorithms.html
 ///
 /// Returns Ok(days) or Err for invalid format.
-/// For CSV loading, use parse_date_or_null instead (returns NULL_TS on error).
-fn parse_date_to_days_internal(s: &str) -> Result<i64, String> {
+/// For CSV loading, use parse_date_or_null instead (returns NULL_DATE on error).
+fn parse_date_to_days(s: &str) -> Result<i32, String> {
     // Validate format first
     if !is_date_format(s) {
         return Err(format!("Invalid date format '{}', expected YYYY-MM-DD", s));
     }
 
     let parts: Vec<&str> = s.split('-').collect();
-
-    let year: i32 = parts[0].parse()
+    let year: i32 = parts[0]
+        .parse()
         .map_err(|_| format!("Invalid year in date '{}'", s))?;
-    let month: i32 = parts[1].parse()
+    let month: u32 = parts[1]
+        .parse()
         .map_err(|_| format!("Invalid month in date '{}'", s))?;
-    let day: i32 = parts[2].parse()
+    let day: u32 = parts[2]
+        .parse()
         .map_err(|_| format!("Invalid day in date '{}'", s))?;
 
-    // Simple date arithmetic (rough approximation - good enough for Bloomberg data)
-    // Days since 1970-01-01
-    let days_per_year = 365;
-    let mut days: i64 = 0;
-
-    // Add years since 1970
-    days += (year - 1970) as i64 * days_per_year;
-
-    // Add leap days (rough approximation)
-    let leap_years = ((year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400) as i64;
-    days += leap_years;
-
-    // Add days for complete months
-    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for m in 1..month {
-        days += days_in_month[(m - 1) as usize] as i64;
+    // Validate ranges
+    if !(1..=12).contains(&month) {
+        return Err(format!("Month {} out of range 1-12", month));
+    }
+    if !(1..=31).contains(&day) {
+        return Err(format!("Day {} out of range 1-31", day));
     }
 
-    // Add remaining days
-    days += (day - 1) as i64;
+    // Howard Hinnant's civil_from_days algorithm
+    // Shift month so March is month 0 (makes leap day last day of year)
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32; // year of era
+    let m = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * m + 2) / 5 + day - 1; // day of year
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era
 
-    Ok(days)
+    Ok(era * 146097 + doe as i32 - 719468)
 }
 
-/// Format days since epoch as YYYY-MM-DD string
+/// Convert days since epoch to YYYY-MM-DD (inverse of parse_date_to_days)
 ///
-/// Inverse of parse_date_to_days for CSV output
-fn format_days_as_date(days: i64) -> String {
-    // Simple reverse calculation (rough approximation)
-    let days_per_year = 365;
-    let mut remaining = days;
-
-    // Estimate year
-    let year = 1970 + (remaining / days_per_year) as i32;
-
-    // Adjust for leap years (rough)
-    let leap_years = ((year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400) as i64;
-    remaining -= leap_years;
-    remaining -= (year - 1970) as i64 * days_per_year;
-
-    // Find month and day
-    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1;
-    for &days_in_m in &days_in_month {
-        if remaining < days_in_m as i64 {
-            break;
-        }
-        remaining -= days_in_m as i64;
-        month += 1;
+/// Uses Howard Hinnant's inverse civil_to_days algorithm.
+fn format_date_from_days(days: i32) -> String {
+    if days == NULL_DATE {
+        return "NA".to_string();
     }
-    let day = remaining + 1;
 
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    // Howard Hinnant's inverse algorithm
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32; // day of era
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era
+    let y = yoe as i32 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year
+    let mp = (5 * doy + 2) / 153; // month' (0=Mar, 1=Apr, ..., 9=Dec, 10=Jan, 11=Feb)
+    let d = doy - (153 * mp + 2) / 5 + 1; // day
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // month (1=Jan, 12=Dec)
+    let year = if m <= 2 { y + 1 } else { y };
+
+    format!("{:04}-{:02}-{:02}", year, m, d)
+}
+
+/// Parse timestamp or return NULL_TIMESTAMP sentinel for missing timestamps (kdb-style)
+///
+/// Handles NA tokens and invalid formats by returning NULL_TIMESTAMP.
+fn parse_timestamp_or_null(s: &str) -> i64 {
+    // NA tokens → NULL_TIMESTAMP
+    if is_na_token(s) {
+        return NULL_TIMESTAMP;
+    }
+
+    // Try parsing as timestamp
+    parse_timestamp_to_nanos(s).unwrap_or(NULL_TIMESTAMP)
+}
+
+/// Parse YYYY-MM-DD HH:MM:SS[.fffffffff] to nanoseconds since epoch
+///
+/// Supports optional fractional seconds with 1-9 digits of precision.
+/// Fractional seconds are scaled to nanoseconds (right-padded with zeros).
+///
+/// Examples:
+/// - "2000-01-01 12:30:45" → no fractional seconds
+/// - "2000-01-01 12:30:45.1" → 100,000,000 nanoseconds (0.1 seconds)
+/// - "2000-01-01 12:30:45.123" → 123,000,000 nanoseconds (0.123 seconds)
+/// - "2000-01-01 12:30:45.123456789" → 123,456,789 nanoseconds
+fn parse_timestamp_to_nanos(s: &str) -> Result<i64, String> {
+    if !is_timestamp_format(s) {
+        return Err(format!("Invalid timestamp format '{}'", s));
+    }
+
+    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+    let days = parse_date_to_days(parts[0])? as i64;
+    let time_part = parts[1];
+
+    let (time_base, frac_nanos) = if let Some(dot_pos) = time_part.find('.') {
+        let frac_str = &time_part[dot_pos + 1..];
+        let frac_value: u64 = frac_str.parse().map_err(|_| "Invalid fractional seconds")?;
+        // Scale to nanoseconds by multiplying by 10^(9-len)
+        let scale = 10u64.pow(9 - frac_str.len() as u32);
+        (
+            time_part[..dot_pos].to_string(),
+            (frac_value * scale) as i64,
+        )
+    } else {
+        (time_part.to_string(), 0)
+    };
+
+    let time_parts: Vec<&str> = time_base.split(':').collect();
+    let hour: i64 = time_parts[0].parse().map_err(|_| "Invalid hour")?;
+    let minute: i64 = time_parts[1].parse().map_err(|_| "Invalid minute")?;
+    let second: i64 = time_parts[2].parse().map_err(|_| "Invalid second")?;
+
+    if hour > 23 {
+        return Err(format!("Hour {} out of range 0-23", hour));
+    }
+    if minute > 59 {
+        return Err(format!("Minute {} out of range 0-59", minute));
+    }
+    if second > 59 {
+        return Err(format!("Second {} out of range 0-59", second));
+    }
+
+    let nanos = days * 86400 * 1_000_000_000
+        + hour * 3600 * 1_000_000_000
+        + minute * 60 * 1_000_000_000
+        + second * 1_000_000_000
+        + frac_nanos;
+
+    Ok(nanos)
+}
+
+/// Format nanoseconds as YYYY-MM-DD HH:MM:SS[.fffffffff]
+///
+/// Fractional seconds are included only when non-zero, trailing zeros removed.
+fn format_timestamp_from_nanos(nanos: i64) -> String {
+    if nanos == NULL_TIMESTAMP {
+        return "NA".to_string();
+    }
+
+    let total_seconds = nanos / 1_000_000_000;
+    let frac_nanos = nanos % 1_000_000_000;
+
+    let days = total_seconds / 86400;
+    let remaining_secs = total_seconds % 86400;
+
+    let hour = remaining_secs / 3600;
+    let minute = (remaining_secs % 3600) / 60;
+    let second = remaining_secs % 60;
+
+    let date_str = format_date_from_days(days as i32);
+
+    if frac_nanos == 0 {
+        format!("{} {:02}:{:02}:{:02}", date_str, hour, minute, second)
+    } else {
+        let frac_str = format!("{:09}", frac_nanos);
+        let trimmed = frac_str.trim_end_matches('0');
+        format!(
+            "{} {:02}:{:02}:{:02}.{}",
+            date_str, hour, minute, second, trimmed
+        )
+    }
 }
 
 /// Save Table to CSV file
@@ -350,11 +874,14 @@ pub fn save_csv(filename: &str, table: &Table, interner: &Interner) -> Result<()
     }
 
     // Write headers
-    let headers: Vec<String> = table.columns.iter()
+    let headers: Vec<String> = table
+        .columns
+        .iter()
         .map(|(sym_id, _)| interner.resolve(*sym_id).to_string())
         .collect();
 
-    writer.write_record(&headers)
+    writer
+        .write_record(&headers)
         .map_err(|e| format!("Error writing CSV headers: {}", e))?;
 
     // Write data rows
@@ -377,14 +904,38 @@ pub fn save_csv(filename: &str, table: &Table, interner: &Interner) -> Result<()
                         row.push("NaN".to_string());
                     }
                 }
-                blawktrust::Column::Ts(data) => {
+                blawktrust::Column::Date(data) => {
                     if row_idx < data.len() {
                         let days = data[row_idx];
-                        if days == NULL_TS {
+                        if days == NULL_DATE {
                             row.push("NA".to_string());
                         } else {
-                            // Convert days since epoch back to date string
-                            row.push(format_days_as_date(days));
+                            row.push(format_date_from_days(days));
+                        }
+                    } else {
+                        row.push("NA".to_string());
+                    }
+                }
+                blawktrust::Column::Timestamp(data) => {
+                    if row_idx < data.len() {
+                        let nanos = data[row_idx];
+                        if nanos == NULL_TIMESTAMP {
+                            row.push("NA".to_string());
+                        } else {
+                            row.push(format_timestamp_from_nanos(nanos));
+                        }
+                    } else {
+                        row.push("NA".to_string());
+                    }
+                }
+                blawktrust::Column::Ts(data) => {
+                    // Treat Ts like Timestamp for now
+                    if row_idx < data.len() {
+                        let nanos = data[row_idx];
+                        if nanos == blawktrust::NULL_TS {
+                            row.push("NA".to_string());
+                        } else {
+                            row.push(format_timestamp_from_nanos(nanos));
                         }
                     } else {
                         row.push("NA".to_string());
@@ -393,11 +944,13 @@ pub fn save_csv(filename: &str, table: &Table, interner: &Interner) -> Result<()
             }
         }
 
-        writer.write_record(&row)
+        writer
+            .write_record(&row)
             .map_err(|e| format!("Error writing CSV row {}: {}", row_idx, e))?;
     }
 
-    writer.flush()
+    writer
+        .flush()
         .map_err(|e| format!("Error flushing CSV file: {}", e))?;
 
     Ok(())
@@ -415,17 +968,15 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 2);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
             assert_eq!(table.columns.len(), 2);
 
             // Check column names
-            let names: Vec<String> = table.columns.iter()
-                .map(|(sym, _)| interner.resolve(*sym).to_string())
-                .collect();
-            assert_eq!(names, vec!["px", "vol"]);
+            assert_eq!(table.names, vec!["px", "vol"]);
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -437,12 +988,13 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 4);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 4);
 
             // Check that NA values became NaN
-            let px_col = table.get_column(interner.intern("px")).unwrap();
-            match px_col {
+            let px_idx = table.names.iter().position(|n| n == "px").unwrap();
+            match &table.columns[px_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 100.0);
                     assert!(data[1].is_nan(), "NA should become NaN");
@@ -452,8 +1004,8 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
 
-            let vol_col = table.get_column(interner.intern("vol")).unwrap();
-            match vol_col {
+            let vol_idx = table.names.iter().position(|n| n == "vol").unwrap();
+            match &table.columns[vol_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 1000.0);
                     assert_eq!(data[1], 1200.0);
@@ -463,11 +1015,11 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
-    // TASK B: Test date column support with NULL_TS sentinel
+    // TASK B: Test date column support with NULL_DATE sentinel
     #[test]
     fn test_parse_csv_with_dates() {
         let mut interner = Interner::new();
@@ -475,27 +1027,34 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 3);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 3);
             assert_eq!(table.columns.len(), 3);
 
-            // Check date column is Ts type
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
-                blawktrust::Column::Ts(data) => {
+            // Check date column is Date type
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
+                blawktrust::Column::Date(data) => {
                     assert_eq!(data.len(), 3);
                     // Valid dates should be positive days since epoch
-                    assert!(data[0] > 0 && data[0] != NULL_TS, "Date should be positive days");
-                    assert!(data[1] > data[0] && data[1] != NULL_TS, "Later date should have more days");
-                    // NA date should be NULL_TS
-                    assert_eq!(data[2], NULL_TS, "NA date should be NULL_TS sentinel");
+                    assert!(
+                        data[0] > 0 && data[0] != NULL_DATE,
+                        "Date should be positive days"
+                    );
+                    assert!(
+                        data[1] > data[0] && data[1] != NULL_DATE,
+                        "Later date should have more days"
+                    );
+                    // NA date should be NULL_DATE
+                    assert_eq!(data[2], NULL_DATE, "NA date should be NULL_DATE sentinel");
                 }
-                _ => panic!("Date column should be Ts type"),
+                _ => panic!("Date column should be Date type"),
             }
 
             // Check numeric columns still work
-            let px_col = table.get_column(interner.intern("px")).unwrap();
-            match px_col {
+            let px_idx = table.names.iter().position(|n| n == "px").unwrap();
+            match &table.columns[px_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 100.0);
                     assert_eq!(data[1], 102.0);
@@ -504,7 +1063,7 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -517,20 +1076,23 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
             // Check that headers were trimmed
-            let names: Vec<String> = table.columns.iter()
-                .map(|(sym, _)| interner.resolve(*sym).to_string())
-                .collect();
-
-            assert_eq!(names[0], "ES2 Index", "Trailing space should be trimmed");
-            assert_eq!(names[1], "SPY US Equity", "Trailing space should be trimmed");
+            assert_eq!(
+                table.names[0], "ES2 Index",
+                "Trailing space should be trimmed"
+            );
+            assert_eq!(
+                table.names[1], "SPY US Equity",
+                "Trailing space should be trimmed"
+            );
 
             // Verify we can access by trimmed name
-            assert!(table.get_column(interner.intern("ES2 Index")).is_some());
-            assert!(table.get_column(interner.intern("SPY US Equity")).is_some());
+            assert!(table.names.contains(&"ES2 Index".to_string()));
+            assert!(table.names.contains(&"SPY US Equity".to_string()));
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -543,24 +1105,29 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 3);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 3);
             assert_eq!(table.columns.len(), 3);
 
-            // Check date column (with NA → NULL_TS)
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
-                blawktrust::Column::Ts(data) => {
-                    assert!(data[0] != NULL_TS, "Valid date");
-                    assert!(data[1] != NULL_TS, "Valid date");
-                    assert_eq!(data[2], NULL_TS, "NA date should be NULL_TS");
+            // Check date column (with NA → NULL_DATE)
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
+                blawktrust::Column::Date(data) => {
+                    assert!(data[0] != NULL_DATE, "Valid date");
+                    assert!(data[1] != NULL_DATE, "Valid date");
+                    assert_eq!(data[2], NULL_DATE, "NA date should be NULL_DATE");
                 }
-                _ => panic!("Expected Ts column"),
+                _ => panic!("Expected Date column"),
             }
 
             // Check numeric column with space in name
-            let spy_col = table.get_column(interner.intern("SPY US Equity")).unwrap();
-            match spy_col {
+            let spy_idx = table
+                .names
+                .iter()
+                .position(|n| n == "SPY US Equity")
+                .unwrap();
+            match &table.columns[spy_idx] {
                 blawktrust::Column::F64(data) => {
                     assert_eq!(data[0], 145.438);
                     assert!(data[1].is_nan(), "NA should become NaN");
@@ -569,7 +1136,7 @@ mod tests {
                 _ => panic!("Expected F64 column"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -582,22 +1149,23 @@ mod tests {
 
         let result = parse_csv(csv, &mut interner, None).unwrap();
 
-        if let Value::Table(table) = result {
-            assert_eq!(table.row_count, 4);
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 4);
 
-            // Should detect as Ts despite leading NAs (K-row lookahead)
-            let date_col = table.get_column(interner.intern("date")).unwrap();
-            match date_col {
-                blawktrust::Column::Ts(data) => {
-                    assert_eq!(data[0], NULL_TS, "First NA");
-                    assert_eq!(data[1], NULL_TS, "Second NA");
-                    assert!(data[2] != NULL_TS, "Valid date");
-                    assert!(data[3] != NULL_TS, "Valid date");
+            // Should detect as Date despite leading NAs (K-row lookahead)
+            let date_idx = table.names.iter().position(|n| n == "date").unwrap();
+            match &table.columns[date_idx] {
+                blawktrust::Column::Date(data) => {
+                    assert_eq!(data[0], NULL_DATE, "First NA");
+                    assert_eq!(data[1], NULL_DATE, "Second NA");
+                    assert!(data[2] != NULL_DATE, "Valid date");
+                    assert!(data[3] != NULL_DATE, "Valid date");
                 }
-                _ => panic!("Should detect as Ts despite leading NAs"),
+                _ => panic!("Should detect as Date despite leading NAs"),
             }
         } else {
-            panic!("Expected Table");
+            panic!("Expected TableView");
         }
     }
 
@@ -622,17 +1190,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_date_to_days_internal() {
+    fn test_parse_date_to_days() {
         // 1970-01-01 is day 0
-        assert_eq!(parse_date_to_days_internal("1970-01-01").unwrap(), 0);
+        assert_eq!(parse_date_to_days("1970-01-01").unwrap(), 0);
 
         // 2000-01-01 should be ~30 years later
-        let days_2000 = parse_date_to_days_internal("2000-01-01").unwrap();
+        let days_2000 = parse_date_to_days("2000-01-01").unwrap();
         assert!(days_2000 > 10000 && days_2000 < 11000);
 
         // Invalid formats return error
-        assert!(parse_date_to_days_internal("2000-1-1").is_err());
-        assert!(parse_date_to_days_internal("not-a-date").is_err());
+        assert!(parse_date_to_days("2000-1-1").is_err());
+        assert!(parse_date_to_days("not-a-date").is_err());
     }
 
     #[test]
@@ -641,14 +1209,14 @@ mod tests {
         assert_eq!(parse_date_or_null("1970-01-01"), 0);
         assert!(parse_date_or_null("2000-01-01") > 0);
 
-        // NA tokens → NULL_TS
-        assert_eq!(parse_date_or_null("NA"), NULL_TS);
-        assert_eq!(parse_date_or_null("NaN"), NULL_TS);
-        assert_eq!(parse_date_or_null(""), NULL_TS);
+        // NA tokens → NULL_DATE
+        assert_eq!(parse_date_or_null("NA"), NULL_DATE);
+        assert_eq!(parse_date_or_null("NaN"), NULL_DATE);
+        assert_eq!(parse_date_or_null(""), NULL_DATE);
 
-        // Invalid format → NULL_TS
-        assert_eq!(parse_date_or_null("invalid"), NULL_TS);
-        assert_eq!(parse_date_or_null("2000-1-1"), NULL_TS);
+        // Invalid format → NULL_DATE
+        assert_eq!(parse_date_or_null("invalid"), NULL_DATE);
+        assert_eq!(parse_date_or_null("2000-1-1"), NULL_DATE);
     }
 
     #[test]
@@ -673,14 +1241,152 @@ mod tests {
         // Load back
         let loaded = load_csv(filename, &mut interner).unwrap();
 
-        if let Value::Table(loaded_table) = loaded {
-            assert_eq!(loaded_table.row_count, 3);
-            assert_eq!(loaded_table.columns.len(), 2);
+        if let Value::Frame(frame) = loaded {
+            assert_eq!(frame.tags.index.len(), 3);
+            assert_eq!(frame.cols.len(), 2);
         } else {
-            panic!("Expected Table");
+            panic!("Expected Frame from load_csv");
         }
 
         // Cleanup
         std::fs::remove_file(filename).ok();
+    }
+
+    #[test]
+    fn test_parse_date_leap_years() {
+        // Test Feb 29 in leap years
+        assert_eq!(parse_date_to_days("2000-02-29").unwrap(), 11016);
+        assert_eq!(parse_date_to_days("2004-02-29").unwrap(), 12477);
+        assert_eq!(parse_date_to_days("1972-02-29").unwrap(), 789);
+    }
+
+    #[test]
+    fn test_parse_date_roundtrip() {
+        let test_dates = vec!["1970-01-01", "2000-01-01", "2000-02-29", "2024-12-31"];
+
+        for date_str in test_dates {
+            let days = parse_date_to_days(date_str).unwrap();
+            let formatted = format_date_from_days(days);
+            assert_eq!(date_str, formatted);
+        }
+    }
+
+    #[test]
+    fn test_parse_timestamp_fractional_seconds() {
+        // Test .1 (tenths)
+        let ts1 = parse_timestamp_to_nanos("1970-01-01 00:00:00.1").unwrap();
+        assert_eq!(ts1, 100_000_000);
+
+        // Test .123 (milliseconds)
+        let ts2 = parse_timestamp_to_nanos("1970-01-01 00:00:00.123").unwrap();
+        assert_eq!(ts2, 123_000_000);
+
+        // Test .123456789 (full nanoseconds)
+        let ts3 = parse_timestamp_to_nanos("1970-01-01 00:00:00.123456789").unwrap();
+        assert_eq!(ts3, 123_456_789);
+    }
+
+    #[test]
+    fn test_parse_timestamp_roundtrip() {
+        let test_timestamps = vec![
+            "1970-01-01 00:00:00",
+            "2000-01-01 12:30:45",
+            "2000-01-01 12:30:45.1",
+            "2000-01-01 12:30:45.123",
+        ];
+
+        for ts_str in test_timestamps {
+            let nanos = parse_timestamp_to_nanos(ts_str).unwrap();
+            let formatted = format_timestamp_from_nanos(nanos);
+            assert_eq!(ts_str, formatted);
+        }
+    }
+
+    #[test]
+    fn test_detect_date_vs_timestamp() {
+        assert!(is_date_format("2000-01-01"));
+        assert!(!is_date_format("2000-01-01 12:30:00"));
+
+        assert!(is_timestamp_format("2000-01-01 12:30:00"));
+        assert!(is_timestamp_format("2000-01-01 12:30:00.123"));
+        assert!(!is_timestamp_format("2000-01-01"));
+    }
+
+    #[test]
+    fn test_load_csv_with_dates() {
+        let mut interner = Interner::new();
+        let csv = "date;value\n2000-01-01;100\n2000-01-02;200";
+
+        let result = parse_csv(csv, &mut interner, None).unwrap();
+
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
+            assert_eq!(table.columns.len(), 2);
+
+            // Check that first column is Date type
+            match &table.columns[0] {
+                blawktrust::Column::Date(data) => {
+                    assert_eq!(data.len(), 2);
+                }
+                _ => panic!("Expected Date column"),
+            }
+        } else {
+            panic!("Expected TableView");
+        }
+    }
+
+    #[test]
+    fn test_load_csv_with_timestamps() {
+        let mut interner = Interner::new();
+        let csv = "timestamp;value\n2000-01-01 12:30:00;100\n2000-01-01 12:30:01.5;200";
+
+        let result = parse_csv(csv, &mut interner, None).unwrap();
+
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 2);
+            assert_eq!(table.columns.len(), 2);
+
+            // Check that first column is Timestamp type
+            match &table.columns[0] {
+                blawktrust::Column::Timestamp(data) => {
+                    assert_eq!(data.len(), 2);
+                }
+                _ => panic!("Expected Timestamp column"),
+            }
+        } else {
+            panic!("Expected TableView");
+        }
+    }
+
+    #[test]
+    fn test_load_csv_mixed_types() {
+        let mut interner = Interner::new();
+        let csv = "date;timestamp;value\n2000-01-01;2000-01-01 12:30:00;100";
+
+        let result = parse_csv(csv, &mut interner, None).unwrap();
+
+        if let Value::TableView(tv) = result {
+            let table = &tv.table;
+            assert_eq!(table.row_count(), 1);
+            assert_eq!(table.columns.len(), 3);
+
+            // Check column types
+            match &table.columns[0] {
+                blawktrust::Column::Date(_) => {}
+                _ => panic!("Expected Date column for 'date'"),
+            }
+            match &table.columns[1] {
+                blawktrust::Column::Timestamp(_) => {}
+                _ => panic!("Expected Timestamp column for 'timestamp'"),
+            }
+            match &table.columns[2] {
+                blawktrust::Column::F64(_) => {}
+                _ => panic!("Expected F64 column for 'value'"),
+            }
+        } else {
+            panic!("Expected TableView");
+        }
     }
 }

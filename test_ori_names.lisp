@@ -1,0 +1,13 @@
+(defparameter df (stdin))
+
+(print "Testing all 10 orientations:")
+(print "H:") (print (o 'H df))
+(print "N:") (print (o 'N df))
+(print "_N:") (print (o '_N df))
+(print "_H:") (print (o '_H df))
+(print "Z:") (print (o 'Z df))
+(print "S:") (print (o 'S df))
+(print "_Z:") (print (o '_Z df))
+(print "_S:") (print (o '_S df))
+(print "X:") (print (o 'X df))
+(print "R:") (print (o 'R df))

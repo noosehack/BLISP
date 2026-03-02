@@ -1,0 +1,66 @@
+kernel_id;description;inv;mem;alg;opc;canonical_old;params_schema;shape_in;shape_out;user_spellings
+ADD;Binary addition;I123_LHS;ALLOC;POINT;ADD;I123_LHS_ALLOC_POINT_ADD;;vec+scalar|frame+frame;vec|frame;+
+SUB;Binary subtraction;I123_LHS;ALLOC;POINT;SUB;I123_LHS_ALLOC_POINT_SUB;;vec+scalar|frame+frame;vec|frame;-
+MUL;Binary multiplication;I123_LHS;ALLOC;POINT;MUL;I123_LHS_ALLOC_POINT_MUL;;vec+scalar|frame+frame;vec|frame;*
+DIV;Binary division;I123_LHS;ALLOC;POINT;DIV;I123_LHS_ALLOC_POINT_DIV;;vec+scalar|frame+frame;vec|frame;/
+ABS;Absolute value;I123;ALLOC;POINT;ABS;I123_ALLOC_POINT_ABS;;scalar|vec;scalar|vec;abs
+LOG;Natural logarithm;I123;ALLOC;POINT;LOG;I123_ALLOC_POINT_LOG;;scalar|vec;scalar|vec;log
+EXP;Exponential;I123;ALLOC;POINT;EXP;I123_ALLOC_POINT_EXP;;scalar|vec;scalar|vec;exp
+SQRT;Square root;I123;ALLOC;POINT;SQRT;I123_ALLOC_POINT_SQRT;;scalar|vec;scalar|vec;sqrt
+INV;Inverse: 1/x;I123;ALLOC;POINT;INV;I123_ALLOC_POINT_INV;;scalar|vec;scalar|vec;inv
+GT;Greater than comparison;I123_LHS;ALLOC;POINT;GT;I123_LHS_ALLOC_POINT_GT;;vec+scalar|frame+scalar;vec|frame;>,>-col,>-cols
+LT;Less than comparison;I123_LHS;ALLOC;POINT;LT;I123_LHS_ALLOC_POINT_LT;;vec+scalar;vec;<
+GTE;Greater than or equal;I123_LHS;ALLOC;POINT;GTE;I123_LHS_ALLOC_POINT_GTE;;vec+scalar;vec;>=
+LTE;Less than or equal;I123_LHS;ALLOC;POINT;LTE;I123_LHS_ALLOC_POINT_LTE;;vec+scalar;vec;<=
+EQ;Equality comparison;I123_LHS;ALLOC;POINT;EQ;I123_LHS_ALLOC_POINT_EQ;;vec+scalar;vec;==
+NEQ;Not equal comparison;I123_LHS;ALLOC;POINT;NEQ;I123_LHS_ALLOC_POINT_NEQ;;vec+scalar;vec;!=
+DLOG;Difference log: log(x[i]/x[i-lag]);I123;ALLOC;POINT_LAG;DLOG;I123_ALLOC_POINT_LAG_DLOG;lag:int=1;vec|frame;vec|frame;dlog,dlog-col,dlog-cols
+RET;Simple return: (x[i]/x[i-1])-1;I123;ALLOC;POINT_LAG;RET;I123_ALLOC_POINT_LAG_RET;lag:int=1;vec;vec;ret
+SHIFT;Calendar shift/lag;I123;ALLOC;LAG_CALENDAR;SHIFT;I123_ALLOC_LAG_CALENDAR_SHIFT;k:int=1;vec|frame;vec|frame;shift,shift-col,shift-cols
+DIFF;First difference;I123;ALLOC;POINT_LAG;DIFF;I123_ALLOC_POINT_LAG_DIFF;lag:int=1;vec|frame;vec|frame;diff,diff-col,diff-cols
+LOCF;Last observation carried forward;I13;ALLOC;FILL;LOCF;I13_ALLOC_FILL_LOCF;;vec|frame;vec|frame;locf,locf-cols
+KEEP_SHAPE;Keep shape with NA window fill;I123;ALLOC;FILL;KEEP_SHAPE;I123_ALLOC_FILL_KEEP_SHAPE;w:int;vec|frame;vec|frame;keep-shape,keep-shape-cols
+CS1;Cumulative sum from 1.0;I123;ALLOC;CUM;CS1;I123_ALLOC_CUM_CS1;;vec|frame;vec|frame;cs1,cs1-col,cs1-cols
+ECS1;Exponential cumulative sum;I123;ALLOC;CUM;ECS1;I123_ALLOC_CUM_ECS1;;vec|frame;vec|frame;ecs1,ecs1-col,ecs1-cols
+WKD;Weekend mask (Saturday/Sunday→NA);I123;ZC;MASK_CALENDAR;WKD;I123_ZC_MASK_CALENDAR_WKD;;frame;frame;wkd
+MASK_WEEKEND;Create weekend mask in Tags;I123;TAGS_MOD;MASK_CREATE;MASK_WEEKEND;I123_TAGS_MOD_MASK_CREATE_MASK_WEEKEND;name:string=weekend;frame;frame;mask-weekend
+WITH_MASK;Activate mask expression;I123;TAGS_MOD;MASK_ACTIVATE;WITH_MASK;I123_TAGS_MOD_MASK_ACTIVATE_WITH_MASK;expr:mask_expr;frame;frame;with-mask,mask-on
+MASK_OFF;Deactivate mask;I123;TAGS_MOD;MASK_DEACTIVATE;MASK_OFF;I123_TAGS_MOD_MASK_DEACTIVATE_MASK_OFF;;frame;frame;mask-off
+MASK_LIST;List available masks;NONE;READ;INTROSPECT;MASK_LIST;NONE_READ_INTROSPECT_MASK_LIST;;frame;list;mask-list
+MASK_STATS;Show mask statistics;NONE;READ;INTROSPECT;MASK_STATS;NONE_READ_INTROSPECT_MASK_STATS;;frame;stats;mask-stats
+MASK_DEFINE;Define custom mask;I123;TAGS_MOD;MASK_CREATE;MASK_DEFINE;I123_TAGS_MOD_MASK_CREATE_MASK_DEFINE;name:string,expr:mask_expr;frame;frame;mask-define
+XMINUS;Pairwise column differences;I13_I2SCHEMA;ALLOC;XSEC_SPREADS;XMINUS;I13_I2SCHEMA_ALLOC_XSEC_SPREADS_XMINUS;half:int=1;frame;frame;xminus
+MAPR;Exact match join (RIGHT OUTER);I1_Y_I2_X_I3_Y;ARC;JOIN_EXACT;MAPR;I1_Y_I2_X_I3_Y_ARC_JOIN_EXACT_MAPR;;frame+frame;frame;mapr
+ASOFR;As-of join (RIGHT OUTER ASOF);I1_Y_I2_X_I3_Y;ARC;JOIN_ASOF;ASOFR;I1_Y_I2_X_I3_Y_ARC_JOIN_ASOF_ASOFR;;frame+frame;frame;asofr
+UR;Rolling univariate regression (beta);I123;ALLOC;ROLL_REG;UR;I123_ALLOC_ROLL_REG_UR;w:int,lag:int=0;vec|frame;vec|frame;ur,ur-col,ur-cols
+WSTD;Rolling std (strict w valid);I123;ALLOC;ROLL_STRICT;WSTD;I123_ALLOC_ROLL_STRICT_WSTD;w:int,lag:int=1;vec|frame;vec|frame;wstd,wstd-cols
+WSTD0;Rolling std (partial min2);I123;ALLOC;ROLL_PARTIAL;WSTD0;I123_ALLOC_ROLL_PARTIAL_WSTD0;w:int,lag:int=1;vec|frame;vec|frame;wstd0,wstd0-cols
+WV;Rolling variance;I123;ALLOC;ROLL;WV;I123_ALLOC_ROLL_WV;w:int,lag:int=1;vec|frame;vec|frame;wv,wv-cols
+WZ0;Rolling z-score (standard window);I123;ALLOC;ROLL_ZSCORE;WZ0;I123_ALLOC_ROLL_ZSCORE_WZ0;w:int,lag:int=1;vec|frame;vec|frame;wz0,wz0-cols
+WZS;Rolling z-score with shape-keeping;I123;ALLOC;ROLL_ZSCORE_COMPOSITE;WZS;I123_ALLOC_ROLL_ZSCORE_COMPOSITE_WZS;w:int,lag:int=1;frame;frame;wzs
+ZSCORE;Simple z-score (mean/std);I123;ALLOC;STAT_ZSCORE;ZSCORE;I123_ALLOC_STAT_ZSCORE_ZSCORE;;vec;vec;zscore
+CHOP;Truncate extreme values;I123;ALLOC;POINT;CHOP;I123_ALLOC_POINT_CHOP;threshold:float;vec;vec;chop
+SUM;Sum of values (skip NA);REDUCE;ALLOC;AGGREGATE;SUM;REDUCE_ALLOC_AGGREGATE_SUM;;vec;scalar;sum
+SUM0;Sum of values (NA→0);REDUCE;ALLOC;AGGREGATE;SUM0;REDUCE_ALLOC_AGGREGATE_SUM0;;vec;scalar;sum0
+MEAN;Mean of values (skip NA);REDUCE;ALLOC;AGGREGATE;MEAN;REDUCE_ALLOC_AGGREGATE_MEAN;;vec;scalar;mean
+MEAN0;Mean of values (NA→0);REDUCE;ALLOC;AGGREGATE;MEAN0;REDUCE_ALLOC_AGGREGATE_MEAN0;;vec;scalar;mean0
+STD;Std deviation (skip NA, ddof=1);REDUCE;ALLOC;AGGREGATE;STD;REDUCE_ALLOC_AGGREGATE_STD;;vec;scalar;std
+STD0;Std deviation (NA→0, ddof=1);REDUCE;ALLOC;AGGREGATE;STD0;REDUCE_ALLOC_AGGREGATE_STD0;;vec;scalar;std0
+FILE;Load CSV from file;NONE;IO;SOURCE;FILE;NONE_IO_SOURCE_FILE;path:string;none;frame;file
+FILE_HEAD;Load first N rows from CSV;NONE;IO;SOURCE;FILE_HEAD;NONE_IO_SOURCE_FILE_HEAD;path:string,n:int=10;none;frame;file-head
+STDIN;Load CSV from stdin;NONE;IO;SOURCE;STDIN;NONE_IO_SOURCE_STDIN;;none;frame;stdin
+SAVE;Write frame to CSV file;NONE;IO;SINK;SAVE;NONE_IO_SINK_SAVE;path:string,frame:frame;frame;none;save
+COL;Extract column by name;I1_I3;ARC;PROJECT;COL;I1_I3_ARC_PROJECT_COL;colname:string|int;frame;vec;col
+COLS;Get column names;NONE;READ;INTROSPECT;COLS;NONE_READ_INTROSPECT_COLS;;frame;list;cols
+SETCOL;Set column value;I1_I3_I2MOD;ALLOC;MODIFY;SETCOL;I1_I3_I2MOD_ALLOC_MODIFY_SETCOL;colname:string,value:vec;frame;frame;setcol
+WITHCOL;Add/update column non-destructively;I1_I3_I2MOD;ALLOC;EXTEND;WITHCOL;I1_I3_I2MOD_ALLOC_EXTEND_WITHCOL;colname:string,value:vec;frame;frame;withcol
+W;Extract column by position;I1_I3;ARC;PROJECT;W;I1_I3_ARC_PROJECT_W;position:int;frame;vec;w
+MAKE_COL;Create column from values;NONE;ALLOC;CONSTRUCT;MAKE_COL;NONE_ALLOC_CONSTRUCT_MAKE_COL;values:list;list;vec;make-col
+SELECT;Select columns by name;I1_I3;ARC;PROJECT;SELECT;I1_I3_ARC_PROJECT_SELECT;colnames:list;frame;frame;select
+SELECT_NUM;Select numeric columns only;I1_I3;ARC;PROJECT;SELECT_NUM;I1_I3_ARC_PROJECT_SELECT_NUM;;frame;frame;select-num
+MAP_COLS;Map function over columns;I123;ALLOC;TRANSFORM;MAP_COLS;I123_ALLOC_TRANSFORM_MAP_COLS;func:fn;frame;frame;map-cols
+APPLY_COLS;Apply function to each column;NONE;ALLOC;TRANSFORM;APPLY_COLS;NONE_ALLOC_TRANSFORM_APPLY_COLS;func:fn;frame;list;apply-cols
+O;Get orientation metadata;NONE;READ;INTROSPECT;O;NONE_READ_INTROSPECT_O;key:string;none;value;o
+PRINT;Print value to stdout;NONE;IO;SINK;PRINT;NONE_IO_SINK_PRINT;;any;any;print
+TYPE_OF;Get type name of value;NONE;READ;INTROSPECT;TYPE_OF;NONE_READ_INTROSPECT_TYPE_OF;;any;string;type-of
+LEN;Get length of vector or frame;NONE;READ;INTROSPECT;LEN;NONE_READ_INTROSPECT_LEN;;vec|frame;int;len

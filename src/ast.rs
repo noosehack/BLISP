@@ -17,6 +17,9 @@ pub enum Expr {
     Sym(SymbolId),
     List(Vec<Expr>),
     Quote(Box<Expr>),
+    QuasiQuote(Box<Expr>),
+    Unquote(Box<Expr>),
+    UnquoteSplicing(Box<Expr>),
 }
 
 /// String interner for symbols
