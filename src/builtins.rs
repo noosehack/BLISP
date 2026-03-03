@@ -158,12 +158,12 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("div", builtin_div);
 
     // Math functions
-    rt.register_builtin("log", builtin_log);   // Natural log
-    rt.register_builtin("ln", builtin_log);    // Natural log (alias)
-    rt.register_builtin("exp", builtin_exp);   // e^x
-    rt.register_builtin("abs", builtin_abs);   // Absolute value
+    rt.register_builtin("log", builtin_log); // Natural log
+    rt.register_builtin("ln", builtin_log); // Natural log (alias)
+    rt.register_builtin("exp", builtin_exp); // e^x
+    rt.register_builtin("abs", builtin_abs); // Absolute value
     rt.register_builtin("sqrt", builtin_sqrt); // Square root
-    rt.register_builtin("inv", builtin_inv);   // 1/x (inverse)
+    rt.register_builtin("inv", builtin_inv); // 1/x (inverse)
 
     // Math
 

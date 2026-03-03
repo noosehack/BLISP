@@ -45,7 +45,9 @@ fn print_help() {
     eprintln!("  --todo-ir                      Show IR migration queue");
     eprintln!("  --unmapped                     Show IR ops without metadata");
     eprintln!("  --check-resolve                Check if names resolve in runtime (reality test)");
-    eprintln!("  --planned                      Show planned operations (roadmap, may not resolve)");
+    eprintln!(
+        "  --planned                      Show planned operations (roadmap, may not resolve)"
+    );
     eprintln!("  --json                         Output in JSON format");
     eprintln!("  --grep <pattern>               Filter by pattern");
     eprintln!();
@@ -435,7 +437,6 @@ fn main() {
         std::process::exit(1);
     }
 }
-
 
 fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {
     let code = std::fs::read_to_string(path).map_err(|e| format!("Cannot read file: {}", e))?;

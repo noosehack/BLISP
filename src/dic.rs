@@ -81,7 +81,7 @@ pub fn validate_op_map(entries: &[OpMapEntry]) -> Result<(), Vec<String>> {
     // Check for alias collisions
     let mut alias_to_ir: HashMap<String, String> = HashMap::new();
     for entry in entries {
-        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
         for alias in &entry.aliases {
             if let Some(existing) = alias_to_ir.get(alias) {
                 errors.push(format!(
@@ -97,7 +97,7 @@ pub fn validate_op_map(entries: &[OpMapEntry]) -> Result<(), Vec<String>> {
     // Check for legacy token collisions
     let mut token_to_ir: HashMap<String, String> = HashMap::new();
     for entry in entries {
-        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
         for token in &entry.legacy_tokens {
             if let Some(existing) = token_to_ir.get(token) {
                 errors.push(format!(
@@ -127,13 +127,13 @@ pub enum OutputFormat {
 /// View selection
 #[derive(Debug, Clone, Copy)]
 pub enum View {
-    Exposed,       // Aliases table (current ops)
-    Legacy,        // Legacy tokens table
-    TodoIR,        // IR migration queue
-    Unmapped,      // IR ops missing metadata
-    CheckResolve,  // Resolution check (reality test)
-    Planned,       // Planned operations (roadmap)
-    All,           // All views (default)
+    Exposed,      // Aliases table (current ops)
+    Legacy,       // Legacy tokens table
+    TodoIR,       // IR migration queue
+    Unmapped,     // IR ops missing metadata
+    CheckResolve, // Resolution check (reality test)
+    Planned,      // Planned operations (roadmap)
+    All,          // All views (default)
 }
 
 /// View 1: Print exposed aliases table (L1)
@@ -148,17 +148,13 @@ pub fn print_exposed_aliases(
         for alias in &entry.aliases {
             // Filter by grep pattern if provided
             if let Some(pattern) = grep_pattern {
-                let ir_name = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("");
+                let ir_name = entry.ir.as_deref().unwrap_or("");
                 if !alias.contains(pattern) && !ir_name.contains(pattern) {
                     continue;
                 }
             }
 
-            let ir_display = entry
-                .ir
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("<builtin>");
+            let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
             let legacy_str = if entry.legacy_tokens.is_empty() {
                 "".to_string() // Don't use "-" as placeholder - looks like minus operator
             } else {
@@ -182,8 +178,8 @@ pub fn print_exposed_aliases(
             println!("# Exposed Aliases (User-Facing Operations)");
             println!();
             println!(
-                "{:<25} {:<30} {:<25} {}",
-                "Alias", "IR / Builtin", "Bucket", "Legacy Tokens"
+                "{:<25} {:<30} {:<25} Legacy Tokens",
+                "Alias", "IR / Builtin", "Bucket"
             );
             println!("{}", "-".repeat(110));
 
@@ -222,17 +218,13 @@ pub fn print_legacy_tokens(
         for token in &entry.legacy_tokens {
             // Filter by grep pattern if provided
             if let Some(pattern) = grep_pattern {
-                let ir_name = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("");
+                let ir_name = entry.ir.as_deref().unwrap_or("");
                 if !token.contains(pattern) && !ir_name.contains(pattern) {
                     continue;
                 }
             }
 
-            let ir_display = entry
-                .ir
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("<builtin>");
+            let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
             // Find suggested replacement (first alias)
             let suggested = entry
                 .aliases
@@ -252,8 +244,8 @@ pub fn print_legacy_tokens(
             println!("# Legacy Tokens (Backward Compatibility)");
             println!();
             println!(
-                "{:<25} {:<30} {}",
-                "Legacy Token", "IR / Builtin", "Suggested Replacement"
+                "{:<25} {:<30} Suggested Replacement",
+                "Legacy Token", "IR / Builtin"
             );
             println!("{}", "-".repeat(90));
 
@@ -322,8 +314,8 @@ pub fn print_todo_ir(entries: &[OpMapEntry], format: OutputFormat, grep_pattern:
             println!("# IR Migration Queue (Operations NOT in IR Yet)");
             println!();
             println!(
-                "{:<25} {:<50} {:<30} {}",
-                "Bucket", "Semantics", "Aliases", "Legacy Tokens"
+                "{:<25} {:<50} {:<30} Legacy Tokens",
+                "Bucket", "Semantics", "Aliases"
             );
             println!("{}", "-".repeat(130));
 
@@ -350,8 +342,14 @@ pub fn print_todo_ir(entries: &[OpMapEntry], format: OutputFormat, grep_pattern:
             println!("Total operations needing IR migration: {}", rows.len());
 
             // Print summary by bucket
-            let a1_count = rows.iter().filter(|(b, _, _, _)| b.starts_with("A1")).count();
-            let a2_count = rows.iter().filter(|(b, _, _, _)| b.starts_with("A2")).count();
+            let a1_count = rows
+                .iter()
+                .filter(|(b, _, _, _)| b.starts_with("A1"))
+                .count();
+            let a2_count = rows
+                .iter()
+                .filter(|(b, _, _, _)| b.starts_with("A2"))
+                .count();
             println!();
             println!("By priority:");
             println!("  A1 (fusion-critical): {} ops", a1_count);
@@ -419,9 +417,9 @@ pub fn print_unmapped_ir(entries: &[OpMapEntry], format: OutputFormat) {
 /// Resolution status for a name
 #[derive(Debug, Clone)]
 pub enum ResolveStatus {
-    IrOp(String),      // Resolves to IR operation
-    Builtin,           // Resolves to builtin
-    Unknown,           // Not found
+    IrOp(String), // Resolves to IR operation
+    Builtin,      // Resolves to builtin
+    Unknown,      // Not found
 }
 
 /// Check if a name resolves in the runtime
@@ -449,7 +447,7 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
 
     // Check all aliases
     for entry in entries {
-        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
 
         for alias in &entry.aliases {
             let status = check_resolve(alias);
@@ -472,7 +470,7 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
                 ResolveStatus::Builtin => "OK(BUILTIN)".to_string(),
                 ResolveStatus::Unknown => {
                     unknown_count += 1;
-                    format!("FAIL(unknown) [legacy]")
+                    "FAIL(unknown) [legacy]".to_string()
                 }
             };
             results.push((token.clone(), ir_display.to_string(), status_str));
@@ -494,7 +492,7 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
         OutputFormat::Table => {
             println!("# Resolution Check (Reality Test)");
             println!();
-            println!("{:<30} {:<30} {}", "Name", "Expected (YAML)", "Actual (Runtime)");
+            println!("{:<30} {:<30} Actual (Runtime)", "Name", "Expected (YAML)");
             println!("{}", "-".repeat(100));
 
             for (name, expected, status) in &results {
@@ -503,7 +501,10 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
 
             println!();
             if unknown_count > 0 {
-                println!("❌ {} names FAIL to resolve (not registered in runtime)", unknown_count);
+                println!(
+                    "❌ {} names FAIL to resolve (not registered in runtime)",
+                    unknown_count
+                );
             } else {
                 println!("✅ All names resolve successfully");
             }
@@ -526,11 +527,7 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
 }
 
 /// Main entry point for dic command
-pub fn run_dic(
-    view: View,
-    format: OutputFormat,
-    grep_pattern: Option<&str>,
-) -> Result<(), String> {
+pub fn run_dic(view: View, format: OutputFormat, grep_pattern: Option<&str>) -> Result<(), String> {
     // Load appropriate dataset
     let (entries, is_planned) = match view {
         View::Planned => {
@@ -630,7 +627,7 @@ mod tests {
         let mut alias_to_ir: HashMap<String, String> = HashMap::new();
 
         for entry in &entries {
-            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+            let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
             for alias in &entry.aliases {
                 if let Some(existing) = alias_to_ir.get(alias) {
                     panic!(
@@ -686,7 +683,7 @@ mod tests {
         let mut rows: Vec<(String, String, String, String)> = Vec::new();
         for entry in &entries {
             for alias in &entry.aliases {
-                let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+                let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
                 let legacy_str = if entry.legacy_tokens.is_empty() {
                     "-".to_string()
                 } else {
@@ -716,8 +713,8 @@ mod tests {
 
         // Serialize and deserialize
         let json_str = serde_json::to_string(&json_rows).expect("Failed to serialize");
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str)
-            .expect("Failed to parse JSON back");
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(&json_str).expect("Failed to parse JSON back");
 
         // Verify counts match
         assert_eq!(
@@ -730,7 +727,10 @@ mod tests {
         assert!(parsed[0].get("alias").is_some(), "Missing 'alias' field");
         assert!(parsed[0].get("ir").is_some(), "Missing 'ir' field");
         assert!(parsed[0].get("bucket").is_some(), "Missing 'bucket' field");
-        assert!(parsed[0].get("legacy_tokens").is_some(), "Missing 'legacy_tokens' field");
+        assert!(
+            parsed[0].get("legacy_tokens").is_some(),
+            "Missing 'legacy_tokens' field"
+        );
 
         // Log count for human verification
         eprintln!("✅ JSON round-trip: {} aliases verified", parsed.len());
@@ -745,17 +745,17 @@ mod tests {
         let mut duplicates = Vec::new();
 
         for entry in &entries {
-            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+            let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
             let alias_set: HashSet<&str> = entry.aliases.iter().map(|s| s.as_str()).collect();
-            let legacy_set: HashSet<&str> = entry.legacy_tokens.iter().map(|s| s.as_str()).collect();
+            let legacy_set: HashSet<&str> =
+                entry.legacy_tokens.iter().map(|s| s.as_str()).collect();
 
             let intersection: Vec<&str> = alias_set.intersection(&legacy_set).copied().collect();
 
             if !intersection.is_empty() {
                 duplicates.push(format!(
                     "{}: {:?} appear in both aliases and legacy_tokens",
-                    ir_display,
-                    intersection
+                    ir_display, intersection
                 ));
             }
         }
@@ -779,14 +779,13 @@ mod tests {
         let mut violations = Vec::new();
 
         for entry in &entries {
-            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+            let ir_display = entry.ir.as_deref().unwrap_or("<builtin>");
 
             for token in &entry.legacy_tokens {
                 if token == "-" || token.is_empty() {
                     violations.push(format!(
                         "{}: has placeholder legacy token '{}' (use empty array instead)",
-                        ir_display,
-                        token
+                        ir_display, token
                     ));
                 }
             }

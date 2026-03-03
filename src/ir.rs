@@ -138,11 +138,7 @@ pub enum Source {
 
 impl Source {
     /// All IR operation variant names (for validation against YAML)
-    pub const ALL_NAMES: &'static [&'static str] = &[
-        "File",
-        "Stdin",
-        "Variable",
-    ];
+    pub const ALL_NAMES: &'static [&'static str] = &["File", "Stdin", "Variable"];
 }
 
 /// Unary operations (all preserve tags via map_numeric_preserve_tags)
@@ -449,9 +445,7 @@ pub enum BinaryFunc {
 impl BinaryFunc {
     /// All IR operation variant names (for validation against YAML)
     pub const ALL_NAMES: &'static [&'static str] = &[
-        "ADD", "SUB", "MUL", "DIV",
-        "GTR", "LSS", "LTE", "GTE",
-        "EQL", "NEQ",
+        "ADD", "SUB", "MUL", "DIV", "GTR", "LSS", "LTE", "GTE", "EQL", "NEQ",
     ];
 }
 
