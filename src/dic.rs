@@ -147,7 +147,7 @@ pub fn print_exposed_aliases(
                 .map(|s| s.as_str())
                 .unwrap_or("<builtin>");
             let legacy_str = if entry.legacy_tokens.is_empty() {
-                "-".to_string()
+                "".to_string() // Don't use "-" as placeholder - looks like minus operator
             } else {
                 entry.legacy_tokens.join(", ")
             };
@@ -692,8 +692,8 @@ mod tests {
 
     #[test]
     fn test_no_duplicate_alias_legacy_tokens() {
-        // Test that names don't appear in BOTH aliases and legacy_tokens
-        // (unless intentionally duplicated for transition period)
+        // STRICT TRIPWIRE: No token may appear in BOTH aliases and legacy_tokens
+        // Policy: Each name belongs to exactly one layer
         let entries = load_op_map().expect("Failed to parse embedded YAML");
 
         let mut duplicates = Vec::new();
@@ -714,19 +714,43 @@ mod tests {
             }
         }
 
-        if !duplicates.is_empty() {
-            eprintln!("⚠️  Warning: {} operations have tokens in both layers:", duplicates.len());
-            for dup in &duplicates {
-                eprintln!("  - {}", dup);
-            }
-            eprintln!("\nThis may be intentional (transition period) or a mistake.");
-            eprintln!("Each name should typically belong to exactly one layer:");
-            eprintln!("  - aliases: current user-facing names (L1)");
-            eprintln!("  - legacy_tokens: deprecated names for backward compat (L2)");
+        assert!(
+            duplicates.is_empty(),
+            "❌ Cross-layer duplicates detected:\n{}\n\
+             Policy: Each name must belong to exactly ONE layer:\n\
+             - aliases: current user-facing names (L1)\n\
+             - legacy_tokens: deprecated names for backward compat (L2)",
+            duplicates.join("\n")
+        );
+    }
 
-            // Don't fail yet, but make it visible
-            // Uncomment to enforce:
-            // panic!("Duplicate tokens found across layers");
+    #[test]
+    fn test_no_placeholder_legacy_tokens() {
+        // STRICT TRIPWIRE: No placeholder tokens in legacy_tokens
+        // "-" looks like the minus operator and should never be a placeholder
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+
+        let mut violations = Vec::new();
+
+        for entry in &entries {
+            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+
+            for token in &entry.legacy_tokens {
+                if token == "-" || token.is_empty() {
+                    violations.push(format!(
+                        "{}: has placeholder legacy token '{}' (use empty array instead)",
+                        ir_display,
+                        token
+                    ));
+                }
+            }
         }
+
+        assert!(
+            violations.is_empty(),
+            "❌ Placeholder legacy tokens detected:\n{}\n\
+             Never use '-' or empty string as placeholder - use empty array []",
+            violations.join("\n")
+        );
     }
 }
