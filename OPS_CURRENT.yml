@@ -327,3 +327,39 @@
   semantics: Not equal
   docs: SEMANTICS.md#comparisons
   notes: Planned aliases for NEQ
+- ir: LOG
+  aliases:
+  - log
+  - ln
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Natural logarithm
+  docs: SEMANTICS.md#math-functions
+- ir: EXP
+  aliases:
+  - exp
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Exponential (e^x)
+  docs: SEMANTICS.md#math-functions
+- ir: SQRT
+  aliases:
+  - sqrt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Square root
+  docs: SEMANTICS.md#math-functions
+- ir: ABS
+  aliases:
+  - abs
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Absolute value
+  docs: SEMANTICS.md#math-functions
+- ir: INV
+  aliases:
+  - inv
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Inverse (1/x)
+  docs: SEMANTICS.md#math-functions

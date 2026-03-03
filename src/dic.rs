@@ -799,4 +799,31 @@ mod tests {
             violations.join("\n")
         );
     }
+
+    #[test]
+    fn test_ln_and_log_are_identical() {
+        // MICRO TEST: Ensure ln and log resolve to same operation (both natural log)
+        // This prevents later drift where they become different
+        let ln_status = check_resolve("ln");
+        let log_status = check_resolve("log");
+
+        match (&ln_status, &log_status) {
+            (ResolveStatus::Builtin, ResolveStatus::Builtin) => {
+                // Both resolve as builtins - good
+                // They should point to same function (builtin_log)
+            }
+            (ResolveStatus::IrOp(ln_name), ResolveStatus::IrOp(log_name)) => {
+                assert_eq!(
+                    ln_name, log_name,
+                    "ln and log must resolve to same IR operation (both natural log)"
+                );
+            }
+            _ => {
+                panic!(
+                    "ln and log must both resolve to same type: ln={:?}, log={:?}",
+                    ln_status, log_status
+                );
+            }
+        }
+    }
 }

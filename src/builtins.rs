@@ -157,6 +157,14 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("mul", builtin_mul);
     rt.register_builtin("div", builtin_div);
 
+    // Math functions
+    rt.register_builtin("log", builtin_log);   // Natural log
+    rt.register_builtin("ln", builtin_log);    // Natural log (alias)
+    rt.register_builtin("exp", builtin_exp);   // e^x
+    rt.register_builtin("abs", builtin_abs);   // Absolute value
+    rt.register_builtin("sqrt", builtin_sqrt); // Square root
+    rt.register_builtin("inv", builtin_inv);   // 1/x (inverse)
+
     // Math
 
     // Column Operations (Step 6) - Surface names point to table versions
@@ -652,6 +660,45 @@ fn builtin_abs(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             Ok(Value::Col(Arc::new(result)))
         }
         _ => Err(format!("abs cannot operate on {}", args[0].type_name())),
+    }
+}
+
+/// (sqrt x) - Square root
+fn builtin_sqrt(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("sqrt expects 1 argument, got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::Float(f) => Ok(Value::Float(f.sqrt())),
+        Value::Int(n) => Ok(Value::Float((*n as f64).sqrt())),
+        Value::Col(c) => {
+            let result = sqrt_column(c)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        _ => Err(format!("sqrt cannot operate on {}", args[0].type_name())),
+    }
+}
+
+/// (inv x) - Multiplicative inverse (1/x)
+/// Edge cases follow IEEE 754:
+/// - inv(0.0) = +inf
+/// - inv(-0.0) = -inf
+/// - inv(NaN) = NaN
+/// - inv(±inf) = ±0
+fn builtin_inv(_rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("inv expects 1 argument, got {}", args.len()));
+    }
+
+    match &args[0] {
+        Value::Float(f) => Ok(Value::Float(1.0 / f)),
+        Value::Int(n) => Ok(Value::Float(1.0 / (*n as f64))),
+        Value::Col(c) => {
+            let result = inv_column(c)?;
+            Ok(Value::Col(Arc::new(result)))
+        }
+        _ => Err(format!("inv cannot operate on {}", args[0].type_name())),
     }
 }
 
@@ -3648,6 +3695,26 @@ fn abs_column(col: &blawktrust::Column) -> Result<blawktrust::Column, String> {
             Ok(blawktrust::Column::new_f64(result))
         }
         _ => Err("Column abs only supported for F64 columns".to_string()),
+    }
+}
+
+fn sqrt_column(col: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+    match col {
+        blawktrust::Column::F64(data) => {
+            let result: Vec<f64> = data.iter().map(|x| x.sqrt()).collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Column sqrt only supported for F64 columns".to_string()),
+    }
+}
+
+fn inv_column(col: &blawktrust::Column) -> Result<blawktrust::Column, String> {
+    match col {
+        blawktrust::Column::F64(data) => {
+            let result: Vec<f64> = data.iter().map(|x| 1.0 / x).collect();
+            Ok(blawktrust::Column::new_f64(result))
+        }
+        _ => Err("Column inv only supported for F64 columns".to_string()),
     }
 }
 
