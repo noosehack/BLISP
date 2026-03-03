@@ -295,12 +295,6 @@ jobs:
     name: User Install (tag v0.2.0) - zero-state
     runs-on: ubuntu-latest
     steps:
-      - name: Set fresh cargo/rustup homes
-        run: |
-          set -euxo pipefail
-          echo "CARGO_HOME=$RUNNER_TEMP/cargo_home" >> $GITHUB_ENV
-          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup_home" >> $GITHUB_ENV
-
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@1.93.1
 
@@ -309,8 +303,11 @@ jobs:
           rustc -Vv
           cargo -V
           echo "Installing from tag v0.2.0 (no checkout, no cache)"
+          echo "Using fresh CARGO_HOME for zero-state install proof"
 
       - name: Install from tag (no checkout, no cache)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home-tag
         run: |
           set -euxo pipefail
           cargo install blisp \
@@ -318,11 +315,13 @@ jobs:
             --tag v0.2.0 \
             --locked
 
-      - name: Smoke - version + selftest
+      - name: Verify installation location
         run: |
-          set -euxo pipefail
-          blisp --version | tee /tmp/version.txt
-          blisp --selftest
+          ls -la ${{ runner.temp }}/cargo-home-tag/bin/
+          ${{ runner.temp }}/cargo-home-tag/bin/blisp --version
+
+      - name: Run selftest (no external files)
+        run: ${{ runner.temp }}/cargo-home-tag/bin/blisp --selftest
 
       - name: Run inline example (no repo needed)
         run: |
@@ -330,7 +329,7 @@ jobs:
           cat > /tmp/hello.blisp << 'EOF'
           (print (+ 1 2))
           EOF
-          RESULT=$(blisp run /tmp/hello.blisp 2>&1 | grep -v "Running in" | tail -1)
+          RESULT=$(${{ runner.temp }}/cargo-home-tag/bin/blisp run /tmp/hello.blisp 2>&1 | grep -v "Running in" | tail -1)
           if [[ "$RESULT" != "3" ]]; then
             echo "❌ Expected '3', got '$RESULT'"
             exit 1
