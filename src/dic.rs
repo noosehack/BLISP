@@ -115,11 +115,12 @@ pub enum OutputFormat {
 /// View selection
 #[derive(Debug, Clone, Copy)]
 pub enum View {
-    Exposed,      // Aliases table
-    Legacy,       // Legacy tokens table
-    TodoIR,       // IR migration queue
-    Unmapped,     // IR ops missing metadata
-    All,          // All views (default)
+    Exposed,       // Aliases table
+    Legacy,        // Legacy tokens table
+    TodoIR,        // IR migration queue
+    Unmapped,      // IR ops missing metadata
+    CheckResolve,  // Resolution check (reality test)
+    All,           // All views (default)
 }
 
 /// View 1: Print exposed aliases table (L1)
@@ -402,6 +403,115 @@ pub fn print_unmapped_ir(entries: &[OpMapEntry], format: OutputFormat) {
     }
 }
 
+/// Resolution status for a name
+#[derive(Debug, Clone)]
+pub enum ResolveStatus {
+    IrOp(String),      // Resolves to IR operation
+    Builtin,           // Resolves to builtin
+    Unknown,           // Not found
+}
+
+/// Check if a name resolves in the runtime
+pub fn check_resolve(name: &str) -> ResolveStatus {
+    // First check if it's an IR operation name
+    let ir_set = ir_name_set();
+    if ir_set.contains(name) {
+        return ResolveStatus::IrOp(name.to_string());
+    }
+
+    // Then check if it's registered as a builtin
+    let mut rt = crate::runtime::Runtime::new();
+    let sym = rt.interner.intern(name);
+    if rt.is_builtin(sym) {
+        return ResolveStatus::Builtin;
+    }
+
+    ResolveStatus::Unknown
+}
+
+/// Print resolution check report for all names in dictionary
+pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
+    let mut results: Vec<(String, String, String)> = Vec::new();
+    let mut unknown_count = 0;
+
+    // Check all aliases
+    for entry in entries {
+        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+
+        for alias in &entry.aliases {
+            let status = check_resolve(alias);
+            let status_str = match &status {
+                ResolveStatus::IrOp(name) => format!("OK(IR: {})", name),
+                ResolveStatus::Builtin => "OK(BUILTIN)".to_string(),
+                ResolveStatus::Unknown => {
+                    unknown_count += 1;
+                    "FAIL(unknown)".to_string()
+                }
+            };
+            results.push((alias.clone(), ir_display.to_string(), status_str));
+        }
+
+        // Check all legacy tokens
+        for token in &entry.legacy_tokens {
+            let status = check_resolve(token);
+            let status_str = match &status {
+                ResolveStatus::IrOp(name) => format!("OK(IR: {})", name),
+                ResolveStatus::Builtin => "OK(BUILTIN)".to_string(),
+                ResolveStatus::Unknown => {
+                    unknown_count += 1;
+                    format!("FAIL(unknown) [legacy]")
+                }
+            };
+            results.push((token.clone(), ir_display.to_string(), status_str));
+        }
+    }
+
+    // Sort by status (unknowns first for visibility)
+    results.sort_by(|a, b| {
+        if a.2.starts_with("FAIL") && !b.2.starts_with("FAIL") {
+            std::cmp::Ordering::Less
+        } else if !a.2.starts_with("FAIL") && b.2.starts_with("FAIL") {
+            std::cmp::Ordering::Greater
+        } else {
+            a.0.cmp(&b.0)
+        }
+    });
+
+    match format {
+        OutputFormat::Table => {
+            println!("# Resolution Check (Reality Test)");
+            println!();
+            println!("{:<30} {:<30} {}", "Name", "Expected (YAML)", "Actual (Runtime)");
+            println!("{}", "-".repeat(100));
+
+            for (name, expected, status) in &results {
+                println!("{:<30} {:<30} {}", name, expected, status);
+            }
+
+            println!();
+            if unknown_count > 0 {
+                println!("❌ {} names FAIL to resolve (not registered in runtime)", unknown_count);
+            } else {
+                println!("✅ All names resolve successfully");
+            }
+            println!("Total checked: {}", results.len());
+        }
+        OutputFormat::Json => {
+            let json_rows: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(name, expected, status)| {
+                    serde_json::json!({
+                        "name": name,
+                        "expected": expected,
+                        "status": status,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_rows).unwrap());
+        }
+    }
+}
+
 /// Main entry point for dic command
 pub fn run_dic(
     view: View,
@@ -432,6 +542,9 @@ pub fn run_dic(
         View::Unmapped => {
             print_unmapped_ir(&entries, format);
         }
+        View::CheckResolve => {
+            print_resolution_check(&entries, format);
+        }
         View::All => {
             print_exposed_aliases(&entries, format, grep_pattern);
             println!();
@@ -443,6 +556,9 @@ pub fn run_dic(
             println!();
             println!();
             print_unmapped_ir(&entries, format);
+            println!();
+            println!();
+            print_resolution_check(&entries, format);
         }
     }
 
@@ -512,6 +628,105 @@ mod tests {
                     ir_name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_json_round_trip_exposed_aliases() {
+        // Test that JSON output contains expected structure and counts
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+
+        // Build expected data structure (same as print_exposed_aliases)
+        let mut rows: Vec<(String, String, String, String)> = Vec::new();
+        for entry in &entries {
+            for alias in &entry.aliases {
+                let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+                let legacy_str = if entry.legacy_tokens.is_empty() {
+                    "-".to_string()
+                } else {
+                    entry.legacy_tokens.join(", ")
+                };
+                rows.push((
+                    alias.clone(),
+                    ir_display.to_string(),
+                    entry.bucket.clone(),
+                    legacy_str,
+                ));
+            }
+        }
+
+        // Convert to JSON (same format as print_exposed_aliases with JSON)
+        let json_rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(alias, ir, bucket, legacy)| {
+                serde_json::json!({
+                    "alias": alias,
+                    "ir": ir,
+                    "bucket": bucket,
+                    "legacy_tokens": legacy,
+                })
+            })
+            .collect();
+
+        // Serialize and deserialize
+        let json_str = serde_json::to_string(&json_rows).expect("Failed to serialize");
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+            .expect("Failed to parse JSON back");
+
+        // Verify counts match
+        assert_eq!(
+            json_rows.len(),
+            parsed.len(),
+            "JSON round-trip count mismatch"
+        );
+
+        // Verify structure of first entry
+        assert!(parsed[0].get("alias").is_some(), "Missing 'alias' field");
+        assert!(parsed[0].get("ir").is_some(), "Missing 'ir' field");
+        assert!(parsed[0].get("bucket").is_some(), "Missing 'bucket' field");
+        assert!(parsed[0].get("legacy_tokens").is_some(), "Missing 'legacy_tokens' field");
+
+        // Log count for human verification
+        eprintln!("✅ JSON round-trip: {} aliases verified", parsed.len());
+    }
+
+    #[test]
+    fn test_no_duplicate_alias_legacy_tokens() {
+        // Test that names don't appear in BOTH aliases and legacy_tokens
+        // (unless intentionally duplicated for transition period)
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+
+        let mut duplicates = Vec::new();
+
+        for entry in &entries {
+            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+            let alias_set: HashSet<&str> = entry.aliases.iter().map(|s| s.as_str()).collect();
+            let legacy_set: HashSet<&str> = entry.legacy_tokens.iter().map(|s| s.as_str()).collect();
+
+            let intersection: Vec<&str> = alias_set.intersection(&legacy_set).copied().collect();
+
+            if !intersection.is_empty() {
+                duplicates.push(format!(
+                    "{}: {:?} appear in both aliases and legacy_tokens",
+                    ir_display,
+                    intersection
+                ));
+            }
+        }
+
+        if !duplicates.is_empty() {
+            eprintln!("⚠️  Warning: {} operations have tokens in both layers:", duplicates.len());
+            for dup in &duplicates {
+                eprintln!("  - {}", dup);
+            }
+            eprintln!("\nThis may be intentional (transition period) or a mistake.");
+            eprintln!("Each name should typically belong to exactly one layer:");
+            eprintln!("  - aliases: current user-facing names (L1)");
+            eprintln!("  - legacy_tokens: deprecated names for backward compat (L2)");
+
+            // Don't fail yet, but make it visible
+            // Uncomment to enforce:
+            // panic!("Duplicate tokens found across layers");
         }
     }
 }

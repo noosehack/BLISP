@@ -1,0 +1,66 @@
+# ACTUAL CANONICAL NAMES IN BLISP RUST CODE
+# Source: src/ir.rs (enum variants)
+# Date: 2026-03-03
+
+## 1. NumericFunc (Unary column operations)
+
+Enum Variant                 | User Aliases
+-----------------------------|----------------------------------
+SHF_PTW_OBS_NLN_DLOG        | dlog, dlog-obs
+SHF_PTW_OFS_NLN_DLOG        | dlog-ofs
+RET                         | ret
+LOG                         | log
+EXP                         | exp
+SQRT                        | sqrt
+ABS                         | abs
+INV                         | inv
+SHF_REC_NLN_LOCF            | locf
+MSK_WKE                     | wkd, weekday
+SHF_PFX_LIN_SUM             | cs1, cumsum
+
+## 2. BinaryFunc (Binary operations)
+
+Enum Variant                 | User Aliases
+-----------------------------|----------------------------------
+ADD                         | +, add
+SUB                         | -, sub
+MUL                         | *, mul
+DIV                         | /, div
+GTR                         | >, gt
+LSS                         | <, lt
+LTE                         | <=, lte
+GTE                         | >=, gte
+EQL                         | ==, eq
+NEQ                         | !=, neq
+
+## 3. Source (Data sources)
+
+Enum Variant                 | User Aliases
+-----------------------------|----------------------------------
+File                        | file
+Stdin                       | stdin
+
+## 4. Rolling Window Operations (in src/rolling.rs)
+
+Function Name               | User Aliases
+-----------------------------|----------------------------------
+SHF_WIN_LIN_AVG             | rolling-mean
+SHF_WIN_MIN2_LIN_AVG        | rolling-mean-min
+SHF_WIN_MIN2_LIN_AVG_EXCL   | rolling-mean-excl
+SHF_WIN_NLN_SDV             | rolling-std
+SHF_WIN_MIN2_NLN_SDV        | rolling-std-min
+SHF_WIN_MIN2_NLN_SDV_EXCL   | rolling-std-excl
+
+## SUMMARY
+
+Total canonical operations in IR: 11 (NumericFunc) + 10 (BinaryFunc) = 21
+
+Operations NOT yet in IR (still in builtins):
+- Table operations: select, col, setcol, o (orientation)
+- Aggregations: sum, mean, std (and *0 variants)
+- Finance: ur, wzs, xminus
+- Joins: mapr, asofr
+- I/O: save, print
+- Utility: len, type-of
+- Legacy: diff, shift-col variants, etc.
+

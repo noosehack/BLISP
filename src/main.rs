@@ -43,6 +43,8 @@ fn print_help() {
     eprintln!("  --exposed                      Show exposed aliases (default)");
     eprintln!("  --legacy                       Show legacy tokens");
     eprintln!("  --todo-ir                      Show IR migration queue");
+    eprintln!("  --unmapped                     Show IR ops without metadata");
+    eprintln!("  --check-resolve                Check if names resolve in runtime (reality test)");
     eprintln!("  --json                         Output in JSON format");
     eprintln!("  --grep <pattern>               Filter by pattern");
     eprintln!();
@@ -103,7 +105,7 @@ fn handle_dic_subcommand(args: &[String]) {
     let has_view_flag = args.iter().skip(2).any(|arg| {
         matches!(
             arg.as_str(),
-            "--exposed" | "--legacy" | "--todo-ir" | "--unmapped"
+            "--exposed" | "--legacy" | "--todo-ir" | "--unmapped" | "--check-resolve"
         )
     });
 
@@ -129,6 +131,10 @@ fn handle_dic_subcommand(args: &[String]) {
                 view = View::Unmapped;
                 i += 1;
             }
+            "--check-resolve" => {
+                view = View::CheckResolve;
+                i += 1;
+            }
             "--json" => {
                 format = OutputFormat::Json;
                 i += 1;
@@ -143,7 +149,7 @@ fn handle_dic_subcommand(args: &[String]) {
             }
             _ => {
                 eprintln!("Error: unknown dic option: {}", args[i]);
-                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --json, --grep <pattern>");
+                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --check-resolve, --json, --grep <pattern>");
                 std::process::exit(1);
             }
         }
