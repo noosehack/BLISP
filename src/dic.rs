@@ -7,8 +7,9 @@ use crate::ir::{BinaryFunc, NumericFunc, Source};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-/// Embedded metadata overlay (compiled into binary)
-const CANONICAL_MAP_YAML: &str = include_str!("../OPS_CANONICAL_MAP.yml");
+/// Embedded metadata overlays (compiled into binary)
+const CURRENT_OPS_YAML: &str = include_str!("../OPS_CURRENT.yml");
+const PLANNED_OPS_YAML: &str = include_str!("../OPS_PLANNED.yml");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpMapEntry {
@@ -42,10 +43,21 @@ pub fn ir_name_set() -> HashSet<&'static str> {
     s
 }
 
-/// Parse the embedded metadata overlay
+/// Parse the embedded metadata overlay (CURRENT by default)
 pub fn load_op_map() -> Result<Vec<OpMapEntry>, String> {
-    serde_yaml::from_str(CANONICAL_MAP_YAML)
-        .map_err(|e| format!("Failed to parse OPS_CANONICAL_MAP.yml: {}", e))
+    load_current_ops()
+}
+
+/// Load current operations (all names resolve)
+pub fn load_current_ops() -> Result<Vec<OpMapEntry>, String> {
+    serde_yaml::from_str(CURRENT_OPS_YAML)
+        .map_err(|e| format!("Failed to parse OPS_CURRENT.yml: {}", e))
+}
+
+/// Load planned operations (roadmap, may not resolve)
+pub fn load_planned_ops() -> Result<Vec<OpMapEntry>, String> {
+    serde_yaml::from_str(PLANNED_OPS_YAML)
+        .map_err(|e| format!("Failed to parse OPS_PLANNED.yml: {}", e))
 }
 
 /// Validate YAML against actual code (anti-invention guardrail)
@@ -115,11 +127,12 @@ pub enum OutputFormat {
 /// View selection
 #[derive(Debug, Clone, Copy)]
 pub enum View {
-    Exposed,       // Aliases table
+    Exposed,       // Aliases table (current ops)
     Legacy,        // Legacy tokens table
     TodoIR,        // IR migration queue
     Unmapped,      // IR ops missing metadata
     CheckResolve,  // Resolution check (reality test)
+    Planned,       // Planned operations (roadmap)
     All,           // All views (default)
 }
 
@@ -518,19 +531,36 @@ pub fn run_dic(
     format: OutputFormat,
     grep_pattern: Option<&str>,
 ) -> Result<(), String> {
-    let entries = load_op_map()?;
+    // Load appropriate dataset
+    let (entries, is_planned) = match view {
+        View::Planned => {
+            let planned = load_planned_ops()?;
+            (planned, true)
+        }
+        _ => {
+            let current = load_current_ops()?;
+            (current, false)
+        }
+    };
 
     // Validate map (fail fast if YAML has invented names)
-    if let Err(errors) = validate_op_map(&entries) {
-        eprintln!("❌ Operation map validation errors:");
-        for error in &errors {
-            eprintln!("  - {}", error);
+    // Note: PLANNED ops are allowed to have unresolved names
+    if !is_planned {
+        if let Err(errors) = validate_op_map(&entries) {
+            eprintln!("❌ Operation map validation errors:");
+            for error in &errors {
+                eprintln!("  - {}", error);
+            }
+            return Err(format!("Validation failed with {} errors", errors.len()));
         }
-        return Err(format!("Validation failed with {} errors", errors.len()));
     }
 
     match view {
         View::Exposed => {
+            if is_planned {
+                println!("# PLANNED Operations (Roadmap - Not Guaranteed Resolvable)");
+                println!();
+            }
             print_exposed_aliases(&entries, format, grep_pattern);
         }
         View::Legacy => {
@@ -543,6 +573,22 @@ pub fn run_dic(
             print_unmapped_ir(&entries, format);
         }
         View::CheckResolve => {
+            if is_planned {
+                println!("# Resolution Check: PLANNED Operations");
+                println!("# Note: These names are NOT expected to resolve yet");
+                println!();
+            }
+            print_resolution_check(&entries, format);
+        }
+        View::Planned => {
+            println!("# PLANNED Operations (Roadmap Only)");
+            println!("# These names do NOT currently resolve");
+            println!("# They will move to CURRENT once implemented");
+            println!();
+            print_exposed_aliases(&entries, format, grep_pattern);
+            println!();
+            println!();
+            println!("# Resolution Status (Informational):");
             print_resolution_check(&entries, format);
         }
         View::All => {

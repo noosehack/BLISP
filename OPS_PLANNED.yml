@@ -1,0 +1,328 @@
+# Planned Operations - Roadmap only
+# These names do NOT currently resolve
+# Use 'blisp dic --planned' to view
+# Names move to OPS_CURRENT.yml once implemented
+
+- ir: SHF_PTW_OBS_NLN_DLOG
+  aliases:
+  - dlog
+  - dlog-obs
+  legacy_tokens:
+  - dlog-col
+  bucket: A1_fusion_critical
+  semantics: 'Log difference (OBS semantics: skip NA when looking back)'
+  docs: SEMANTICS.md#temporal-operations
+- ir: SHF_PTW_OFS_NLN_DLOG
+  aliases:
+  - dlog-ofs
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: 'Log difference (OFS semantics: positional, does not skip NA)'
+  docs: SEMANTICS.md#temporal-operations
+- ir: RET
+  aliases:
+  - ret
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: 'Simple return: (x[t]/x[t-1])-1'
+  docs: SEMANTICS.md#temporal-operations
+- ir: LOG
+  aliases:
+  - log
+  - ln
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Natural logarithm
+  docs: SEMANTICS.md#math-functions
+- ir: EXP
+  aliases:
+  - exp
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Exponential (e^x)
+  docs: SEMANTICS.md#math-functions
+- ir: SQRT
+  aliases:
+  - sqrt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Square root
+  docs: SEMANTICS.md#math-functions
+- ir: ABS
+  aliases:
+  - abs
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Absolute value
+  docs: SEMANTICS.md#math-functions
+- ir: INV
+  aliases:
+  - inv
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Inverse (1/x)
+  docs: SEMANTICS.md#math-functions
+- ir: SHF_REC_NLN_LOCF
+  aliases:
+  - locf
+  - ffill
+  legacy_tokens:
+  - locf-cols
+  bucket: A1_fusion_critical
+  semantics: Last observation carried forward
+  docs: SEMANTICS.md#temporal-operations
+- ir: MSK_WKE
+  aliases:
+  - weekday
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Weekday (Mon-Fri) mask
+  docs: SEMANTICS.md#mask-operations
+  notes: Planned aliases for MSK_WKE
+- ir: SHF_PFX_LIN_SUM
+  aliases:
+  - cs1
+  - cumsum
+  legacy_tokens:
+  - cs1-col
+  - cs1-cols
+  bucket: A1_fusion_critical
+  semantics: Cumulative sum starting from 1.0
+  docs: SEMANTICS.md#cumulative-operations
+- ir: SHF_PTW_LIN_SHF
+  aliases:
+  - shift
+  - lag
+  legacy_tokens:
+  - shift-col
+  bucket: A1_fusion_critical
+  semantics: Shift/lag k rows
+  docs: SEMANTICS.md#temporal-operations
+- ir: LAG_OBS
+  aliases:
+  - lag-obs
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Mask-aware lag (skips masked rows)
+  docs: SEMANTICS.md#temporal-operations
+- ir: KEEP
+  aliases:
+  - keep
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Keep every k-th row
+  docs: SEMANTICS.md#temporal-operations
+- ir: SHF_WIN_LIN_AVG
+  aliases:
+  - rolling-mean
+  - roll-mean
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Rolling mean (strict min_periods=w)
+  docs: SEMANTICS.md#rolling-operations
+- ir: SHF_WIN_NLN_SDV
+  aliases:
+  - rolling-std
+  - roll-std
+  legacy_tokens:
+  - wstd
+  - wstd0
+  bucket: A1_fusion_critical
+  semantics: Rolling std (strict min_periods=w)
+  docs: SEMANTICS.md#rolling-operations
+- ir: SHF_WIN_MIN2_LIN_AVG
+  aliases:
+  - rolling-mean-min
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Rolling mean (min 2 observations)
+  docs: SEMANTICS.md#rolling-operations
+- ir: SHF_WIN_MIN2_NLN_SDV
+  aliases:
+  - rolling-std-min
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Rolling std (min 2 observations)
+  docs: SEMANTICS.md#rolling-operations
+- ir: SHF_WIN_MIN2_LIN_AVG_EXCL
+  aliases:
+  - rolling-mean-excl
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Rolling mean excluding current (min 2 obs)
+  docs: SEMANTICS.md#rolling-operations
+- ir: SHF_WIN_MIN2_NLN_SDV_EXCL
+  aliases:
+  - rolling-std-excl
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Rolling std excluding current (min 2 obs)
+  docs: SEMANTICS.md#rolling-operations
+- ir: ADD
+  aliases:
+  - add
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Addition
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for ADD
+- ir: SUB
+  aliases:
+  - sub
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Subtraction
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for SUB
+- ir: MUL
+  aliases:
+  - mul
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Multiplication
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for MUL
+- ir: DIV
+  aliases:
+  - div
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Division
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for DIV
+- ir: GTR
+  aliases:
+  - gt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Greater than
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for GTR
+- ir: LSS
+  aliases:
+  - lt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for LSS
+- ir: LTE
+  aliases:
+  - lte
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than or equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for LTE
+- ir: GTE
+  aliases:
+  - gte
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Greater than or equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for GTE
+- ir: EQL
+  aliases:
+  - eq
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for EQL
+- ir: NEQ
+  aliases:
+  - neq
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Not equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for NEQ
+- ir: File
+  aliases:
+  - load
+  - read-csv
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Load CSV from file
+  docs: SEMANTICS.md#io
+  notes: Planned aliases for File
+- ir: null
+  aliases:
+  - with
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Set/replace column in table
+  docs: SEMANTICS.md#table-operations
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - orient
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Change table orientation
+  docs: SEMANTICS.md#table-operations
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - left-join
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: LEFT JOIN by first column (row key)
+  docs: SEMANTICS.md#joins
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - x-
+  - demean
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Pairwise spreads (subtract mean from each column)
+  docs: SEMANTICS.md#finance
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - ur
+  - unit-ratio
+  - sharpe
+  legacy_tokens:
+  - ur-col
+  - ur-cols
+  bucket: A2_planner_structural
+  semantics: 'Unit ratio (risk-adjusted return): mean/std over window'
+  docs: SEMANTICS.md#finance
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - rolling-zscore
+  - roll-z
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Rolling z-score
+  docs: SEMANTICS.md#finance
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - write-csv
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Save to file
+  docs: SEMANTICS.md#io
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - length
+  - nrow
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Row count
+  docs: SEMANTICS.md#utility
+  notes: Planned aliases for None
+- ir: null
+  aliases:
+  - typeof
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Type introspection
+  docs: SEMANTICS.md#utility
+  notes: Planned aliases for None

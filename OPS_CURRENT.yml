@@ -1,0 +1,249 @@
+# Current Operations - All names resolve in runtime
+# This file is authoritative for 'blisp dic'
+# Tripwire enforces: --check-resolve must show 0 FAIL
+
+- ir: MSK_WKE
+  aliases:
+  - wkd
+  legacy_tokens:
+  - w5
+  bucket: A1_fusion_critical
+  semantics: Weekday (Mon-Fri) mask
+  docs: SEMANTICS.md#mask-operations
+- ir: ADD
+  aliases:
+  - +
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Addition
+  docs: SEMANTICS.md#arithmetic
+- ir: SUB
+  aliases:
+  - '-'
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Subtraction
+  docs: SEMANTICS.md#arithmetic
+- ir: MUL
+  aliases:
+  - '*'
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Multiplication
+  docs: SEMANTICS.md#arithmetic
+- ir: DIV
+  aliases:
+  - /
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Division
+  docs: SEMANTICS.md#arithmetic
+- ir: GTR
+  aliases:
+  - '>'
+  legacy_tokens:
+  - '>-col'
+  - '>-cols'
+  bucket: A1_fusion_critical
+  semantics: Greater than
+  docs: SEMANTICS.md#comparisons
+- ir: LSS
+  aliases:
+  - <
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than
+  docs: SEMANTICS.md#comparisons
+- ir: LTE
+  aliases:
+  - <=
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than or equal
+  docs: SEMANTICS.md#comparisons
+- ir: GTE
+  aliases:
+  - '>='
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Greater than or equal
+  docs: SEMANTICS.md#comparisons
+- ir: EQL
+  aliases:
+  - ==
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Equal
+  docs: SEMANTICS.md#comparisons
+- ir: NEQ
+  aliases:
+  - '!='
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Not equal
+  docs: SEMANTICS.md#comparisons
+- ir: File
+  aliases:
+  - file
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Load CSV from file
+  docs: SEMANTICS.md#io
+- ir: Stdin
+  aliases:
+  - stdin
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Read from stdin
+  docs: SEMANTICS.md#io
+- ir: null
+  aliases:
+  - sum
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Sum (orientation-aware, propagates NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - sum0
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Sum (orientation-aware, skips NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - mean
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Mean (orientation-aware, propagates NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - mean0
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Mean (orientation-aware, skips NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - std
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Sample standard deviation (ddof=1, propagates NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - std0
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Sample standard deviation (ddof=1, skips NA)
+  docs: SEMANTICS.md#aggregations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - diff
+  legacy_tokens:
+  - diff-col
+  - diff-cols
+  bucket: A1_fusion_critical
+  semantics: First difference (x[t] - x[t-k])
+  docs: SEMANTICS.md#temporal-operations
+  notes: 'TODO: Move to IR as SHF_PTW_LIN_SPR'
+- ir: null
+  aliases:
+  - col
+  legacy_tokens:
+  - w
+  bucket: A2_planner_structural
+  semantics: Extract single column
+  docs: SEMANTICS.md#table-operations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - select
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Select columns by name
+  docs: SEMANTICS.md#table-operations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - setcol
+  legacy_tokens:
+  - withcol
+  bucket: A2_planner_structural
+  semantics: Set/replace column in table
+  docs: SEMANTICS.md#table-operations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - o
+  legacy_tokens:
+  - ro
+  bucket: A2_planner_structural
+  semantics: Change table orientation
+  docs: SEMANTICS.md#table-operations
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - mapr
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: LEFT JOIN by first column (row key)
+  docs: SEMANTICS.md#joins
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - xminus
+  legacy_tokens: []
+  bucket: A2_planner_structural
+  semantics: Pairwise spreads (subtract mean from each column)
+  docs: SEMANTICS.md#finance
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - wzs
+  legacy_tokens:
+  - wz0
+  - wz0-cols
+  bucket: A2_planner_structural
+  semantics: Rolling z-score
+  docs: SEMANTICS.md#finance
+  notes: 'TODO: Move to IR'
+- ir: null
+  aliases:
+  - print
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Print to stdout
+  docs: SEMANTICS.md#io
+  notes: Keep as builtin
+- ir: null
+  aliases:
+  - save
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Save to file
+  docs: SEMANTICS.md#io
+  notes: Keep as builtin
+- ir: null
+  aliases:
+  - len
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Row count
+  docs: SEMANTICS.md#utility
+  notes: Keep as builtin
+- ir: null
+  aliases:
+  - type-of
+  legacy_tokens: []
+  bucket: A3_edge_io
+  semantics: Type introspection
+  docs: SEMANTICS.md#utility
+  notes: Keep as builtin
