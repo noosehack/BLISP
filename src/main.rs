@@ -16,6 +16,7 @@ enum Subcommand {
     Run,
     Verify,
     Selftest,
+    Dic,
 }
 
 fn print_help() {
@@ -28,6 +29,7 @@ fn print_help() {
     eprintln!("  run <script.lisp>              Run a BLISP script (default)");
     eprintln!("  verify <actual> <expected>     Verify CSV outputs match");
     eprintln!("  selftest                       Run embedded self-tests");
+    eprintln!("  dic [OPTIONS]                  Show operation dictionary");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --version                      Show version and exit");
@@ -36,7 +38,13 @@ fn print_help() {
     eprintln!("  -e '<expression>'              Evaluate expression");
     eprintln!("  --legacy                       Force legacy AST evaluator");
     eprintln!("  --ir-only                      Force IR-only mode (experimental)");
-    eprintln!("  --dic                          List all builtin operations");
+    eprintln!();
+    eprintln!("DIC OPTIONS:");
+    eprintln!("  --exposed                      Show exposed aliases (default)");
+    eprintln!("  --legacy                       Show legacy tokens");
+    eprintln!("  --todo-ir                      Show IR migration queue");
+    eprintln!("  --json                         Output in JSON format");
+    eprintln!("  --grep <pattern>               Filter by pattern");
     eprintln!();
     eprintln!("VERIFY OPTIONS:");
     eprintln!(
@@ -63,6 +71,7 @@ fn parse_subcommand(args: &[String]) -> Subcommand {
             "selftest" | "--selftest" => return Subcommand::Selftest,
             "verify" => return Subcommand::Verify,
             "run" => return Subcommand::Run,
+            "dic" | "--dic" => return Subcommand::Dic,
             _ => {}
         }
     }
@@ -79,6 +88,70 @@ fn parse_subcommand(args: &[String]) -> Subcommand {
 
     // Default to Run for backward compatibility
     Subcommand::Run
+}
+
+fn handle_dic_subcommand(args: &[String]) {
+    // Parse dic arguments: blisp dic [--exposed|--legacy|--todo-ir] [--json] [--grep <pattern>]
+    use blisp::dic::{OutputFormat, View};
+
+    let mut view = View::All;
+    let mut format = OutputFormat::Table;
+    let mut grep_pattern: Option<String> = None;
+    let mut i = 2; // Skip "blisp" and "dic"
+
+    // If no flags, default to exposed
+    let has_view_flag = args.iter().skip(2).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--exposed" | "--legacy" | "--todo-ir"
+        )
+    });
+
+    if !has_view_flag {
+        view = View::Exposed;
+    }
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--exposed" => {
+                view = View::Exposed;
+                i += 1;
+            }
+            "--legacy" => {
+                view = View::Legacy;
+                i += 1;
+            }
+            "--todo-ir" => {
+                view = View::TodoIR;
+                i += 1;
+            }
+            "--json" => {
+                format = OutputFormat::Json;
+                i += 1;
+            }
+            "--grep" => {
+                if i + 1 >= args.len() {
+                    eprintln!("Error: --grep requires a pattern");
+                    std::process::exit(1);
+                }
+                grep_pattern = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                eprintln!("Error: unknown dic option: {}", args[i]);
+                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --json, --grep <pattern>");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    match blisp::dic::run_dic(view, format, grep_pattern.as_deref()) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn handle_verify_subcommand(args: &[String]) {
@@ -171,12 +244,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Handle --dic first (dictionary of operations)
-    if args.contains(&"--dic".to_string()) {
-        print_dictionary();
-        std::process::exit(0);
-    }
-
     // Determine subcommand
     let subcommand = parse_subcommand(&args);
 
@@ -192,6 +259,9 @@ fn main() {
         }
         Subcommand::Verify => {
             handle_verify_subcommand(&args);
+        }
+        Subcommand::Dic => {
+            handle_dic_subcommand(&args);
         }
         Subcommand::Run => {
             // Fall through to existing run logic below
@@ -351,149 +421,6 @@ fn main() {
     }
 }
 
-/// Print dictionary of all builtin operations
-fn print_dictionary() {
-    let mut rt = Runtime::new();
-
-    println!("BLISP v0.2.0 - Builtin Operations Dictionary");
-    println!("==============================================");
-    println!();
-
-    // Collect all builtin names
-    let mut names: Vec<String> = rt
-        .builtins
-        .keys()
-        .map(|&sym| rt.interner.resolve(sym).to_string())
-        .collect();
-    names.sort();
-
-    println!("Total operations: {}", names.len());
-    println!();
-
-    // Categorize operations
-    let arithmetic = vec!["+", "-", "*", "/", "abs"];
-    let comparison = vec!["<", "<=", "==", "!=", ">", ">="];
-    let math = vec!["log", "exp", "sqrt"];
-    let io = vec!["file", "file-head", "stdin", "save", "print"];
-    let temporal = vec![
-        "dlog",
-        "dlog-col",
-        "dlog-cols",
-        "ret",
-        "diff",
-        "diff-col",
-        "diff-cols",
-        "shift",
-        "shift-col",
-        "shift-cols",
-    ];
-    let aggregate = vec!["sum", "sum0", "mean", "mean0", "std", "std0"];
-    let table_ops = vec![
-        "col",
-        "cols",
-        "setcol",
-        "withcol",
-        "select",
-        "select-num",
-        "make-col",
-        "apply-cols",
-        "map-cols",
-        "w",
-    ];
-    let rolling = vec![
-        "wstd",
-        "wstd0",
-        "wstd-cols",
-        "wstd0-cols",
-        "wv",
-        "wv-cols",
-        "wz0",
-        "wz0-cols",
-        "wzs",
-    ];
-    let transforms = vec![
-        "locf",
-        "locf-cols",
-        "wkd",
-        "cs1",
-        "cs1-col",
-        "cs1-cols",
-        "ecs1",
-        "ecs1-col",
-        "ecs1-cols",
-        "xminus",
-        "zscore",
-        "chop",
-        "keep-shape",
-        "keep-shape-cols",
-    ];
-    let mask_ops = vec![
-        "mask-weekend",
-        "with-mask",
-        "mask-on",
-        "mask-off",
-        "mask-list",
-        "mask-stats",
-        "mask-define",
-    ];
-    let join_ops = vec!["mapr", "asofr"];
-    let comparisons_col = vec![">-col", ">-cols"];
-    let finance = vec!["ur", "ur-col", "ur-cols", "o"];
-    let utility = vec!["type-of", "len"];
-
-    let mut categorized = std::collections::HashSet::new();
-
-    macro_rules! print_category {
-        ($title:expr, $ops:expr) => {
-            let mut found: Vec<&String> = names
-                .iter()
-                .filter(|n| $ops.contains(&n.as_str()))
-                .collect();
-            if !found.is_empty() {
-                println!("{}:", $title);
-                found.sort();
-                for name in &found {
-                    print!("  {:<20}", name);
-                    categorized.insert(name.as_str());
-                }
-                println!();
-                println!();
-            }
-        };
-    }
-
-    print_category!("Arithmetic", arithmetic);
-    print_category!("Comparison", comparison);
-    print_category!("Math Functions", math);
-    print_category!("I/O Operations", io);
-    print_category!("Temporal Operations", temporal);
-    print_category!("Aggregations", aggregate);
-    print_category!("Table Operations", table_ops);
-    print_category!("Rolling Statistics", rolling);
-    print_category!("Transforms & Filters", transforms);
-    print_category!("Mask Operations", mask_ops);
-    print_category!("Join Operations", join_ops);
-    print_category!("Column Comparisons", comparisons_col);
-    print_category!("Finance Operations", finance);
-    print_category!("Utility", utility);
-
-    // Print uncategorized operations
-    let uncategorized: Vec<&String> = names
-        .iter()
-        .filter(|n| !categorized.contains(n.as_str()))
-        .collect();
-
-    if !uncategorized.is_empty() {
-        println!("Other Operations:");
-        for name in uncategorized {
-            print!("  {:<20}", name);
-        }
-        println!();
-        println!();
-    }
-
-    println!("Note: wkd is the canonical weekend mask operation");
-}
 
 fn load_file(rt: &mut Runtime, path: &str, _use_legacy: bool) -> Result<(), String> {
     let code = std::fs::read_to_string(path).map_err(|e| format!("Cannot read file: {}", e))?;

@@ -12,6 +12,7 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod dic;
 pub mod env;
 pub mod eval;
 pub mod exec;
