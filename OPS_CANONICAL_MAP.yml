@@ -1,643 +1,403 @@
-# BLISP Canonical Operation Map
-# Purpose: Single source of truth for operation taxonomy
-# Layers: L0 (Canonical ID) → L1 (User Aliases) → L2 (Legacy Tokens)
+# BLISP Operation Metadata Overlay
+# Purpose: Human metadata for IR operations (aliases, buckets, docs)
+# Schema: ir: field MUST match actual Rust enum variants
+# Source of truth for canonical IDs: src/ir.rs enum definitions
 #
-# Generated: 2026-03-03
-# Enforced by: tests/ops_taxonomy_tripwire.rs (TODO)
+# Date: 2026-03-03
+# Enforced by: tests/ops_taxonomy_tripwire.rs
 
 # ==============================================================================
-# L0: CANONICAL IDS (Stable, Semantic Truth)
+# IR OPERATIONS (from src/ir.rs)
 # ==============================================================================
-# Format: MSK_*, SHF_*, CUM_*, WIN_*, BIN_*
-# Rule: One ID = One Semantics, Never Overloaded
 
 # ------------------------------------------------------------------------------
-# Masks & Filters
+# NumericFunc: Unary column operations
 # ------------------------------------------------------------------------------
 
-- canonical: MSK_WKE
-  semantics: "Weekday (Mon-Fri) mask - removes weekend rows"
-  aliases: [wkd, weekday]
-  legacy_tokens: [wkd, w5]
-  ir_node: MaskWeekend
-  ir_ready: true
-  params: []
-  bucket: A1_fusion_critical
-  notes: "w5 is backward compat alias"
-  semantics_doc: "SEMANTICS.md#mask-operations"
-
-# ------------------------------------------------------------------------------
-# Shifts & Lags (Temporal Operations)
-# ------------------------------------------------------------------------------
-
-- canonical: SHF_PTW_OBS_NLN_DLOG
-  semantics: "Log difference (OBS semantics: skip NA when looking back)"
+- ir: SHF_PTW_OBS_NLN_DLOG
   aliases: [dlog, dlog-obs]
   legacy_tokens: [dlog-col, dlog]
-  ir_node: DlogObs
-  ir_ready: true
-  params: [lag]  # default: 1
   bucket: A1_fusion_critical
-  notes: "dlog-col is deprecated, use dlog"
-  semantics_doc: "SEMANTICS.md#temporal-operations"
+  semantics: "Log difference (OBS semantics: skip NA when looking back)"
+  docs: "SEMANTICS.md#temporal-operations"
 
-- canonical: SHF_PTW_OFS_NLN_DLOG
-  semantics: "Log difference (OFS semantics: positional, does not skip NA)"
+- ir: SHF_PTW_OFS_NLN_DLOG
   aliases: [dlog-ofs]
   legacy_tokens: []
-  ir_node: DlogOfs
-  ir_ready: true
-  params: [lag]  # default: 1
   bucket: A1_fusion_critical
-  notes: "Explicit offset-based variant"
-  semantics_doc: "SEMANTICS.md#temporal-operations"
+  semantics: "Log difference (OFS semantics: positional, does not skip NA)"
+  docs: "SEMANTICS.md#temporal-operations"
 
-- canonical: SHF_PTW_LIN_SHF
-  semantics: "Shift/lag operation (positional)"
-  aliases: [shift, lag]
-  legacy_tokens: [shift-col, shift]
-  ir_node: Shift
-  ir_ready: true
-  params: [k]  # lag amount
-  bucket: A1_fusion_critical
-  notes: "shift-col is deprecated, use shift"
-  semantics_doc: "SEMANTICS.md#temporal-operations"
-
-- canonical: SHF_PTW_LIN_SPR
-  semantics: "First difference (x[t] - x[t-k])"
-  aliases: [diff]
-  legacy_tokens: [diff-col, diff, diff-cols]
-  ir_node: Diff
-  ir_ready: false
-  params: [lag]  # default: 1
-  bucket: A1_fusion_critical
-  notes: "Need to move to IR"
-  semantics_doc: "SEMANTICS.md#temporal-operations"
-
-# ------------------------------------------------------------------------------
-# Cumulative Operations
-# ------------------------------------------------------------------------------
-
-- canonical: SHF_PFX_LIN_SUM
-  semantics: "Cumulative sum starting from init value"
-  aliases: [cs1, cumsum]
-  legacy_tokens: [cs1-col, cs1, cs1-cols]
-  ir_node: CumulativeSum
-  ir_ready: true
-  params: [init]  # default: 1.0
-  bucket: A1_fusion_critical
-  notes: "cs1-col deprecated, cs1-cols is table version"
-  semantics_doc: "SEMANTICS.md#transforms-filters"
-
-- canonical: SHF_PFX_LIN_EXP_CUM
-  semantics: "Exponential cumulative sum"
-  aliases: [ecs1, exp-cumsum]
-  legacy_tokens: [ecs1-col, ecs1, ecs1-cols]
-  ir_node: ExpCumulativeSum
-  ir_ready: false
-  params: [init]
-  bucket: A2_planner_structural
-  notes: "Composite: exp(cs1(log(x)))"
-  semantics_doc: "SEMANTICS.md#transforms-filters"
-
-# ------------------------------------------------------------------------------
-# Rolling Windows
-# ------------------------------------------------------------------------------
-
-- canonical: SHF_WIN_LIN_AVG
-  semantics: "Rolling mean (observation-based, no min_periods)"
-  aliases: [rolling-mean, roll-mean]
+- ir: RET
+  aliases: [ret]
   legacy_tokens: []
-  ir_node: RollingMean
-  ir_ready: true
-  params: [window]
   bucket: A1_fusion_critical
-  notes: "IR-only, no legacy builtin"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
+  semantics: "Simple return: (x[t]/x[t-1])-1"
+  docs: "SEMANTICS.md#temporal-operations"
 
-- canonical: SHF_WIN_MIN2_LIN_AVG
-  semantics: "Rolling mean with min_periods"
-  aliases: [rolling-mean-min]
-  legacy_tokens: []
-  ir_node: RollingMeanMinPeriods
-  ir_ready: true
-  params: [window, min_periods]
-  bucket: A1_fusion_critical
-  notes: "Returns NA if valid count < min_periods"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
-
-- canonical: SHF_WIN_MIN2_LIN_AVG_EXCL
-  semantics: "Rolling mean excluding current value"
-  aliases: [rolling-mean-excl]
-  legacy_tokens: []
-  ir_node: RollingMeanExcl
-  ir_ready: true
-  params: [window, min_periods]
-  bucket: A1_fusion_critical
-  notes: "Excludes current observation from window"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
-
-- canonical: SHF_WIN_NLN_SDV
-  semantics: "Rolling standard deviation"
-  aliases: [rolling-std, roll-std]
-  legacy_tokens: [wstd, wstd0]
-  ir_node: RollingStd
-  ir_ready: false
-  params: [window]
-  bucket: A1_fusion_critical
-  notes: "wstd/wstd0 are legacy builtins, need IR migration"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
-
-- canonical: SHF_WIN_MIN2_NLN_SDV
-  semantics: "Rolling std with min_periods"
-  aliases: [rolling-std-min]
-  legacy_tokens: []
-  ir_node: RollingStdMinPeriods
-  ir_ready: true
-  params: [window, min_periods]
-  bucket: A1_fusion_critical
-  notes: "Sample std (ddof=1)"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
-
-- canonical: SHF_WIN_MIN2_NLN_SDV_EXCL
-  semantics: "Rolling std excluding current value"
-  aliases: [rolling-std-excl]
-  legacy_tokens: []
-  ir_node: RollingStdExcl
-  ir_ready: true
-  params: [window, min_periods]
-  bucket: A1_fusion_critical
-  notes: "Sample std (ddof=1), excludes current"
-  semantics_doc: "SEMANTICS.md#rolling-statistics"
-
-# ------------------------------------------------------------------------------
-# Recursive/IIR Operations
-# ------------------------------------------------------------------------------
-
-- canonical: SHF_REC_NLN_LOCF
-  semantics: "Last observation carried forward (fill NA)"
-  aliases: [locf, ffill]
-  legacy_tokens: [locf-cols]
-  ir_node: LOCF
-  ir_ready: true
-  params: []
-  bucket: A1_fusion_critical
-  notes: "IIR filter: y[t] = is_na(x[t]) ? y[t-1] : x[t]"
-  semantics_doc: "SEMANTICS.md#na-propagation"
-
-# ------------------------------------------------------------------------------
-# Aggregations (Orientation-Aware)
-# ------------------------------------------------------------------------------
-
-- canonical: AGG_LIN_SUM
-  semantics: "Sum (orientation-aware, propagates NA)"
-  aliases: [sum]
-  legacy_tokens: [sum]
-  ir_node: Sum
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only, need IR for fusion"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-- canonical: AGG_LIN_SUM0
-  semantics: "Sum (orientation-aware, skips NA)"
-  aliases: [sum0]
-  legacy_tokens: [sum0]
-  ir_node: Sum0
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-- canonical: AGG_LIN_AVG
-  semantics: "Mean (orientation-aware, propagates NA)"
-  aliases: [mean]
-  legacy_tokens: [mean]
-  ir_node: Mean
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-- canonical: AGG_LIN_AVG0
-  semantics: "Mean (orientation-aware, skips NA)"
-  aliases: [mean0]
-  legacy_tokens: [mean0]
-  ir_node: Mean0
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-- canonical: AGG_NLN_SDV
-  semantics: "Sample standard deviation (ddof=1, propagates NA)"
-  aliases: [std]
-  legacy_tokens: [std]
-  ir_node: Std
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-- canonical: AGG_NLN_SDV0
-  semantics: "Sample standard deviation (ddof=1, skips NA)"
-  aliases: [std0]
-  legacy_tokens: [std0]
-  ir_node: Std0
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Currently builtin-only"
-  semantics_doc: "SEMANTICS.md#aggregations"
-
-# ------------------------------------------------------------------------------
-# Elementwise Binary Operations
-# ------------------------------------------------------------------------------
-
-- canonical: BIN_LIN_ADD
-  semantics: "Addition (elementwise or scalar)"
-  aliases: ["+", add]
-  legacy_tokens: ["+"]
-  ir_node: Add
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Need IR for fusion chains"
-  semantics_doc: "SEMANTICS.md#arithmetic"
-
-- canonical: BIN_LIN_SUB
-  semantics: "Subtraction (elementwise or scalar)"
-  aliases: ["-", sub]
-  legacy_tokens: ["-"]
-  ir_node: Sub
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Need IR for fusion chains"
-  semantics_doc: "SEMANTICS.md#arithmetic"
-
-- canonical: BIN_LIN_MUL
-  semantics: "Multiplication (elementwise or scalar)"
-  aliases: ["*", mul]
-  legacy_tokens: ["*"]
-  ir_node: Mul
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Need IR for fusion chains"
-  semantics_doc: "SEMANTICS.md#arithmetic"
-
-- canonical: BIN_LIN_DIV
-  semantics: "Division (elementwise or scalar)"
-  aliases: ["/", div]
-  legacy_tokens: ["/"]
-  ir_node: Div
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Need IR for fusion chains"
-  semantics_doc: "SEMANTICS.md#arithmetic"
-
-# ------------------------------------------------------------------------------
-# Elementwise Unary Operations
-# ------------------------------------------------------------------------------
-
-- canonical: UNY_NLN_LOG
-  semantics: "Natural logarithm (ln(x))"
+- ir: LOG
   aliases: [log, ln]
   legacy_tokens: []
-  ir_node: Log
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Not currently exposed, but needed for fusion"
-  semantics_doc: "SEMANTICS.md#arithmetic"
+  semantics: "Natural logarithm"
+  docs: "SEMANTICS.md#math-functions"
 
-- canonical: UNY_NLN_EXP
-  semantics: "Exponential (e^x)"
+- ir: EXP
   aliases: [exp]
   legacy_tokens: []
-  ir_node: Exp
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Not currently exposed, but needed for fusion"
-  semantics_doc: "SEMANTICS.md#arithmetic"
+  semantics: "Exponential (e^x)"
+  docs: "SEMANTICS.md#math-functions"
 
-- canonical: UNY_LIN_ABS
-  semantics: "Absolute value"
+- ir: SQRT
+  aliases: [sqrt]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Square root"
+  docs: "SEMANTICS.md#math-functions"
+
+- ir: ABS
   aliases: [abs]
   legacy_tokens: []
-  ir_node: Abs
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Not currently exposed"
-  semantics_doc: "SEMANTICS.md#arithmetic"
+  semantics: "Absolute value"
+  docs: "SEMANTICS.md#math-functions"
 
-- canonical: UNY_LIN_NEG
-  semantics: "Negation (-x)"
-  aliases: [neg, negate]
+- ir: INV
+  aliases: [inv]
   legacy_tokens: []
-  ir_node: Neg
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Not currently exposed"
-  semantics_doc: "SEMANTICS.md#arithmetic"
+  semantics: "Inverse (1/x)"
+  docs: "SEMANTICS.md#math-functions"
+
+- ir: SHF_REC_NLN_LOCF
+  aliases: [locf, ffill]
+  legacy_tokens: [locf-cols]
+  bucket: A1_fusion_critical
+  semantics: "Last observation carried forward"
+  docs: "SEMANTICS.md#temporal-operations"
+
+- ir: MSK_WKE
+  aliases: [wkd, weekday]
+  legacy_tokens: [wkd, w5]
+  bucket: A1_fusion_critical
+  semantics: "Weekday (Mon-Fri) mask"
+  docs: "SEMANTICS.md#mask-operations"
+
+- ir: SHF_PFX_LIN_SUM
+  aliases: [cs1, cumsum]
+  legacy_tokens: [cs1-col, cs1-cols]
+  bucket: A1_fusion_critical
+  semantics: "Cumulative sum starting from 1.0"
+  docs: "SEMANTICS.md#cumulative-operations"
+
+- ir: SHF_PTW_LIN_SHF
+  aliases: [shift, lag]
+  legacy_tokens: [shift-col]
+  bucket: A1_fusion_critical
+  semantics: "Shift/lag k rows"
+  docs: "SEMANTICS.md#temporal-operations"
+
+- ir: LAG_OBS
+  aliases: [lag-obs]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Mask-aware lag (skips masked rows)"
+  docs: "SEMANTICS.md#temporal-operations"
+
+- ir: KEEP
+  aliases: [keep]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Keep every k-th row"
+  docs: "SEMANTICS.md#temporal-operations"
+
+- ir: SHF_WIN_LIN_AVG
+  aliases: [rolling-mean, roll-mean]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Rolling mean (strict min_periods=w)"
+  docs: "SEMANTICS.md#rolling-operations"
+
+- ir: SHF_WIN_NLN_SDV
+  aliases: [rolling-std, roll-std]
+  legacy_tokens: [wstd, wstd0]
+  bucket: A1_fusion_critical
+  semantics: "Rolling std (strict min_periods=w)"
+  docs: "SEMANTICS.md#rolling-operations"
+
+- ir: SHF_WIN_MIN2_LIN_AVG
+  aliases: [rolling-mean-min]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Rolling mean (min 2 observations)"
+  docs: "SEMANTICS.md#rolling-operations"
+
+- ir: SHF_WIN_MIN2_NLN_SDV
+  aliases: [rolling-std-min]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Rolling std (min 2 observations)"
+  docs: "SEMANTICS.md#rolling-operations"
+
+- ir: SHF_WIN_MIN2_LIN_AVG_EXCL
+  aliases: [rolling-mean-excl]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Rolling mean excluding current (min 2 obs)"
+  docs: "SEMANTICS.md#rolling-operations"
+
+- ir: SHF_WIN_MIN2_NLN_SDV_EXCL
+  aliases: [rolling-std-excl]
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: "Rolling std excluding current (min 2 obs)"
+  docs: "SEMANTICS.md#rolling-operations"
 
 # ------------------------------------------------------------------------------
-# Comparison Operations
+# BinaryFunc: Binary operations
 # ------------------------------------------------------------------------------
 
-- canonical: CMP_GT
-  semantics: "Greater than (>)"
+- ir: ADD
+  aliases: ["+", add]
+  legacy_tokens: ["+"]
+  bucket: A1_fusion_critical
+  semantics: "Addition"
+  docs: "SEMANTICS.md#arithmetic"
+
+- ir: SUB
+  aliases: ["-", sub]
+  legacy_tokens: ["-"]
+  bucket: A1_fusion_critical
+  semantics: "Subtraction"
+  docs: "SEMANTICS.md#arithmetic"
+
+- ir: MUL
+  aliases: ["*", mul]
+  legacy_tokens: ["*"]
+  bucket: A1_fusion_critical
+  semantics: "Multiplication"
+  docs: "SEMANTICS.md#arithmetic"
+
+- ir: DIV
+  aliases: ["/", div]
+  legacy_tokens: ["/"]
+  bucket: A1_fusion_critical
+  semantics: "Division"
+  docs: "SEMANTICS.md#arithmetic"
+
+- ir: GTR
   aliases: [">", gt]
   legacy_tokens: [">", ">-col", ">-cols"]
-  ir_node: Gt
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: ">-col and >-cols are table variants"
-  semantics_doc: "SEMANTICS.md#comparison"
+  semantics: "Greater than"
+  docs: "SEMANTICS.md#comparisons"
 
-- canonical: CMP_LT
-  semantics: "Less than (<)"
+- ir: LSS
   aliases: ["<", lt]
   legacy_tokens: ["<"]
-  ir_node: Lt
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Need IR for fusion"
-  semantics_doc: "SEMANTICS.md#comparison"
+  semantics: "Less than"
+  docs: "SEMANTICS.md#comparisons"
 
-- canonical: CMP_GTE
-  semantics: "Greater than or equal (>=)"
-  aliases: [">=", gte]
-  legacy_tokens: [">="]
-  ir_node: Gte
-  ir_ready: false
-  params: []
-  bucket: A1_fusion_critical
-  notes: "Need IR for fusion"
-  semantics_doc: "SEMANTICS.md#comparison"
-
-- canonical: CMP_LTE
-  semantics: "Less than or equal (<=)"
+- ir: LTE
   aliases: ["<=", lte]
   legacy_tokens: ["<="]
-  ir_node: Lte
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Need IR for fusion"
-  semantics_doc: "SEMANTICS.md#comparison"
+  semantics: "Less than or equal"
+  docs: "SEMANTICS.md#comparisons"
 
-- canonical: CMP_EQ
-  semantics: "Equal (==)"
+- ir: GTE
+  aliases: [">=", gte]
+  legacy_tokens: [">="]
+  bucket: A1_fusion_critical
+  semantics: "Greater than or equal"
+  docs: "SEMANTICS.md#comparisons"
+
+- ir: EQL
   aliases: ["==", eq]
   legacy_tokens: ["=="]
-  ir_node: Eq
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Need IR for fusion"
-  semantics_doc: "SEMANTICS.md#comparison"
+  semantics: "Equal"
+  docs: "SEMANTICS.md#comparisons"
 
-- canonical: CMP_NEQ
-  semantics: "Not equal (!=)"
+- ir: NEQ
   aliases: ["!=", neq]
   legacy_tokens: ["!="]
-  ir_node: Neq
-  ir_ready: false
-  params: []
   bucket: A1_fusion_critical
-  notes: "Need IR for fusion"
-  semantics_doc: "SEMANTICS.md#comparison"
+  semantics: "Not equal"
+  docs: "SEMANTICS.md#comparisons"
 
 # ------------------------------------------------------------------------------
-# Table/Frame Operations (Planner-Structural)
+# Source: I/O operations
 # ------------------------------------------------------------------------------
 
-- canonical: TBL_SELECT
-  semantics: "Select columns by name"
-  aliases: [select]
-  legacy_tokens: [select]
-  ir_node: Select
-  ir_ready: false
-  params: [columns...]
-  bucket: A2_planner_structural
-  notes: "Returns new table with selected columns"
-  semantics_doc: "SEMANTICS.md#table-operations"
-
-- canonical: TBL_SELECT_NUM
-  semantics: "Select numeric columns only"
-  aliases: [select-num]
-  legacy_tokens: [select-num]
-  ir_node: SelectNum
-  ir_ready: false
-  params: []
-  bucket: A2_planner_structural
-  notes: "Filters non-numeric columns"
-  semantics_doc: "SEMANTICS.md#table-operations"
-
-- canonical: TBL_SETCOL
-  semantics: "Set/replace column in table"
-  aliases: [setcol, with]
-  legacy_tokens: [setcol, withcol]
-  ir_node: SetCol
-  ir_ready: false
-  params: [name, values]
-  bucket: A2_planner_structural
-  notes: "withcol is alias"
-  semantics_doc: "SEMANTICS.md#table-operations"
-
-- canonical: TBL_COL
-  semantics: "Extract single column"
-  aliases: [col]
-  legacy_tokens: [col, w]
-  ir_node: ExtractCol
-  ir_ready: false
-  params: [column_name_or_index]
-  bucket: A2_planner_structural
-  notes: "w is positional version"
-  semantics_doc: "SEMANTICS.md#table-operations"
-
-- canonical: TBL_JOIN_LEFT
-  semantics: "LEFT JOIN by first column (row key)"
-  aliases: [mapr, left-join]
-  legacy_tokens: [mapr]
-  ir_node: LeftJoin
-  ir_ready: false
-  params: [left, right]
-  bucket: A2_planner_structural
-  notes: "Reindex right to match left keys"
-  semantics_doc: "SEMANTICS.md#join-operations"
-
-- canonical: TBL_ORIENTATION
-  semantics: "Change table orientation"
-  aliases: [o, orient]
-  legacy_tokens: [o, ro]
-  ir_node: SetOrientation
-  ir_ready: false
-  params: [orientation]
-  bucket: A2_planner_structural
-  notes: "ro is relative orientation"
-  semantics_doc: "SEMANTICS.md#orientation-semantics"
-
-# ------------------------------------------------------------------------------
-# I/O Operations (Edge, Keep as Legacy Wrappers)
-# ------------------------------------------------------------------------------
-
-- canonical: IO_LOAD_CSV
-  semantics: "Load CSV file into table"
+- ir: File
   aliases: [file, load, read-csv]
   legacy_tokens: [file]
-  ir_node: LoadFile
-  ir_ready: true
-  params: [path]
   bucket: A3_edge_io
-  notes: "IR recognizes but delegates to runtime"
-  semantics_doc: "SEMANTICS.md#io-operations"
+  semantics: "Load CSV from file"
+  docs: "SEMANTICS.md#io"
 
-- canonical: IO_STDIN
-  semantics: "Read CSV from stdin"
+- ir: Stdin
   aliases: [stdin]
   legacy_tokens: [stdin]
-  ir_node: Stdin
-  ir_ready: true
-  params: []
   bucket: A3_edge_io
-  notes: "IR recognizes but delegates to runtime"
-  semantics_doc: "SEMANTICS.md#io-operations"
-
-- canonical: IO_SAVE
-  semantics: "Write table to CSV file"
-  aliases: [save, write-csv]
-  legacy_tokens: [save]
-  ir_node: SaveFile
-  ir_ready: false
-  params: [path, table]
-  bucket: A3_edge_io
-  notes: "Builtin only"
-  semantics_doc: "SEMANTICS.md#io-operations"
-
-- canonical: IO_PRINT
-  semantics: "Print value to stdout"
-  aliases: [print]
-  legacy_tokens: [print]
-  ir_node: Print
-  ir_ready: false
-  params: [value]
-  bucket: A3_edge_io
-  notes: "Builtin only, returns nil"
-  semantics_doc: "SEMANTICS.md#io-operations"
+  semantics: "Read from stdin"
+  docs: "SEMANTICS.md#io"
 
 # ------------------------------------------------------------------------------
-# Composite/Finance Operations
+# Operations NOT yet in IR (builtin-only)
 # ------------------------------------------------------------------------------
 
-- canonical: FIN_UNIT_RATIO
-  semantics: "Unit ratio (risk-adjusted return): mean/std over window"
-  aliases: [ur, unit-ratio, sharpe]
-  legacy_tokens: [ur-col, ur, ur-cols]
-  ir_node: UnitRatio
-  ir_ready: false
-  params: [window, step]
-  bucket: A2_planner_structural
-  notes: "Composite: mean(x,w,s) / std(x,w,s)"
-  semantics_doc: "SEMANTICS.md#finance-operations"
+- ir: null
+  aliases: [sum]
+  legacy_tokens: [sum]
+  bucket: A1_fusion_critical
+  semantics: "Sum (orientation-aware, propagates NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
 
-- canonical: FIN_ROLLING_ZSCORE
-  semantics: "Rolling z-score: (x - rolling_mean) / rolling_std"
-  aliases: [wzs, rolling-zscore, roll-z]
-  legacy_tokens: [wzs, wz0, wz0-cols]
-  ir_node: RollingZScore
-  ir_ready: false
-  params: [window, step]
-  bucket: A2_planner_structural
-  notes: "Composite: (x - rolling_mean(x,w)) / rolling_std(x,w)"
-  semantics_doc: "SEMANTICS.md#finance-operations"
+- ir: null
+  aliases: [sum0]
+  legacy_tokens: [sum0]
+  bucket: A1_fusion_critical
+  semantics: "Sum (orientation-aware, skips NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
 
-- canonical: FIN_XMINUS
-  semantics: "Pairwise spreads (subtract mean from each column)"
+- ir: null
+  aliases: [mean]
+  legacy_tokens: [mean]
+  bucket: A1_fusion_critical
+  semantics: "Mean (orientation-aware, propagates NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [mean0]
+  legacy_tokens: [mean0]
+  bucket: A1_fusion_critical
+  semantics: "Mean (orientation-aware, skips NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [std]
+  legacy_tokens: [std]
+  bucket: A1_fusion_critical
+  semantics: "Sample standard deviation (ddof=1, propagates NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [std0]
+  legacy_tokens: [std0]
+  bucket: A1_fusion_critical
+  semantics: "Sample standard deviation (ddof=1, skips NA)"
+  docs: "SEMANTICS.md#aggregations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [diff]
+  legacy_tokens: [diff, diff-col, diff-cols]
+  bucket: A1_fusion_critical
+  semantics: "First difference (x[t] - x[t-k])"
+  docs: "SEMANTICS.md#temporal-operations"
+  notes: "TODO: Move to IR as SHF_PTW_LIN_SPR"
+
+- ir: null
+  aliases: [col]
+  legacy_tokens: [col, w]
+  bucket: A2_planner_structural
+  semantics: "Extract single column"
+  docs: "SEMANTICS.md#table-operations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [select]
+  legacy_tokens: [select]
+  bucket: A2_planner_structural
+  semantics: "Select columns by name"
+  docs: "SEMANTICS.md#table-operations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [setcol, with]
+  legacy_tokens: [setcol, withcol]
+  bucket: A2_planner_structural
+  semantics: "Set/replace column in table"
+  docs: "SEMANTICS.md#table-operations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [o, orient]
+  legacy_tokens: [o, ro]
+  bucket: A2_planner_structural
+  semantics: "Change table orientation"
+  docs: "SEMANTICS.md#table-operations"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [mapr, left-join]
+  legacy_tokens: [mapr]
+  bucket: A2_planner_structural
+  semantics: "LEFT JOIN by first column (row key)"
+  docs: "SEMANTICS.md#joins"
+  notes: "TODO: Move to IR"
+
+- ir: null
   aliases: [xminus, x-, demean]
   legacy_tokens: [xminus]
-  ir_node: XMinus
-  ir_ready: false
-  params: [init]  # default: 1.0
   bucket: A2_planner_structural
-  notes: "For each col: col - mean(col) + init"
-  semantics_doc: "SEMANTICS.md#finance-operations"
+  semantics: "Pairwise spreads (subtract mean from each column)"
+  docs: "SEMANTICS.md#finance"
+  notes: "TODO: Move to IR"
 
-# ------------------------------------------------------------------------------
-# Utility Operations
-# ------------------------------------------------------------------------------
+- ir: null
+  aliases: [ur, unit-ratio, sharpe]
+  legacy_tokens: [ur, ur-col, ur-cols]
+  bucket: A2_planner_structural
+  semantics: "Unit ratio (risk-adjusted return): mean/std over window"
+  docs: "SEMANTICS.md#finance"
+  notes: "TODO: Move to IR"
 
-- canonical: UTL_TYPE
-  semantics: "Get type name of value"
-  aliases: [type-of, typeof]
-  legacy_tokens: [type-of]
-  ir_node: null
-  ir_ready: false
-  params: [value]
+- ir: null
+  aliases: [wzs, rolling-zscore, roll-z]
+  legacy_tokens: [wzs, wz0, wz0-cols]
+  bucket: A2_planner_structural
+  semantics: "Rolling z-score"
+  docs: "SEMANTICS.md#finance"
+  notes: "TODO: Move to IR"
+
+- ir: null
+  aliases: [print]
+  legacy_tokens: [print]
   bucket: A3_edge_io
-  notes: "Introspection, not fuseable"
-  semantics_doc: null
+  semantics: "Print to stdout"
+  docs: "SEMANTICS.md#io"
+  notes: "Keep as builtin"
 
-- canonical: UTL_LEN
-  semantics: "Get length of column or table"
+- ir: null
+  aliases: [save, write-csv]
+  legacy_tokens: [save]
+  bucket: A3_edge_io
+  semantics: "Save to file"
+  docs: "SEMANTICS.md#io"
+  notes: "Keep as builtin"
+
+- ir: null
   aliases: [len, length, nrow]
   legacy_tokens: [len]
-  ir_node: null
-  ir_ready: false
-  params: [value]
   bucket: A3_edge_io
-  notes: "Metadata, not fuseable"
-  semantics_doc: null
+  semantics: "Row count"
+  docs: "SEMANTICS.md#utility"
+  notes: "Keep as builtin"
 
-# ==============================================================================
-# Migration Priority Buckets
-# ==============================================================================
-#
-# A1_fusion_critical: Move to IR first (unlock real fusion)
-#   - Elementwise: add, sub, mul, div, log, exp, abs, neg
-#   - Shifts: dlog, shift, diff
-#   - Rolling: rolling-mean, rolling-std, rolling-min/max
-#   - Masks: wkd
-#   - Aggregations: sum, mean, std (for rolling composition)
-#
-# A2_planner_structural: Move after A1 (enable rewrites)
-#   - select, with, rename, join, group, sort, asof
-#   - Composite: ur, wzs, xminus
-#
-# A3_edge_io: Keep as legacy wrappers longer
-#   - file, save, stdin, print
-#   - Utility: type-of, len
-#
-# ==============================================================================
-# Naming Rules (L1: User-Facing Aliases)
-# ==============================================================================
-#
-# 1. Verb-first: rolling-mean, shift, weekday, dropna
-# 2. Dash-separated (no underscores)
-# 3. No abbreviations unless standard (std, abs, exp, log)
-# 4. Avoid overloading: different semantics = different name
-# 5. Prefer descriptive over terse: rolling-mean vs rm
-#
-# ==============================================================================
-# Legacy Token Rules (L2: Backward Compat)
-# ==============================================================================
-#
-# 1. Legacy tokens map many-to-one onto canonical IDs
-# 2. Deprecated tokens emit warnings (e.g., dlog-col)
-# 3. Aliases are allowed (e.g., w5 → wkd)
-# 4. Canonical never depends on legacy tokens
-#
-# ==============================================================================
+- ir: null
+  aliases: [type-of, typeof]
+  legacy_tokens: [type-of]
+  bucket: A3_edge_io
+  semantics: "Type introspection"
+  docs: "SEMANTICS.md#utility"
+  notes: "Keep as builtin"

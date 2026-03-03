@@ -136,6 +136,15 @@ pub enum Source {
     Variable { name: SymbolId },
 }
 
+impl Source {
+    /// All IR operation variant names (for validation against YAML)
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "File",
+        "Stdin",
+        "Variable",
+    ];
+}
+
 /// Unary operations (all preserve tags via map_numeric_preserve_tags)
 ///
 /// Contract: Output has same index, colnames, and nrows as input
@@ -346,6 +355,30 @@ pub enum NumericFunc {
 }
 
 impl NumericFunc {
+    /// All IR operation variant names (for validation against YAML)
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "SHF_PTW_OBS_NLN_DLOG",
+        "SHF_PTW_OFS_NLN_DLOG",
+        "RET",
+        "LOG",
+        "EXP",
+        "SQRT",
+        "ABS",
+        "INV",
+        "SHF_REC_NLN_LOCF",
+        "MSK_WKE",
+        "SHF_PFX_LIN_SUM",
+        "SHF_PTW_LIN_SHF",
+        "LAG_OBS",
+        "KEEP",
+        "SHF_WIN_LIN_AVG",
+        "SHF_WIN_NLN_SDV",
+        "SHF_WIN_MIN2_LIN_AVG",
+        "SHF_WIN_MIN2_NLN_SDV",
+        "SHF_WIN_MIN2_LIN_AVG_EXCL",
+        "SHF_WIN_MIN2_NLN_SDV_EXCL",
+    ];
+
     /// Returns true if this function is pure elementwise (no dependencies on other rows)
     pub fn is_pure_elementwise(&self) -> bool {
         matches!(
@@ -411,6 +444,15 @@ pub enum BinaryFunc {
     EQL,
     /// Not equal: x != y → 1.0 (true), 0.0 (false), NA (if either is NA)
     NEQ,
+}
+
+impl BinaryFunc {
+    /// All IR operation variant names (for validation against YAML)
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "ADD", "SUB", "MUL", "DIV",
+        "GTR", "LSS", "LTE", "GTE",
+        "EQL", "NEQ",
+    ];
 }
 
 /// Join operations

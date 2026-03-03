@@ -1,0 +1,33 @@
+Enum,Canonical_Name,User_Aliases,Notes
+NumericFunc,SHF_PTW_OBS_NLN_DLOG,"dlog, dlog-obs",Observation-based log difference (skips NA)
+NumericFunc,SHF_PTW_OFS_NLN_DLOG,dlog-ofs,Offset-based log difference (positional)
+NumericFunc,RET,ret,Simple return
+NumericFunc,LOG,log,Natural logarithm
+NumericFunc,EXP,exp,Exponential
+NumericFunc,SQRT,sqrt,Square root
+NumericFunc,ABS,abs,Absolute value
+NumericFunc,INV,inv,Inverse (1/x)
+NumericFunc,SHF_REC_NLN_LOCF,"locf, ffill",Last observation carried forward
+NumericFunc,MSK_WKE,"wkd, weekday",Weekday mask (Mon-Fri)
+NumericFunc,SHF_PFX_LIN_SUM,"cs1, cumsum",Cumulative sum from 1.0
+NumericFunc,SHF_PTW_LIN_SHF,"shift, lag",Shift/lag k rows
+NumericFunc,LAG_OBS,lag-obs,Mask-aware lag (skips masked rows)
+NumericFunc,KEEP,keep,Keep every k-th row
+NumericFunc,SHF_WIN_LIN_AVG,"rolling-mean, roll-mean",Rolling mean (strict min_periods=w)
+NumericFunc,SHF_WIN_NLN_SDV,"rolling-std, roll-std",Rolling std (strict min_periods=w)
+NumericFunc,SHF_WIN_MIN2_LIN_AVG,rolling-mean-min,Rolling mean (min 2 obs)
+NumericFunc,SHF_WIN_MIN2_NLN_SDV,rolling-std-min,Rolling std (min 2 obs)
+NumericFunc,SHF_WIN_MIN2_LIN_AVG_EXCL,rolling-mean-excl,Rolling mean excluding current (min 2 obs)
+NumericFunc,SHF_WIN_MIN2_NLN_SDV_EXCL,rolling-std-excl,Rolling std excluding current (min 2 obs)
+BinaryFunc,ADD,"+, add",Addition
+BinaryFunc,SUB,"-, sub",Subtraction
+BinaryFunc,MUL,"*, mul",Multiplication
+BinaryFunc,DIV,"/, div",Division
+BinaryFunc,GTR,">, gt",Greater than
+BinaryFunc,LSS,"<, lt",Less than
+BinaryFunc,LTE,"<=, lte",Less than or equal
+BinaryFunc,GTE,">=, gte",Greater than or equal
+BinaryFunc,EQL,"==, eq",Equal
+BinaryFunc,NEQ,"!=, neq",Not equal
+Source,File,file,Load CSV from file
+Source,Stdin,stdin,Read from stdin

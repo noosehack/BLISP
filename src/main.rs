@@ -103,7 +103,7 @@ fn handle_dic_subcommand(args: &[String]) {
     let has_view_flag = args.iter().skip(2).any(|arg| {
         matches!(
             arg.as_str(),
-            "--exposed" | "--legacy" | "--todo-ir"
+            "--exposed" | "--legacy" | "--todo-ir" | "--unmapped"
         )
     });
 
@@ -125,6 +125,10 @@ fn handle_dic_subcommand(args: &[String]) {
                 view = View::TodoIR;
                 i += 1;
             }
+            "--unmapped" => {
+                view = View::Unmapped;
+                i += 1;
+            }
             "--json" => {
                 format = OutputFormat::Json;
                 i += 1;
@@ -139,7 +143,7 @@ fn handle_dic_subcommand(args: &[String]) {
             }
             _ => {
                 eprintln!("Error: unknown dic option: {}", args[i]);
-                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --json, --grep <pattern>");
+                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --json, --grep <pattern>");
                 std::process::exit(1);
             }
         }

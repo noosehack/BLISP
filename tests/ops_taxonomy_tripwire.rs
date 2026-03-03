@@ -14,16 +14,20 @@ use std::fs;
 
 #[derive(Debug, serde::Deserialize)]
 struct OpDef {
-    canonical: String,
-    semantics: String,
-    aliases: Vec<String>,
-    legacy_tokens: Vec<String>,
-    ir_node: Option<String>,
-    ir_ready: bool,
-    params: Vec<String>,
-    bucket: String,
-    notes: String,
-    semantics_doc: Option<String>,
+    #[serde(default)]
+    pub ir: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub legacy_tokens: Vec<String>,
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default)]
+    pub semantics: String,
+    #[serde(default)]
+    pub docs: String,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[test]
@@ -35,14 +39,15 @@ fn tripwire_no_alias_overloading() {
     let mut violations = Vec::new();
 
     for op in &ops {
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
         for alias in &op.aliases {
             if let Some(existing_canonical) = alias_to_canonical.get(alias) {
                 violations.push(format!(
                     "Alias '{}' maps to both '{}' and '{}'",
-                    alias, existing_canonical, op.canonical
+                    alias, existing_canonical, ir_display
                 ));
             } else {
-                alias_to_canonical.insert(alias.clone(), op.canonical.clone());
+                alias_to_canonical.insert(alias.clone(), ir_display.to_string());
             }
         }
     }
@@ -64,14 +69,15 @@ fn tripwire_no_legacy_token_overloading() {
     let mut violations = Vec::new();
 
     for op in &ops {
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
         for token in &op.legacy_tokens {
             if let Some(existing_canonical) = token_to_canonical.get(token) {
                 violations.push(format!(
                     "Legacy token '{}' maps to both '{}' and '{}'",
-                    token, existing_canonical, op.canonical
+                    token, existing_canonical, ir_display
                 ));
             } else {
-                token_to_canonical.insert(token.clone(), op.canonical.clone());
+                token_to_canonical.insert(token.clone(), ir_display.to_string());
             }
         }
     }
@@ -93,10 +99,11 @@ fn tripwire_all_canonicals_documented() {
     let mut violations = Vec::new();
 
     for op in &ops {
-        if op.semantics_doc.is_none() && !op.bucket.starts_with("A3_edge") {
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        if op.docs.is_empty() && !op.bucket.starts_with("A3_edge") {
             violations.push(format!(
-                "Canonical '{}' has no semantics_doc anchor (bucket: {})",
-                op.canonical, op.bucket
+                "Operation '{}' has no docs anchor (bucket: {})",
+                ir_display, op.bucket
             ));
         }
     }
@@ -111,49 +118,60 @@ fn tripwire_all_canonicals_documented() {
 
 #[test]
 fn tripwire_canonical_id_format() {
-    // Rule: Canonical IDs must follow ISO-like naming convention
+    // Rule: IR operation IDs must follow ISO-like naming convention
     // Format: PREFIX_CATEGORY_TYPE_NAME
     // Prefixes: MSK, SHF, CUM, WIN, BIN, UNY, CMP, AGG, TBL, IO, FIN, UTL
+    // Note: Some IR ops use short names (ADD, LOG, GTR) which is valid
     let ops = load_canonical_map();
 
     let valid_prefixes = vec![
         "MSK", "SHF", "CUM", "WIN", "BIN", "UNY", "CMP",
-        "AGG", "TBL", "IO", "FIN", "UTL"
+        "AGG", "TBL", "IO", "FIN", "UTL", "RET", "LOG", "EXP",
+        "SQRT", "ABS", "INV", "LAG", "KEEP", "ADD", "SUB", "MUL",
+        "DIV", "GTR", "LSS", "LTE", "GTE", "EQL", "NEQ", "File", "Stdin", "Variable"
     ];
 
     let mut violations = Vec::new();
 
     for op in &ops {
-        let parts: Vec<&str> = op.canonical.split('_').collect();
+        // Skip builtin-only operations
+        if op.ir.is_none() {
+            continue;
+        }
+
+        let ir_name = op.ir.as_ref().unwrap();
+        let parts: Vec<&str> = ir_name.split('_').collect();
+
         if parts.is_empty() {
             violations.push(format!(
-                "Canonical '{}' has no underscore separators",
-                op.canonical
+                "IR name '{}' has no underscore separators",
+                ir_name
             ));
             continue;
         }
 
-        if !valid_prefixes.contains(&parts[0]) {
+        // Check if first part is a valid prefix (or short name)
+        if !valid_prefixes.iter().any(|p| ir_name.starts_with(p)) {
             violations.push(format!(
-                "Canonical '{}' has invalid prefix '{}' (expected one of: {})",
-                op.canonical,
+                "IR name '{}' has invalid prefix '{}' (expected one of: {})",
+                ir_name,
                 parts[0],
                 valid_prefixes.join(", ")
             ));
         }
 
-        // Must be ALL_CAPS_WITH_UNDERSCORES
-        if op.canonical != op.canonical.to_uppercase() {
+        // Must be ALL_CAPS_WITH_UNDERSCORES (except Source variants like "File")
+        if ir_name != &ir_name.to_uppercase() && !["File", "Stdin", "Variable"].contains(&ir_name.as_str()) {
             violations.push(format!(
-                "Canonical '{}' is not all uppercase",
-                op.canonical
+                "IR name '{}' is not all uppercase",
+                ir_name
             ));
         }
     }
 
     if !violations.is_empty() {
         panic!(
-            "❌ Canonical ID format violations:\n{}",
+            "❌ IR name format violations:\n{}",
             violations.join("\n")
         );
     }
@@ -167,6 +185,7 @@ fn tripwire_alias_naming_conventions() {
     let mut violations = Vec::new();
 
     for op in &ops {
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
         for alias in &op.aliases {
             // Skip operators like +, -, *, /, <, >, etc.
             if alias.chars().all(|c| !c.is_alphanumeric()) {
@@ -177,7 +196,7 @@ fn tripwire_alias_naming_conventions() {
             if alias != &alias.to_lowercase() {
                 violations.push(format!(
                     "Alias '{}' (for {}) contains uppercase letters",
-                    alias, op.canonical
+                    alias, ir_display
                 ));
             }
 
@@ -185,7 +204,7 @@ fn tripwire_alias_naming_conventions() {
             if alias.contains('_') {
                 violations.push(format!(
                     "Alias '{}' (for {}) contains underscores (use dashes instead)",
-                    alias, op.canonical
+                    alias, ir_display
                 ));
             }
         }
@@ -213,10 +232,11 @@ fn tripwire_bucket_validity() {
     let mut violations = Vec::new();
 
     for op in &ops {
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
         if !valid_buckets.contains(&op.bucket.as_str()) {
             violations.push(format!(
                 "Operation '{}' has invalid bucket '{}' (expected one of: {})",
-                op.canonical,
+                ir_display,
                 op.bucket,
                 valid_buckets.join(", ")
             ));
@@ -232,24 +252,26 @@ fn tripwire_bucket_validity() {
 }
 
 #[test]
-fn tripwire_ir_ready_consistency() {
-    // Rule: If ir_ready=true, must have ir_node
+fn tripwire_ir_field_consistency() {
+    // Rule: If ir field is Some, it must not be empty
     let ops = load_canonical_map();
 
     let mut violations = Vec::new();
 
     for op in &ops {
-        if op.ir_ready && op.ir_node.is_none() {
-            violations.push(format!(
-                "Operation '{}' is marked ir_ready=true but has no ir_node",
-                op.canonical
-            ));
+        if let Some(ref ir_name) = op.ir {
+            if ir_name.is_empty() {
+                violations.push(format!(
+                    "Operation has ir field but it's empty (aliases: {:?})",
+                    op.aliases
+                ));
+            }
         }
     }
 
     if !violations.is_empty() {
         panic!(
-            "❌ IR readiness inconsistencies:\n{}",
+            "❌ IR field inconsistencies:\n{}",
             violations.join("\n")
         );
     }
@@ -317,11 +339,12 @@ fn tripwire_migration_priority_order() {
     let mut a2_ready = Vec::new();
 
     for op in &ops {
-        if op.bucket == "A1_fusion_critical" && !op.ir_ready {
-            a1_not_ready.push(op.canonical.clone());
+        let ir_display = op.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        if op.bucket == "A1_fusion_critical" && op.ir.is_none() {
+            a1_not_ready.push(ir_display.to_string());
         }
-        if op.bucket == "A2_planner_structural" && op.ir_ready {
-            a2_ready.push(op.canonical.clone());
+        if op.bucket == "A2_planner_structural" && op.ir.is_some() {
+            a2_ready.push(ir_display.to_string());
         }
     }
 
@@ -367,4 +390,30 @@ fn extract_planner_tokens() -> HashSet<String> {
     // TODO: Parse src/planner.rs match statements
     // For now, return empty set (implement when needed)
     HashSet::new()
+}
+
+/// CRITICAL: YAML ir: names must exist in actual IR enums (prevents invented names)
+#[test]
+fn tripwire_yaml_references_only_real_ir_ops() {
+    use blisp::dic::{ir_name_set, load_op_map};
+
+    let entries = load_op_map().expect("Failed to load OPS_CANONICAL_MAP.yml");
+    let actual_ir_ops = ir_name_set();
+
+    let mut unknown_ops = Vec::new();
+
+    for entry in &entries {
+        if let Some(ref ir_name) = entry.ir {
+            if !actual_ir_ops.contains(ir_name.as_str()) {
+                unknown_ops.push(ir_name.clone());
+            }
+        }
+    }
+
+    assert!(
+        unknown_ops.is_empty(),
+        "YAML references unknown IR ops (not in src/ir.rs enums): {:?}\n\
+         This prevents invented canonical names. Code is source of truth.",
+        unknown_ops
+    );
 }

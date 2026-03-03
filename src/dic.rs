@@ -1,64 +1,99 @@
-// Dictionary module: Read and display canonical operation map
+// Dictionary module: Display operation metadata
 //
-// Reads OPS_CANONICAL_MAP.yml embedded at compile time and provides
-// multiple views of the operation taxonomy.
+// Schema: Code owns canonical IDs (enum variants), YAML owns metadata (aliases, docs, buckets)
+// Validates YAML ir: field against actual IR enum variants (anti-invention guardrail)
 
+use crate::ir::{BinaryFunc, NumericFunc, Source};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-/// Embedded canonical map (compiled into binary)
+/// Embedded metadata overlay (compiled into binary)
 const CANONICAL_MAP_YAML: &str = include_str!("../OPS_CANONICAL_MAP.yml");
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpDef {
-    pub canonical: String,
-    pub semantics: String,
+pub struct OpMapEntry {
+    pub ir: Option<String>,
+    #[serde(default)]
     pub aliases: Vec<String>,
+    #[serde(default)]
     pub legacy_tokens: Vec<String>,
-    pub ir_node: Option<String>,
-    pub ir_ready: bool,
-    pub params: Vec<String>,
+    #[serde(default)]
     pub bucket: String,
+    #[serde(default)]
+    pub semantics: String,
+    #[serde(default)]
+    pub docs: String,
+    #[serde(default)]
     pub notes: String,
-    pub semantics_doc: Option<String>,
 }
 
-/// Parse the embedded canonical map
-pub fn load_canonical_map() -> Result<Vec<OpDef>, String> {
+/// Build authoritative IR-name set from code (source of truth)
+pub fn ir_name_set() -> HashSet<&'static str> {
+    let mut s = HashSet::new();
+    for &n in NumericFunc::ALL_NAMES {
+        s.insert(n);
+    }
+    for &n in BinaryFunc::ALL_NAMES {
+        s.insert(n);
+    }
+    for &n in Source::ALL_NAMES {
+        s.insert(n);
+    }
+    s
+}
+
+/// Parse the embedded metadata overlay
+pub fn load_op_map() -> Result<Vec<OpMapEntry>, String> {
     serde_yaml::from_str(CANONICAL_MAP_YAML)
-        .map_err(|e| format!("Failed to parse embedded OPS_CANONICAL_MAP.yml: {}", e))
+        .map_err(|e| format!("Failed to parse OPS_CANONICAL_MAP.yml: {}", e))
 }
 
-/// Validate the canonical map (check for collisions, format, etc.)
-pub fn validate_canonical_map(ops: &[OpDef]) -> Result<(), Vec<String>> {
+/// Validate YAML against actual code (anti-invention guardrail)
+pub fn validate_op_map(entries: &[OpMapEntry]) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
+    let ir_set = ir_name_set();
+
+    // CRITICAL: Validate ir: field against actual enums
+    for entry in entries {
+        if let Some(ref ir_name) = entry.ir {
+            if !ir_set.contains(ir_name.as_str()) {
+                errors.push(format!(
+                    "❌ Unknown IR op '{}' (not present in src/ir.rs enums). \
+                     This prevents invented canonical names.",
+                    ir_name
+                ));
+            }
+        }
+    }
 
     // Check for alias collisions
-    let mut alias_to_canonical: HashMap<String, String> = HashMap::new();
-    for op in ops {
-        for alias in &op.aliases {
-            if let Some(existing) = alias_to_canonical.get(alias) {
+    let mut alias_to_ir: HashMap<String, String> = HashMap::new();
+    for entry in entries {
+        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        for alias in &entry.aliases {
+            if let Some(existing) = alias_to_ir.get(alias) {
                 errors.push(format!(
                     "Alias '{}' maps to both '{}' and '{}'",
-                    alias, existing, op.canonical
+                    alias, existing, ir_display
                 ));
             } else {
-                alias_to_canonical.insert(alias.clone(), op.canonical.clone());
+                alias_to_ir.insert(alias.clone(), ir_display.to_string());
             }
         }
     }
 
     // Check for legacy token collisions
-    let mut token_to_canonical: HashMap<String, String> = HashMap::new();
-    for op in ops {
-        for token in &op.legacy_tokens {
-            if let Some(existing) = token_to_canonical.get(token) {
+    let mut token_to_ir: HashMap<String, String> = HashMap::new();
+    for entry in entries {
+        let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+        for token in &entry.legacy_tokens {
+            if let Some(existing) = token_to_ir.get(token) {
                 errors.push(format!(
                     "Legacy token '{}' maps to both '{}' and '{}'",
-                    token, existing, op.canonical
+                    token, existing, ir_display
                 ));
             } else {
-                token_to_canonical.insert(token.clone(), op.canonical.clone());
+                token_to_ir.insert(token.clone(), ir_display.to_string());
             }
         }
     }
@@ -70,7 +105,7 @@ pub fn validate_canonical_map(ops: &[OpDef]) -> Result<(), Vec<String>> {
     }
 }
 
-/// Format for output
+/// Output format
 #[derive(Debug, Clone, Copy)]
 pub enum OutputFormat {
     Table,
@@ -80,40 +115,46 @@ pub enum OutputFormat {
 /// View selection
 #[derive(Debug, Clone, Copy)]
 pub enum View {
-    Exposed,  // Aliases table
-    Legacy,   // Legacy tokens table
-    TodoIR,   // IR migration queue
-    All,      // All views (default)
+    Exposed,      // Aliases table
+    Legacy,       // Legacy tokens table
+    TodoIR,       // IR migration queue
+    Unmapped,     // IR ops missing metadata
+    All,          // All views (default)
 }
 
-/// Print exposed aliases table
+/// View 1: Print exposed aliases table (L1)
 pub fn print_exposed_aliases(
-    ops: &[OpDef],
+    entries: &[OpMapEntry],
     format: OutputFormat,
     grep_pattern: Option<&str>,
 ) {
-    let mut rows: Vec<(String, String, bool, String, String)> = Vec::new();
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
 
-    for op in ops {
-        for alias in &op.aliases {
+    for entry in entries {
+        for alias in &entry.aliases {
             // Filter by grep pattern if provided
             if let Some(pattern) = grep_pattern {
-                if !alias.contains(pattern) && !op.canonical.contains(pattern) {
+                let ir_name = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("");
+                if !alias.contains(pattern) && !ir_name.contains(pattern) {
                     continue;
                 }
             }
 
-            let legacy_str = if op.legacy_tokens.is_empty() {
+            let ir_display = entry
+                .ir
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("<builtin>");
+            let legacy_str = if entry.legacy_tokens.is_empty() {
                 "-".to_string()
             } else {
-                op.legacy_tokens.join(", ")
+                entry.legacy_tokens.join(", ")
             };
 
             rows.push((
                 alias.clone(),
-                op.canonical.clone(),
-                op.ir_ready,
-                op.bucket.clone(),
+                ir_display.to_string(),
+                entry.bucket.clone(),
                 legacy_str,
             ));
         }
@@ -127,30 +168,24 @@ pub fn print_exposed_aliases(
             println!("# Exposed Aliases (User-Facing Operations)");
             println!();
             println!(
-                "{:<25} {:<30} {:<10} {:<25} {}",
-                "Alias", "Canonical ID", "IR Ready", "Bucket", "Legacy Tokens"
+                "{:<25} {:<30} {:<25} {}",
+                "Alias", "IR / Builtin", "Bucket", "Legacy Tokens"
             );
-            println!("{}", "-".repeat(120));
+            println!("{}", "-".repeat(110));
 
-            let row_count = rows.len();
-            for (alias, canonical, ir_ready, bucket, legacy) in rows {
-                let ir_status = if ir_ready { "✅ YES" } else { "❌ NO" };
-                println!(
-                    "{:<25} {:<30} {:<10} {:<25} {}",
-                    alias, canonical, ir_status, bucket, legacy
-                );
+            for (alias, ir, bucket, legacy) in &rows {
+                println!("{:<25} {:<30} {:<25} {}", alias, ir, bucket, legacy);
             }
             println!();
-            println!("Total aliases: {}", row_count);
+            println!("Total aliases: {}", rows.len());
         }
         OutputFormat::Json => {
             let json_rows: Vec<serde_json::Value> = rows
                 .iter()
-                .map(|(alias, canonical, ir_ready, bucket, legacy)| {
+                .map(|(alias, ir, bucket, legacy)| {
                     serde_json::json!({
                         "alias": alias,
-                        "canonical": canonical,
-                        "ir_ready": ir_ready,
+                        "ir": ir,
                         "bucket": bucket,
                         "legacy_tokens": legacy,
                     })
@@ -161,23 +196,37 @@ pub fn print_exposed_aliases(
     }
 }
 
-/// Print legacy tokens table
-pub fn print_legacy_tokens(ops: &[OpDef], format: OutputFormat, grep_pattern: Option<&str>) {
+/// View 2: Print legacy tokens table (L2)
+pub fn print_legacy_tokens(
+    entries: &[OpMapEntry],
+    format: OutputFormat,
+    grep_pattern: Option<&str>,
+) {
     let mut rows: Vec<(String, String, String)> = Vec::new();
 
-    for op in ops {
-        for token in &op.legacy_tokens {
+    for entry in entries {
+        for token in &entry.legacy_tokens {
             // Filter by grep pattern if provided
             if let Some(pattern) = grep_pattern {
-                if !token.contains(pattern) && !op.canonical.contains(pattern) {
+                let ir_name = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("");
+                if !token.contains(pattern) && !ir_name.contains(pattern) {
                     continue;
                 }
             }
 
+            let ir_display = entry
+                .ir
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("<builtin>");
             // Find suggested replacement (first alias)
-            let suggested = op.aliases.first().cloned().unwrap_or_else(|| "-".to_string());
+            let suggested = entry
+                .aliases
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
 
-            rows.push((token.clone(), op.canonical.clone(), suggested));
+            rows.push((token.clone(), ir_display.to_string(), suggested));
         }
     }
 
@@ -190,24 +239,23 @@ pub fn print_legacy_tokens(ops: &[OpDef], format: OutputFormat, grep_pattern: Op
             println!();
             println!(
                 "{:<25} {:<30} {}",
-                "Legacy Token", "Canonical ID", "Suggested Replacement"
+                "Legacy Token", "IR / Builtin", "Suggested Replacement"
             );
             println!("{}", "-".repeat(90));
 
-            let row_count = rows.len();
-            for (token, canonical, suggested) in rows {
-                println!("{:<25} {:<30} {}", token, canonical, suggested);
+            for (token, ir, suggested) in &rows {
+                println!("{:<25} {:<30} {}", token, ir, suggested);
             }
             println!();
-            println!("Total legacy tokens: {}", row_count);
+            println!("Total legacy tokens: {}", rows.len());
         }
         OutputFormat::Json => {
             let json_rows: Vec<serde_json::Value> = rows
                 .iter()
-                .map(|(token, canonical, suggested)| {
+                .map(|(token, ir, suggested)| {
                     serde_json::json!({
                         "legacy_token": token,
-                        "canonical": canonical,
+                        "ir": ir,
                         "suggested_replacement": suggested,
                     })
                 })
@@ -217,36 +265,39 @@ pub fn print_legacy_tokens(ops: &[OpDef], format: OutputFormat, grep_pattern: Op
     }
 }
 
-/// Print IR migration queue (ops that need IR migration)
-pub fn print_todo_ir(ops: &[OpDef], format: OutputFormat, grep_pattern: Option<&str>) {
-    let mut rows: Vec<(String, String, String, Vec<String>)> = Vec::new();
+/// View 3: Print IR migration queue (ops that need IR migration)
+pub fn print_todo_ir(entries: &[OpMapEntry], format: OutputFormat, grep_pattern: Option<&str>) {
+    let mut rows: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
 
-    for op in ops {
-        // Filter: only A1/A2 bucket and not IR-ready
-        if (op.bucket.starts_with("A1") || op.bucket.starts_with("A2")) && !op.ir_ready {
+    for entry in entries {
+        // Filter: ir == None AND (aliases or legacy_tokens exist) AND bucket in A1/A2
+        if entry.ir.is_none()
+            && (!entry.aliases.is_empty() || !entry.legacy_tokens.is_empty())
+            && (entry.bucket.starts_with("A1") || entry.bucket.starts_with("A2"))
+        {
             // Filter by grep pattern if provided
             if let Some(pattern) = grep_pattern {
-                if !op.canonical.contains(pattern)
-                    && !op.aliases.iter().any(|a| a.contains(pattern))
+                if !entry.aliases.iter().any(|a| a.contains(pattern))
+                    && !entry.legacy_tokens.iter().any(|t| t.contains(pattern))
                 {
                     continue;
                 }
             }
 
             rows.push((
-                op.canonical.clone(),
-                op.bucket.clone(),
-                op.semantics.clone(),
-                op.aliases.clone(),
+                entry.bucket.clone(),
+                entry.semantics.clone(),
+                entry.aliases.clone(),
+                entry.legacy_tokens.clone(),
             ));
         }
     }
 
-    // Sort by bucket (A1 first), then canonical
+    // Sort by bucket (A1 first), then by first alias
     rows.sort_by(|a, b| {
-        let bucket_cmp = a.1.cmp(&b.1);
+        let bucket_cmp = a.0.cmp(&b.0);
         if bucket_cmp == std::cmp::Ordering::Equal {
-            a.0.cmp(&b.0)
+            a.2.first().cmp(&b.2.first())
         } else {
             bucket_cmp
         }
@@ -254,16 +305,21 @@ pub fn print_todo_ir(ops: &[OpDef], format: OutputFormat, grep_pattern: Option<&
 
     match format {
         OutputFormat::Table => {
-            println!("# IR Migration Queue (Not Yet IR-Ready)");
+            println!("# IR Migration Queue (Operations NOT in IR Yet)");
             println!();
             println!(
-                "{:<30} {:<25} {:<50} {}",
-                "Canonical ID", "Bucket", "Semantics", "Aliases"
+                "{:<25} {:<50} {:<30} {}",
+                "Bucket", "Semantics", "Aliases", "Legacy Tokens"
             );
             println!("{}", "-".repeat(130));
 
-            for (canonical, bucket, semantics, aliases) in &rows {
+            for (bucket, semantics, aliases, legacy) in &rows {
                 let aliases_str = aliases.join(", ");
+                let legacy_str = if legacy.is_empty() {
+                    "-".to_string()
+                } else {
+                    legacy.join(", ")
+                };
                 // Truncate semantics if too long
                 let semantics_short = if semantics.len() > 47 {
                     format!("{}...", &semantics[..47])
@@ -272,16 +328,16 @@ pub fn print_todo_ir(ops: &[OpDef], format: OutputFormat, grep_pattern: Option<&
                 };
 
                 println!(
-                    "{:<30} {:<25} {:<50} {}",
-                    canonical, bucket, semantics_short, aliases_str
+                    "{:<25} {:<50} {:<30} {}",
+                    bucket, semantics_short, aliases_str, legacy_str
                 );
             }
             println!();
             println!("Total operations needing IR migration: {}", rows.len());
 
             // Print summary by bucket
-            let a1_count = rows.iter().filter(|(_, b, _, _)| b.starts_with("A1")).count();
-            let a2_count = rows.iter().filter(|(_, b, _, _)| b.starts_with("A2")).count();
+            let a1_count = rows.iter().filter(|(b, _, _, _)| b.starts_with("A1")).count();
+            let a2_count = rows.iter().filter(|(b, _, _, _)| b.starts_with("A2")).count();
             println!();
             println!("By priority:");
             println!("  A1 (fusion-critical): {} ops", a1_count);
@@ -290,16 +346,58 @@ pub fn print_todo_ir(ops: &[OpDef], format: OutputFormat, grep_pattern: Option<&
         OutputFormat::Json => {
             let json_rows: Vec<serde_json::Value> = rows
                 .iter()
-                .map(|(canonical, bucket, semantics, aliases)| {
+                .map(|(bucket, semantics, aliases, legacy)| {
                     serde_json::json!({
-                        "canonical": canonical,
                         "bucket": bucket,
                         "semantics": semantics,
                         "aliases": aliases,
+                        "legacy_tokens": legacy,
                     })
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&json_rows).unwrap());
+        }
+    }
+}
+
+/// View 4: IR ops missing metadata (high value diagnostic)
+pub fn print_unmapped_ir(entries: &[OpMapEntry], format: OutputFormat) {
+    let ir_set = ir_name_set();
+    let mut mapped_ir: HashSet<&str> = HashSet::new();
+
+    // Collect all ir: names from YAML
+    for entry in entries {
+        if let Some(ref ir_name) = entry.ir {
+            mapped_ir.insert(ir_name.as_str());
+        }
+    }
+
+    // Find IR ops in code but not in YAML
+    let mut unmapped: Vec<&str> = ir_set.difference(&mapped_ir).copied().collect();
+    unmapped.sort();
+
+    match format {
+        OutputFormat::Table => {
+            println!("# IR Operations Missing Metadata");
+            println!();
+            if unmapped.is_empty() {
+                println!("✅ All IR operations have metadata entries in YAML");
+            } else {
+                println!("These IR operations exist in code but have no YAML entry:");
+                println!();
+                for op in &unmapped {
+                    println!("  {}", op);
+                }
+                println!();
+                println!("Total unmapped: {}", unmapped.len());
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "unmapped_ir_ops": unmapped,
+                "count": unmapped.len(),
+            });
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
     }
 }
@@ -310,35 +408,41 @@ pub fn run_dic(
     format: OutputFormat,
     grep_pattern: Option<&str>,
 ) -> Result<(), String> {
-    let ops = load_canonical_map()?;
+    let entries = load_op_map()?;
 
-    // Validate map
-    if let Err(errors) = validate_canonical_map(&ops) {
-        eprintln!("❌ Canonical map validation errors:");
-        for error in errors {
+    // Validate map (fail fast if YAML has invented names)
+    if let Err(errors) = validate_op_map(&entries) {
+        eprintln!("❌ Operation map validation errors:");
+        for error in &errors {
             eprintln!("  - {}", error);
         }
-        return Err("Canonical map validation failed".to_string());
+        return Err(format!("Validation failed with {} errors", errors.len()));
     }
 
     match view {
         View::Exposed => {
-            print_exposed_aliases(&ops, format, grep_pattern);
+            print_exposed_aliases(&entries, format, grep_pattern);
         }
         View::Legacy => {
-            print_legacy_tokens(&ops, format, grep_pattern);
+            print_legacy_tokens(&entries, format, grep_pattern);
         }
         View::TodoIR => {
-            print_todo_ir(&ops, format, grep_pattern);
+            print_todo_ir(&entries, format, grep_pattern);
+        }
+        View::Unmapped => {
+            print_unmapped_ir(&entries, format);
         }
         View::All => {
-            print_exposed_aliases(&ops, format, grep_pattern);
+            print_exposed_aliases(&entries, format, grep_pattern);
             println!();
             println!();
-            print_legacy_tokens(&ops, format, grep_pattern);
+            print_legacy_tokens(&entries, format, grep_pattern);
             println!();
             println!();
-            print_todo_ir(&ops, format, grep_pattern);
+            print_todo_ir(&entries, format, grep_pattern);
+            println!();
+            println!();
+            print_unmapped_ir(&entries, format);
         }
     }
 
@@ -351,58 +455,61 @@ mod tests {
 
     #[test]
     fn test_embedded_yaml_parses() {
-        let ops = load_canonical_map().expect("Failed to parse embedded YAML");
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
         assert!(
-            !ops.is_empty(),
-            "Canonical map should contain at least one operation"
+            !entries.is_empty(),
+            "Operation map should contain at least one entry"
         );
     }
 
     #[test]
     fn test_no_alias_collisions() {
-        let ops = load_canonical_map().expect("Failed to parse embedded YAML");
-        let mut alias_to_canonical: HashMap<String, String> = HashMap::new();
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+        let mut alias_to_ir: HashMap<String, String> = HashMap::new();
 
-        for op in &ops {
-            for alias in &op.aliases {
-                if let Some(existing) = alias_to_canonical.get(alias) {
+        for entry in &entries {
+            let ir_display = entry.ir.as_ref().map(|s| s.as_str()).unwrap_or("<builtin>");
+            for alias in &entry.aliases {
+                if let Some(existing) = alias_to_ir.get(alias) {
                     panic!(
                         "Alias collision: '{}' maps to both '{}' and '{}'",
-                        alias, existing, op.canonical
+                        alias, existing, ir_display
                     );
                 }
-                alias_to_canonical.insert(alias.clone(), op.canonical.clone());
+                alias_to_ir.insert(alias.clone(), ir_display.to_string());
             }
         }
     }
 
     #[test]
     fn test_validation_passes() {
-        let ops = load_canonical_map().expect("Failed to parse embedded YAML");
-        validate_canonical_map(&ops).expect("Validation should pass");
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+        validate_op_map(&entries).expect("Validation should pass");
     }
 
     #[test]
-    fn test_all_canonicals_have_semantics() {
-        let ops = load_canonical_map().expect("Failed to parse embedded YAML");
-        for op in &ops {
+    fn test_all_entries_have_semantics() {
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+        for entry in &entries {
             assert!(
-                !op.semantics.is_empty(),
-                "Canonical '{}' has empty semantics",
-                op.canonical
+                !entry.semantics.is_empty(),
+                "Entry {:?} has empty semantics",
+                entry.ir
             );
         }
     }
 
     #[test]
-    fn test_ir_ready_ops_have_ir_node() {
-        let ops = load_canonical_map().expect("Failed to parse embedded YAML");
-        for op in &ops {
-            if op.ir_ready {
+    fn test_ir_names_match_code() {
+        let entries = load_op_map().expect("Failed to parse embedded YAML");
+        let ir_set = ir_name_set();
+
+        for entry in &entries {
+            if let Some(ref ir_name) = entry.ir {
                 assert!(
-                    op.ir_node.is_some(),
-                    "Canonical '{}' is IR-ready but has no ir_node",
-                    op.canonical
+                    ir_set.contains(ir_name.as_str()),
+                    "YAML references unknown IR op: '{}' (not in src/ir.rs enums)",
+                    ir_name
                 );
             }
         }
