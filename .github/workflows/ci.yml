@@ -327,7 +327,7 @@ jobs:
         run: |
           set -euxo pipefail
           cat > /tmp/hello.blisp << 'EOF'
-          (print (+ 1 2))
+          (+ 1 2)
           EOF
           RESULT=$(${{ runner.temp }}/cargo-home-tag/bin/blisp run /tmp/hello.blisp 2>&1 | grep -v "Running in" | tail -1)
           if [[ "$RESULT" != "3" ]]; then
