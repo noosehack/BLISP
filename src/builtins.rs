@@ -151,6 +151,12 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("/", builtin_div);
     rt.register_builtin(">", builtin_gt); // Greater than (for >-cols to find)
 
+    // Operator word forms (aliases for user ergonomics)
+    rt.register_builtin("add", builtin_add);
+    rt.register_builtin("sub", builtin_sub);
+    rt.register_builtin("mul", builtin_mul);
+    rt.register_builtin("div", builtin_div);
+
     // Math
 
     // Column Operations (Step 6) - Surface names point to table versions
@@ -198,6 +204,14 @@ pub fn register_builtins(rt: &mut Runtime) {
     rt.register_builtin("<=", builtin_lte);
     rt.register_builtin("==", builtin_eq);
     rt.register_builtin("!=", builtin_neq);
+
+    // Comparison word forms (aliases for user ergonomics)
+    rt.register_builtin("gt", builtin_gt);
+    rt.register_builtin("gte", builtin_gte);
+    rt.register_builtin("lt", builtin_lt);
+    rt.register_builtin("lte", builtin_lte);
+    rt.register_builtin("eq", builtin_eq);
+    rt.register_builtin("neq", builtin_neq);
 
     // GLD_NUM Tier 2: Shape/Null Operations
     rt.register_builtin("locf-cols", builtin_locf_cols);

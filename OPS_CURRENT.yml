@@ -247,3 +247,83 @@
   semantics: Type introspection
   docs: SEMANTICS.md#utility
   notes: Keep as builtin
+- ir: ADD
+  aliases:
+  - add
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Addition
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for ADD
+- ir: SUB
+  aliases:
+  - sub
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Subtraction
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for SUB
+- ir: MUL
+  aliases:
+  - mul
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Multiplication
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for MUL
+- ir: DIV
+  aliases:
+  - div
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Division
+  docs: SEMANTICS.md#arithmetic
+  notes: Planned aliases for DIV
+- ir: GTR
+  aliases:
+  - gt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Greater than
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for GTR
+- ir: LSS
+  aliases:
+  - lt
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for LSS
+- ir: LTE
+  aliases:
+  - lte
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Less than or equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for LTE
+- ir: GTE
+  aliases:
+  - gte
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Greater than or equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for GTE
+- ir: EQL
+  aliases:
+  - eq
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for EQL
+- ir: NEQ
+  aliases:
+  - neq
+  legacy_tokens: []
+  bucket: A1_fusion_critical
+  semantics: Not equal
+  docs: SEMANTICS.md#comparisons
+  notes: Planned aliases for NEQ
