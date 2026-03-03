@@ -1,0 +1,16 @@
+; Golden Test: Medium Pipeline (100 rows)
+; Tests: weekday filter on financial data
+; Expected runtime: <2 seconds
+; This exercises:
+; - file: CSV loading (100 rows, 2 columns: TIMESTAMP, GC1 Comdty)
+; - wkd: weekday (Mon-Fri) filter (removes Sat/Sun, outputs ~70 rows)
+; - NA handling: preserves NA values in output
+;
+; This validates:
+; 1. CSV I/O works correctly
+; 2. Weekday filter correctly identifies and removes weekend rows
+; 3. Date range: 2000-01-01 to 2000-05-XX (100 calendar days, ~70 weekdays)
+; 4. NA values are preserved through the pipeline
+
+(-> (file "data/gld_num_mini/GC1C_100.csv")
+    (wkd))

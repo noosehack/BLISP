@@ -227,6 +227,12 @@ jobs:
           ./target/release/blisp run examples/quickstart/load_csv.blisp 2>&1 | grep -v "Running in" > /tmp/output.csv
           ./target/release/blisp verify /tmp/output.csv expected/quickstart_load_csv.csv --tol 1e-6
 
+      - name: Golden test - medium pipeline (100 rows)
+        run: |
+          ./target/release/blisp run tests/golden/gld_num_mini.blisp 2>&1 | grep -v "Running in" > /tmp/gld_num_mini_output.csv
+          ./target/release/blisp verify /tmp/gld_num_mini_output.csv tests/golden/gld_num_mini_expected.csv --tol 1e-9
+          echo "✅ Golden test passed: 100-row pipeline with weekday filter"
+
   # CRITICAL: Clean environment test - simulates actual user installation
   user-install-fresh:
     name: Fresh Install Test (cargo install --git)
@@ -284,6 +290,53 @@ jobs:
           echo "✅ Installation complete without examples (expected for cargo install)"
           echo "Users must clone repo for examples, or we need to bundle differently"
 
+  # CRITICAL: Install from release tag - proves users can install v0.2.0
+  user-install-tag-v020:
+    name: User Install (tag v0.2.0) - zero-state
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set fresh cargo/rustup homes
+        run: |
+          set -euxo pipefail
+          echo "CARGO_HOME=$RUNNER_TEMP/cargo_home" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup_home" >> $GITHUB_ENV
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Print toolchain versions
+        run: |
+          rustc -Vv
+          cargo -V
+          echo "Installing from tag v0.2.0 (no checkout, no cache)"
+
+      - name: Install from tag (no checkout, no cache)
+        run: |
+          set -euxo pipefail
+          cargo install blisp \
+            --git https://github.com/noosehack/BLISP \
+            --tag v0.2.0 \
+            --locked
+
+      - name: Smoke - version + selftest
+        run: |
+          set -euxo pipefail
+          blisp --version | tee /tmp/version.txt
+          blisp --selftest
+
+      - name: Run inline example (no repo needed)
+        run: |
+          set -euxo pipefail
+          cat > /tmp/hello.blisp << 'EOF'
+          (print (+ 1 2))
+          EOF
+          RESULT=$(blisp run /tmp/hello.blisp 2>&1 | grep -v "Running in" | tail -1)
+          if [[ "$RESULT" != "3" ]]; then
+            echo "❌ Expected '3', got '$RESULT'"
+            exit 1
+          fi
+          echo "✅ Inline example works"
+
   # Tripwire: prevent silent growth of ignored tests
   check-ignored-tests:
     name: Check Ignored Test Count
@@ -312,7 +365,7 @@ jobs:
   # Final gate: everything must pass
   ci-success:
     name: CI Success
-    needs: [fmt, clippy, test, build, smoke-test, user-smoke, user-install-fresh, check-ignored-tests]
+    needs: [fmt, clippy, test, build, smoke-test, user-smoke, user-install-fresh, user-install-tag-v020, check-ignored-tests]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
