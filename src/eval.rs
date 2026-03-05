@@ -50,6 +50,7 @@ impl Runtime {
                     | "progn"
                     | "if"
                     | "let*"
+                    | "let"
                     | "defparameter"
                     | "setf"
                     | "define"
@@ -74,7 +75,7 @@ impl Runtime {
                 "quote" => return self.eval_quote(&exprs[1..]),
                 "progn" => return self.eval_progn(&exprs[1..]),
                 "if" => return self.eval_if(&exprs[1..]),
-                "let*" => return self.eval_let_star(&exprs[1..]),
+                "let*" | "let" => return self.eval_let_star(&exprs[1..]),
                 "defparameter" => return self.eval_defparameter(&exprs[1..]),
                 "setf" => return self.eval_setf(&exprs[1..]),
                 "define" => return self.eval_define(&exprs[1..]),

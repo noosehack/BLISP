@@ -32,12 +32,84 @@ impl CanonExpr {
     }
 }
 
+/// Rewrite events emitted during normalization (for --pipe inspector)
+#[derive(Debug, Clone)]
+pub enum RewriteEvent {
+    /// `(-> x (f) (g))` expanded — form_count is number of pipeline steps (excluding -> and initial value)
+    ThreadFirst { form_count: usize },
+    /// Alias rewrite: `from` → `to` (exact symbols from canonical_name table)
+    Alias { from: String, to: String },
+    /// 2-param arg-order swap: `(op param data)` → `(op data param)`
+    ArgSwap2 { op: String },
+    /// 3-param arg-order swap: `(op w step data)` → `(op data w step)`
+    ArgSwap3 { op: String },
+}
+
+/// Result of traced normalization
+pub struct NormalizeTrace {
+    pub expr: CanonExpr,
+    pub post_thread: Expr,
+    pub rewrites: Vec<RewriteEvent>,
+}
+
 /// Normalize an expression into canonical form
 ///
-/// This is the entry point for macro expansion. The result is guaranteed
-/// to be idempotent: normalize(normalize(x)) == normalize(x)
+/// Two passes:
+/// 1. Thread-first (`->`) expansion
+/// 2. Canonicalization: alias rewrite + arg-order rewrite (prefix → data-first)
+///
+/// The result is idempotent: normalize(normalize(x)) == normalize(x)
 pub fn normalize(expr: Expr, interner: &mut Interner) -> CanonExpr {
-    CanonExpr(normalize_expr(expr, interner))
+    let expanded = normalize_expr(expr, interner);
+    let canonical = canonicalize_expr_impl(expanded, interner, None);
+    CanonExpr(canonical)
+}
+
+/// Normalize with full tracing for --pipe inspector
+pub fn normalize_traced(expr: Expr, interner: &mut Interner) -> NormalizeTrace {
+    let mut rewrites = Vec::new();
+    let expanded = normalize_expr_traced(expr, interner, &mut rewrites);
+    let post_thread = expanded.clone();
+    let canonical = canonicalize_expr_impl(expanded, interner, Some(&mut rewrites));
+    NormalizeTrace {
+        expr: CanonExpr(canonical),
+        post_thread,
+        rewrites,
+    }
+}
+
+/// Internal recursive normalization (traced variant — emits RewriteEvent::ThreadFirst)
+fn normalize_expr_traced(expr: Expr, interner: &mut Interner, events: &mut Vec<RewriteEvent>) -> Expr {
+    match expr {
+        Expr::List(elements) => {
+            if elements.is_empty() {
+                return Expr::List(elements);
+            }
+            if let Expr::Sym(sym) = &elements[0] {
+                let name = interner.resolve(*sym);
+                if name == "->" {
+                    // Record the -> expansion: form_count = pipeline steps (excluding -> and initial value)
+                    let form_count = if elements.len() >= 2 { elements.len() - 2 } else { 0 };
+                    events.push(RewriteEvent::ThreadFirst { form_count });
+                    return normalize_thread_first(&elements[1..], interner);
+                }
+            }
+            let normalized = elements
+                .into_iter()
+                .map(|e| normalize_expr_traced(e, interner, events))
+                .collect();
+            Expr::List(normalized)
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Sym(_) | Expr::Nil => {
+            expr
+        }
+        Expr::Quote(inner) => Expr::Quote(Box::new(normalize_expr_traced(*inner, interner, events))),
+        Expr::QuasiQuote(inner) => Expr::QuasiQuote(Box::new(normalize_expr_traced(*inner, interner, events))),
+        Expr::Unquote(inner) => Expr::Unquote(Box::new(normalize_expr_traced(*inner, interner, events))),
+        Expr::UnquoteSplicing(inner) => {
+            Expr::UnquoteSplicing(Box::new(normalize_expr_traced(*inner, interner, events)))
+        }
+    }
 }
 
 /// Internal recursive normalization
@@ -143,6 +215,142 @@ fn thread_into_form(value: Expr, form: Expr, interner: &mut Interner) -> Expr {
             // Threading into a non-callable (number, string) - malformed
             // Return the value unchanged (graceful degradation)
             value
+        }
+    }
+}
+
+// ─── Canonicalization ────────────────────────────────────────────────────────
+//
+// Phase 2: After `->` expansion, rewrite aliases and fix arg order.
+//
+// 1. Alias rewrite: legacy spellings → canonical names
+//    e.g. (dlog-cols x) → (dlog x), (cs1-col x) → (cs1 x)
+//
+// 2. Arg-order rewrite: prefix form → data-first (ambiguity-safe)
+//    e.g. (rolling-mean 250 x) → (rolling-mean x 250)
+//    Only rewrites when roles are unambiguous (exactly one Int vs non-Int).
+
+/// Alias table: legacy spelling → canonical name
+fn canonical_name(name: &str) -> Option<&'static str> {
+    match name {
+        "dlog-cols" | "dlog-col" => Some("dlog"),
+        "cs1-cols" | "cs1-col" => Some("cs1"),
+        "shift-cols" | "shift-col" => Some("shift"),
+        ">-cols" | ">-col" => Some(">"),
+        "ur-cols" | "ur-col" => Some("ur"),
+        "locf-cols" => Some("locf"),
+        "rolling-mean-cols" => Some("rolling-mean"),
+        "rolling-std-cols" => Some("rolling-std"),
+        "rolling-zscore-cols" => Some("rolling-zscore"),
+        "x-" => Some("xminus"),
+        "let*" => Some("let"),
+        _ => None,
+    }
+}
+
+/// 2-param ops that take (op param data) in prefix form.
+/// Canonical (data-first) form: (op data param)
+const PARAM_OPS_2: &[&str] = &[
+    "rolling-mean",
+    "rolling-std",
+    "rolling-mean-min2",
+    "rolling-std-min2",
+    "rolling-zscore",
+    "shift",
+    "keep",
+    "lag-obs",
+    "shift-obs",
+    "ft-mean",
+    "ft-std",
+    "ft-zscore",
+];
+
+/// 3-param ops that take (op w step data) in prefix form.
+/// Canonical (data-first) form: (op data w step)
+const PARAM_OPS_3: &[&str] = &["wzs", "ur"];
+
+/// Returns true if the expression is a literal integer
+fn is_int(e: &Expr) -> bool {
+    matches!(e, Expr::Int(_))
+}
+
+/// Canonicalize a single expression (post-threading), with optional event capture
+fn canonicalize_expr_impl(
+    expr: Expr,
+    interner: &mut Interner,
+    mut events: Option<&mut Vec<RewriteEvent>>,
+) -> Expr {
+    match expr {
+        Expr::List(elements) => {
+            if elements.is_empty() {
+                return Expr::List(elements);
+            }
+
+            // First, recursively canonicalize all sub-expressions
+            let mut elements: Vec<Expr> = elements
+                .into_iter()
+                .map(|e| canonicalize_expr_impl(e, interner, events.as_deref_mut()))
+                .collect();
+
+            // Rewrite alias in function position
+            if let Expr::Sym(sym) = &elements[0] {
+                let name = interner.resolve(*sym);
+                if let Some(canonical) = canonical_name(name) {
+                    if let Some(ref mut ev) = events {
+                        ev.push(RewriteEvent::Alias {
+                            from: name.to_string(),
+                            to: canonical.to_string(),
+                        });
+                    }
+                    let new_sym = interner.intern(canonical);
+                    elements[0] = Expr::Sym(new_sym);
+                }
+            }
+
+            // Arg-order rewrite (prefix → data-first), ambiguity-safe
+            if let Expr::Sym(sym) = &elements[0] {
+                let name = interner.resolve(*sym).to_string();
+
+                // 2-param ops: (op a b) where a=Int, b=non-Int → (op b a)
+                if elements.len() == 3 && PARAM_OPS_2.contains(&name.as_str()) {
+                    if is_int(&elements[1]) && !is_int(&elements[2]) {
+                        if let Some(ref mut ev) = events {
+                            ev.push(RewriteEvent::ArgSwap2 { op: name.clone() });
+                        }
+                        elements.swap(1, 2);
+                    }
+                }
+
+                // 3-param ops: (op a b c) where a=Int, b=Int, c=non-Int → (op c a b)
+                if elements.len() == 4 && PARAM_OPS_3.contains(&name.as_str()) {
+                    if is_int(&elements[1]) && is_int(&elements[2]) && !is_int(&elements[3]) {
+                        if let Some(ref mut ev) = events {
+                            ev.push(RewriteEvent::ArgSwap3 { op: name.clone() });
+                        }
+                        let data = elements.remove(3);
+                        elements.insert(1, data);
+                    }
+                }
+            }
+
+            Expr::List(elements)
+        }
+        // Atoms pass through
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Sym(_) | Expr::Nil => {
+            expr
+        }
+        // Quote forms
+        Expr::Quote(inner) => {
+            Expr::Quote(Box::new(canonicalize_expr_impl(*inner, interner, events)))
+        }
+        Expr::QuasiQuote(inner) => {
+            Expr::QuasiQuote(Box::new(canonicalize_expr_impl(*inner, interner, events)))
+        }
+        Expr::Unquote(inner) => {
+            Expr::Unquote(Box::new(canonicalize_expr_impl(*inner, interner, events)))
+        }
+        Expr::UnquoteSplicing(inner) => {
+            Expr::UnquoteSplicing(Box::new(canonicalize_expr_impl(*inner, interner, events)))
         }
     }
 }
@@ -314,6 +522,198 @@ mod tests {
         ]);
 
         let result = normalize(expr, &mut interner);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    fn int(n: i64) -> Expr {
+        Expr::Int(n)
+    }
+
+    // ─── Canonicalization tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_alias_rewrite() {
+        let mut interner = Interner::new();
+
+        // (dlog-cols x) => (dlog x)
+        let expr = Expr::List(vec![sym(&mut interner, "dlog-cols"), num(1.0)]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![sym(&mut interner, "dlog"), num(1.0)]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_alias_cs1() {
+        let mut interner = Interner::new();
+
+        // (cs1-col x) => (cs1 x)
+        let expr = Expr::List(vec![sym(&mut interner, "cs1-col"), num(1.0)]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![sym(&mut interner, "cs1"), num(1.0)]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_arg_reorder_2param_prefix() {
+        let mut interner = Interner::new();
+
+        // Prefix: (rolling-mean 250 x) → (rolling-mean x 250)
+        // where x is a symbol (non-Int)
+        let expr = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            int(250),
+            sym(&mut interner, "x"),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "x"),
+            int(250),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_arg_reorder_2param_already_data_first() {
+        let mut interner = Interner::new();
+
+        // Already data-first: (rolling-mean x 250) → no change
+        let expr = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "x"),
+            int(250),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "x"),
+            int(250),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_arg_reorder_2param_ambiguous() {
+        let mut interner = Interner::new();
+
+        // Ambiguous: (shift 2 3) — both are Int, don't rewrite
+        let expr = Expr::List(vec![sym(&mut interner, "shift"), int(2), int(3)]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![sym(&mut interner, "shift"), int(2), int(3)]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_arg_reorder_3param_prefix() {
+        let mut interner = Interner::new();
+
+        // Prefix: (ur 250 5 x) → (ur x 250 5)
+        let expr = Expr::List(vec![
+            sym(&mut interner, "ur"),
+            int(250),
+            int(5),
+            sym(&mut interner, "x"),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "ur"),
+            sym(&mut interner, "x"),
+            int(250),
+            int(5),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_arg_reorder_3param_already_data_first() {
+        let mut interner = Interner::new();
+
+        // Already data-first: (ur x 250 5) → no change
+        let expr = Expr::List(vec![
+            sym(&mut interner, "ur"),
+            sym(&mut interner, "x"),
+            int(250),
+            int(5),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "ur"),
+            sym(&mut interner, "x"),
+            int(250),
+            int(5),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_thread_then_canonicalize() {
+        let mut interner = Interner::new();
+
+        // Full pipeline: (-> x (rolling-mean 250)) → (rolling-mean x 250)
+        // -> threading produces (rolling-mean x 250) which is already data-first
+        let expr = Expr::List(vec![
+            sym(&mut interner, "->"),
+            sym(&mut interner, "x"),
+            Expr::List(vec![sym(&mut interner, "rolling-mean"), int(250)]),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "x"),
+            int(250),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_alias_plus_reorder() {
+        let mut interner = Interner::new();
+
+        // (shift-cols 2 x) → alias to (shift 2 x) → reorder to (shift x 2)
+        let expr = Expr::List(vec![
+            sym(&mut interner, "shift-cols"),
+            int(2),
+            sym(&mut interner, "x"),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "shift"),
+            sym(&mut interner, "x"),
+            int(2),
+        ]);
+        assert_eq!(result.inner(), &expected);
+    }
+
+    #[test]
+    fn test_canonicalize_idempotent() {
+        let mut interner = Interner::new();
+
+        // Prefix: (rolling-mean 250 x) → (rolling-mean x 250)
+        // Second normalize should be identity
+        let expr = Expr::List(vec![
+            sym(&mut interner, "rolling-mean"),
+            int(250),
+            sym(&mut interner, "x"),
+        ]);
+        let once = normalize(expr, &mut interner);
+        let twice = normalize(once.inner().clone(), &mut interner);
+        assert_eq!(once, twice, "Canonicalization must be idempotent");
+    }
+
+    #[test]
+    fn test_nested_canonicalize() {
+        let mut interner = Interner::new();
+
+        // Nested: (f (dlog-cols x)) → (f (dlog x))
+        let expr = Expr::List(vec![
+            sym(&mut interner, "f"),
+            Expr::List(vec![sym(&mut interner, "dlog-cols"), num(1.0)]),
+        ]);
+        let result = normalize(expr, &mut interner);
+        let expected = Expr::List(vec![
+            sym(&mut interner, "f"),
+            Expr::List(vec![sym(&mut interner, "dlog"), num(1.0)]),
+        ]);
         assert_eq!(result.inner(), &expected);
     }
 }

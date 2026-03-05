@@ -16,6 +16,48 @@ use crate::ir::{
 use crate::normalize::CanonExpr;
 use std::collections::HashMap;
 
+/// Typed planner errors for structured HYBRID fallback
+#[derive(Debug)]
+pub enum PlanError {
+    /// Operation exists but IR can't handle this usage
+    Unsupported { op: String, reason: String },
+    /// Wrong number or type of arguments
+    BadArgs { op: String, detail: String },
+    /// Argument must be a literal but got an expression
+    NonLiteral {
+        op: String,
+        which_arg: String,
+        expected: String,
+    },
+    /// Unknown function name
+    Unknown { op: String },
+}
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanError::Unsupported { op, reason } => write!(f, "[{}] unsupported: {}", op, reason),
+            PlanError::BadArgs { op, detail } => write!(f, "[{}] bad args: {}", op, detail),
+            PlanError::NonLiteral {
+                op,
+                which_arg,
+                expected,
+            } => {
+                write!(f, "[{}] {} must be {}", op, which_arg, expected)
+            }
+            PlanError::Unknown { op } => write!(f, "unknown function: {}", op),
+        }
+    }
+}
+
+impl std::error::Error for PlanError {}
+
+impl From<PlanError> for String {
+    fn from(e: PlanError) -> String {
+        e.to_string()
+    }
+}
+
 /// Planning context - tracks variable bindings and node references
 pub struct PlanContext {
     /// Map from variable names to their IR nodes
@@ -41,14 +83,17 @@ impl PlanContext {
 /// Plan a normalized expression into an IR plan
 ///
 /// This is the entry point for IR compilation. The input MUST be normalized.
-pub fn plan(expr: &CanonExpr, interner: &Interner) -> Result<Plan, String> {
+pub fn plan(expr: &CanonExpr, interner: &Interner) -> Result<Plan, PlanError> {
     let mut plan = Plan::new();
     let mut ctx = PlanContext::new();
 
     plan_expr(expr.inner(), &mut plan, &mut ctx, interner)?;
 
     // Validate the entire plan against contracts.md
-    plan.validate()?;
+    plan.validate().map_err(|e| PlanError::Unsupported {
+        op: "validate".into(),
+        reason: e,
+    })?;
 
     Ok(plan)
 }
@@ -61,7 +106,7 @@ fn plan_expr(
     plan: &mut Plan,
     ctx: &mut PlanContext,
     interner: &Interner,
-) -> Result<NodeId, String> {
+) -> Result<NodeId, PlanError> {
     match expr {
         Expr::Sym(sym) => {
             // Variable reference
@@ -89,12 +134,20 @@ fn plan_expr(
                     // File loading
                     "load" | "read-csv" | "file" => {
                         if elements.len() != 2 {
-                            return Err(format!("{} expects 1 argument", func_name));
+                            return Err(PlanError::BadArgs {
+                                op: func_name.to_string(),
+                                detail: "expects 1 argument".into(),
+                            });
                         }
 
                         let path = match &elements[1] {
                             Expr::Str(s) => s.clone(),
-                            _ => return Err(format!("{} expects string path", func_name)),
+                            _ => {
+                                return Err(PlanError::BadArgs {
+                                    op: func_name.to_string(),
+                                    detail: "expects string path".into(),
+                                })
+                            }
                         };
 
                         let node_id = NodeId(plan.nodes.len());
@@ -109,7 +162,10 @@ fn plan_expr(
                     // Read from stdin
                     "stdin" => {
                         if elements.len() != 1 {
-                            return Err("stdin expects no arguments".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "stdin".into(),
+                                detail: "expects no arguments".into(),
+                            });
                         }
 
                         let node_id = NodeId(plan.nodes.len());
@@ -191,173 +247,255 @@ fn plan_expr(
                     }
 
                     // Shift operation: (shift k x) where k is non-negative integer
+                    // (shift x k) — data-first: elements[1]=data, elements[2]=k
                     "shift" => {
                         if elements.len() != 3 {
-                            return Err("shift expects 2 arguments: (shift k x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "shift".into(),
+                                detail: "expects 2 arguments: (shift x k)".into(),
+                            });
                         }
 
-                        // Parse k as non-negative integer
-                        let k = match &elements[1] {
+                        // Parse k from elements[2] (param position)
+                        let k = match &elements[2] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("shift k must be non-negative, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "shift".into(),
+                                    detail: format!("k must be non-negative, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("shift k must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "shift".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("shift k must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "shift".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_PTW_LIN_SHF { k },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )
                     }
 
-                    // DEPRECATED: Legacy alias for shift
+                    // DEPRECATED: Legacy alias — normalize rewrites to "shift"
+                    // Kept for safety; data-first: (shift-col x k)
                     "shift-col" => {
                         eprintln!("Warning: 'shift-col' is deprecated, use 'shift' instead");
                         if elements.len() != 3 {
-                            return Err(
-                                "shift-col expects 2 arguments: (shift-col k x)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "shift-col".into(),
+                                detail: "expects 2 arguments: (shift-col x k)".into(),
+                            });
                         }
 
-                        // Parse k as non-negative integer
-                        let k = match &elements[1] {
+                        let k = match &elements[2] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("shift-col k must be non-negative, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "shift-col".into(),
+                                    detail: format!("k must be non-negative, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("shift-col k must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "shift-col".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("shift-col k must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "shift-col".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_PTW_LIN_SHF { k },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )
                     }
 
-                    // Mask-aware shift (observation-based lag): (lag-obs k x) or (shift-obs k x)
-                    // Skips masked rows when computing lag - business-day lag when weekend mask active
+                    // Mask-aware shift: data-first (lag-obs x k) or (shift-obs x k)
                     "lag-obs" | "shift-obs" => {
                         if elements.len() != 3 {
-                            return Err("lag-obs expects 2 arguments: (lag-obs k x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "lag-obs".into(),
+                                detail: "expects 2 arguments: (lag-obs x k)".into(),
+                            });
                         }
 
-                        // Parse k as non-negative integer
-                        let k = match &elements[1] {
+                        let k = match &elements[2] {
                             Expr::Int(i) if *i >= 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("lag-obs k must be non-negative, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "lag-obs".into(),
+                                    detail: format!("k must be non-negative, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("lag-obs k must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "lag-obs".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("lag-obs k must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "lag-obs".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         plan_unary(
                             NumericFunc::LAG_OBS { k },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )
                     }
 
-                    // Keep every k-th row: (keep k x) where k is positive integer
+                    // Keep every k-th row: data-first (keep x k)
                     "keep" => {
                         if elements.len() != 3 {
-                            return Err("keep expects 2 arguments: (keep k x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "keep".into(),
+                                detail: "expects 2 arguments: (keep x k)".into(),
+                            });
                         }
 
-                        // Parse k as positive integer
-                        let k = match &elements[1] {
+                        let k = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("keep k must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "keep".into(),
+                                    detail: format!("k must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("keep k must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "keep".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("keep k must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "keep".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        plan_unary(NumericFunc::KEEP { k }, &elements[2..], plan, ctx, interner)
+                        plan_unary(
+                            NumericFunc::KEEP { k },
+                            &elements[1..2],
+                            plan,
+                            ctx,
+                            interner,
+                        )
                     }
 
-                    // Rolling mean: (rolling-mean w x) where w is positive integer
+                    // Rolling mean: data-first (rolling-mean x w)
                     "rolling-mean" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "rolling-mean expects 2 arguments: (rolling-mean w x)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "rolling-mean".into(),
+                                detail: "expects 2 arguments: (rolling-mean x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("rolling-mean w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "rolling-mean".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("rolling-mean w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-mean".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("rolling-mean w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-mean".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_WIN_LIN_AVG { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )
                     }
 
-                    // Rolling mean (min 2 observations): (rolling-mean-min2 w x) where w is positive integer
+                    // Rolling mean (min 2): data-first (rolling-mean-min2 x w)
                     "rolling-mean-min2" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "rolling-mean-min2 expects 2 arguments: (rolling-mean-min2 w x)"
-                                    .to_string(),
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "rolling-mean-min2".into(),
+                                detail: "expects 2 arguments: (rolling-mean-min2 x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!(
-                                    "rolling-mean-min2 w must be positive, got {}",
-                                    i
-                                ))
+                                return Err(PlanError::BadArgs {
+                                    op: "rolling-mean-min2".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err(
-                                    "rolling-mean-min2 w must be integer, not float".to_string()
-                                )
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-mean-min2".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
                             _ => {
-                                return Err(
-                                    "rolling-mean-min2 w must be integer literal".to_string()
-                                )
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-mean-min2".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
                             }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_WIN_MIN2_LIN_AVG { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
@@ -365,29 +503,42 @@ fn plan_expr(
                     }
 
                     // Feature engineering: ft-mean as planner rewrite
-                    // (ft-mean w x) → (shift 1 (rolling-mean w x))
-                    // Semantics: "yesterday's distribution" (no self-reference)
+                    // ft-mean: data-first (ft-mean x w) → shift(1, rolling-mean(x, w))
                     "ft-mean" => {
                         if elements.len() != 3 {
-                            return Err("ft-mean expects 2 arguments: (ft-mean w x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "ft-mean".into(),
+                                detail: "expects 2 arguments: (ft-mean x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("ft-mean w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "ft-mean".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("ft-mean w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-mean".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("ft-mean w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-mean".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        // Plan inner rolling-mean
                         let rolling_node = plan_unary(
                             NumericFunc::SHF_WIN_LIN_AVG { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
@@ -395,9 +546,12 @@ fn plan_expr(
 
                         // Plan outer shift(1, ...)
                         // Create a temporary node reference for the rolling-mean result
-                        let input_node = plan
-                            .get_node(rolling_node)
-                            .ok_or("Invalid rolling-mean node")?;
+                        let input_node =
+                            plan.get_node(rolling_node)
+                                .ok_or_else(|| PlanError::Unsupported {
+                                    op: "ft-mean".into(),
+                                    reason: "invalid rolling-mean node".into(),
+                                })?;
                         let shift_node_id = NodeId(plan.nodes.len());
                         let shift_node = Node {
                             id: shift_node_id,
@@ -410,29 +564,42 @@ fn plan_expr(
                         Ok(plan.add_node(shift_node))
                     }
 
-                    // Rolling std: (rolling-std w x) where w is positive integer
+                    // Rolling std: data-first (rolling-std x w)
                     "rolling-std" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "rolling-std expects 2 arguments: (rolling-std w x)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "rolling-std".into(),
+                                detail: "expects 2 arguments: (rolling-std x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("rolling-std w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "rolling-std".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("rolling-std w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-std".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("rolling-std w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-std".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_WIN_NLN_SDV { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
@@ -440,73 +607,96 @@ fn plan_expr(
                     }
 
                     // Rolling std (min 2 observations): relaxed min_periods for masked calendars
+                    // Rolling std (min 2): data-first (rolling-std-min2 x w)
                     "rolling-std-min2" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "rolling-std-min2 expects 2 arguments: (rolling-std-min2 w x)"
-                                    .to_string(),
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "rolling-std-min2".into(),
+                                detail: "expects 2 arguments: (rolling-std-min2 x w)".into(),
+                            });
                         }
 
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!(
-                                    "rolling-std-min2 w must be positive, got {}",
-                                    i
-                                ))
+                                return Err(PlanError::BadArgs {
+                                    op: "rolling-std-min2".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err(
-                                    "rolling-std-min2 w must be integer, not float".to_string()
-                                )
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-std-min2".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
                             _ => {
-                                return Err("rolling-std-min2 w must be integer literal".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "rolling-std-min2".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
                             }
                         };
 
                         plan_unary(
                             NumericFunc::SHF_WIN_MIN2_NLN_SDV { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )
                     }
 
-                    // Feature engineering: ft-std as planner rewrite
-                    // (ft-std w x) → (shift 1 (rolling-std w x))
+                    // ft-std: data-first (ft-std x w) → shift(1, rolling-std(x, w))
                     "ft-std" => {
                         if elements.len() != 3 {
-                            return Err("ft-std expects 2 arguments: (ft-std w x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "ft-std".into(),
+                                detail: "expects 2 arguments: (ft-std x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("ft-std w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "ft-std".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("ft-std w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-std".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("ft-std w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-std".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        // Plan inner rolling-std
                         let rolling_node = plan_unary(
                             NumericFunc::SHF_WIN_NLN_SDV { w },
-                            &elements[2..],
+                            &elements[1..2],
                             plan,
                             ctx,
                             interner,
                         )?;
 
                         // Plan outer shift(1, ...)
-                        let input_node = plan
-                            .get_node(rolling_node)
-                            .ok_or("Invalid rolling-std node")?;
+                        let input_node =
+                            plan.get_node(rolling_node)
+                                .ok_or_else(|| PlanError::Unsupported {
+                                    op: "ft-std".into(),
+                                    reason: "invalid rolling-std node".into(),
+                                })?;
                         let shift_node_id = NodeId(plan.nodes.len());
                         let shift_node = Node {
                             id: shift_node_id,
@@ -522,36 +712,56 @@ fn plan_expr(
                     // Rolling zscore: (rolling-zscore w x) → (/ (- x (rolling-mean w x)) (rolling-std w x))
                     // Derived form: no IR primitive, rewrite into existing ops
                     "rolling-zscore" | "wzs" => {
-                        // wzs is CLISPI compat: (wzs w step x) ignores step param
+                        // Data-first:
+                        //   rolling-zscore: (rolling-zscore x w)
+                        //   wzs: (wzs x w step) — step ignored
                         let expected_args = if func_name == "wzs" { 4 } else { 3 };
-                        let x_index = if func_name == "wzs" { 3 } else { 2 };
 
                         if elements.len() != expected_args {
                             let signature = if func_name == "wzs" {
-                                "wzs expects 3 arguments: (wzs w step x)"
+                                "expects 3 arguments: (wzs x w step)"
                             } else {
-                                "rolling-zscore expects 2 arguments: (rolling-zscore w x)"
+                                "expects 2 arguments: (rolling-zscore x w)"
                             };
-                            return Err(signature.to_string());
+                            return Err(PlanError::BadArgs {
+                                op: func_name.to_string(),
+                                detail: signature.into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        // Parse w from elements[2] (data-first: x at [1], w at [2])
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("{} w must be positive, got {}", func_name, i))
+                                return Err(PlanError::BadArgs {
+                                    op: func_name.to_string(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err(format!("{} w must be integer, not float", func_name))
+                                return Err(PlanError::NonLiteral {
+                                    op: func_name.to_string(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err(format!("{} w must be integer literal", func_name)),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: func_name.to_string(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        // Plan input x ONCE (critical: don't re-plan stdin multiple times!)
-                        let x_node = plan_expr(&elements[x_index], plan, ctx, interner)?;
+                        // Plan input x from elements[1] (data-first)
+                        let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
                         let x_schema = plan
                             .get_node(x_node)
-                            .ok_or("Invalid x node")?
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: func_name.to_string(),
+                                reason: "invalid x node".into(),
+                            })?
                             .schema
                             .clone();
 
@@ -614,30 +824,50 @@ fn plan_expr(
                     // Where: 1587.45... = 100 * sqrt(252) = percentage scale * annualization
                     // step param ignored (compatibility)
                     // Used for: normalizing log returns by rolling volatility
+                    // ur: data-first (ur x w step) — step ignored
                     "ur" => {
                         if elements.len() != 4 {
-                            return Err("ur expects 3 arguments: (ur w step x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "ur".into(),
+                                detail: "expects 3 arguments: (ur x w step)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        // Parse w from elements[2] (data-first)
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("ur w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "ur".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("ur w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "ur".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("ur w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "ur".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        // step param (elements[2]) is ignored for compatibility
+                        // step param (elements[3]) is ignored for compatibility
 
-                        // Plan input x ONCE
-                        let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
+                        // Plan input x from elements[1] (data-first)
+                        let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
                         let x_schema = plan
                             .get_node(x_node)
-                            .ok_or("Invalid x node")?
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: "ur".into(),
+                                reason: "invalid x node".into(),
+                            })?
                             .schema
                             .clone();
 
@@ -684,19 +914,35 @@ fn plan_expr(
                     "ur-col" => {
                         eprintln!("Warning: 'ur-col' is deprecated, use 'ur' instead");
                         if elements.len() != 4 {
-                            return Err("ur-col expects 3 arguments: (ur-col w step x)".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "ur-col".into(),
+                                detail: "expects 3 arguments: (ur-col w step x)".into(),
+                            });
                         }
 
                         // Parse w as positive integer
                         let w = match &elements[1] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("ur-col w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "ur-col".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("ur-col w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "ur-col".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("ur-col w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "ur-col".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
                         // step param (elements[2]) is ignored for compatibility
@@ -705,7 +951,10 @@ fn plan_expr(
                         let x_node = plan_expr(&elements[3], plan, ctx, interner)?;
                         let x_schema = plan
                             .get_node(x_node)
-                            .ok_or("Invalid x node")?
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: "ur-col".into(),
+                                reason: "invalid x node".into(),
+                            })?
                             .schema
                             .clone();
 
@@ -751,41 +1000,55 @@ fn plan_expr(
                     // Feature zscore: (ft-zscore w x) → (/ (- x (ft-mean w x)) (ft-std w x))
                     // No self-reference: compares x[i] to distribution from i-1 and earlier (no lookahead)
                     // Uses RollMeanMin2ExclCurrent / RollStdMin2ExclCurrent (window ending at i-1)
+                    // ft-zscore: data-first (ft-zscore x w)
                     "ft-zscore" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "ft-zscore expects 2 arguments: (ft-zscore w x)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "ft-zscore".into(),
+                                detail: "expects 2 arguments: (ft-zscore x w)".into(),
+                            });
                         }
 
-                        // Parse w as positive integer
-                        let w = match &elements[1] {
+                        let w = match &elements[2] {
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
-                                return Err(format!("ft-zscore w must be positive, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "ft-zscore".into(),
+                                    detail: format!("w must be positive, got {}", i),
+                                })
                             }
                             Expr::Float(_) => {
-                                return Err("ft-zscore w must be integer, not float".to_string())
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-zscore".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer, not float".into(),
+                                })
                             }
-                            _ => return Err("ft-zscore w must be integer literal".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "ft-zscore".into(),
+                                    which_arg: "w".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
                         };
 
-                        // Plan input x
-                        let x_node = plan_expr(&elements[2], plan, ctx, interner)?;
+                        // Plan input x from elements[1] (data-first)
+                        let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
 
-                        // Plan ft-mean: rolling mean excluding current observation (window ending at i-1)
+                        // Plan ft-mean: rolling mean excluding current observation
                         let ft_mean_node_id = plan_unary(
                             NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w },
-                            &[elements[2].clone()],
+                            &[elements[1].clone()],
                             plan,
                             ctx,
                             interner,
                         )?;
 
-                        // Plan ft-std: rolling std excluding current observation (window ending at i-1)
+                        // Plan ft-std: rolling std excluding current observation
                         let ft_std_node_id = plan_unary(
                             NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w },
-                            &[elements[2].clone()],
+                            &[elements[1].clone()],
                             plan,
                             ctx,
                             interner,
@@ -795,7 +1058,10 @@ fn plan_expr(
                         let sub_node_id = NodeId(plan.nodes.len());
                         let x_schema = plan
                             .get_node(x_node)
-                            .ok_or("Invalid x node")?
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: "ft-zscore".into(),
+                                reason: "invalid x node".into(),
+                            })?
                             .schema
                             .clone();
                         let sub_node = Node {
@@ -844,9 +1110,10 @@ fn plan_expr(
                     // Schema-transforming operations
                     "xminus" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "xminus expects 2 arguments: (xminus data half)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "xminus".into(),
+                                detail: "expects 2 arguments: (xminus data half)".into(),
+                            });
                         }
 
                         // Parse half as boolean (0/false or 1/true)
@@ -854,9 +1121,18 @@ fn plan_expr(
                             Expr::Int(0) => false,
                             Expr::Int(1) => true,
                             Expr::Int(i) => {
-                                return Err(format!("xminus half must be 0 or 1, got {}", i))
+                                return Err(PlanError::BadArgs {
+                                    op: "xminus".into(),
+                                    detail: format!("half must be 0 or 1, got {}", i),
+                                })
                             }
-                            _ => return Err("xminus half must be integer (0 or 1)".to_string()),
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "xminus".into(),
+                                    which_arg: "half".into(),
+                                    expected: "integer (0 or 1)".into(),
+                                })
+                            }
                         };
 
                         // Plan input
@@ -875,10 +1151,10 @@ fn plan_expr(
                     // Mask operations
                     "mask-weekend" => {
                         if elements.len() < 2 || elements.len() > 3 {
-                            return Err(
-                                "mask-weekend expects 1-2 arguments: (mask-weekend frame [name])"
-                                    .to_string(),
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "mask-weekend".into(),
+                                detail: "expects 1-2 arguments: (mask-weekend frame [name])".into(),
+                            });
                         }
 
                         // Parse optional name
@@ -887,9 +1163,10 @@ fn plan_expr(
                                 Expr::Str(s) => Some(s.clone()),
                                 Expr::Sym(s) => Some(interner.resolve(*s).to_string()),
                                 _ => {
-                                    return Err(
-                                        "mask-weekend name must be string or symbol".to_string()
-                                    )
+                                    return Err(PlanError::BadArgs {
+                                        op: "mask-weekend".into(),
+                                        detail: "name must be string or symbol".into(),
+                                    })
                                 }
                             }
                         } else {
@@ -911,10 +1188,10 @@ fn plan_expr(
 
                     "with-mask" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "with-mask expects 2 arguments: (with-mask frame mask-expr)"
-                                    .to_string(),
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "with-mask".into(),
+                                detail: "expects 2 arguments: (with-mask frame mask-expr)".into(),
+                            });
                         }
 
                         // Plan input
@@ -936,15 +1213,21 @@ fn plan_expr(
                     // Let bindings: (let ((name1 expr1) (name2 expr2) ...) body)
                     "let" => {
                         if elements.len() != 3 {
-                            return Err(
-                                "let expects 2 arguments: (let ((bindings...)) body)".to_string()
-                            );
+                            return Err(PlanError::BadArgs {
+                                op: "let".into(),
+                                detail: "expects 2 arguments: (let ((bindings...)) body)".into(),
+                            });
                         }
 
                         // Parse bindings
                         let bindings_list = match &elements[1] {
                             Expr::List(bindings) => bindings,
-                            _ => return Err("let expects list of bindings".to_string()),
+                            _ => {
+                                return Err(PlanError::BadArgs {
+                                    op: "let".into(),
+                                    detail: "expects list of bindings".into(),
+                                })
+                            }
                         };
 
                         // Process bindings sequentially (let* semantics)
@@ -953,13 +1236,23 @@ fn plan_expr(
                                 Expr::List(pair) if pair.len() == 2 => {
                                     let name = match &pair[0] {
                                         Expr::Sym(s) => *s,
-                                        _ => return Err("let binding expects symbol".to_string()),
+                                        _ => {
+                                            return Err(PlanError::BadArgs {
+                                                op: "let".into(),
+                                                detail: "binding expects symbol".into(),
+                                            })
+                                        }
                                     };
 
                                     let value_node = plan_expr(&pair[1], plan, ctx, interner)?;
                                     ctx.bind(name, value_node);
                                 }
-                                _ => return Err("let binding must be (symbol expr)".to_string()),
+                                _ => {
+                                    return Err(PlanError::BadArgs {
+                                        op: "let".into(),
+                                        detail: "binding must be (symbol expr)".into(),
+                                    })
+                                }
                             }
                         }
 
@@ -967,14 +1260,22 @@ fn plan_expr(
                         plan_expr(&elements[2], plan, ctx, interner)
                     }
 
-                    _ => Err(format!("Unknown function: {}", func_name)),
+                    _ => Err(PlanError::Unknown {
+                        op: func_name.to_string(),
+                    }),
                 }
             } else {
-                Err("Function call must start with a symbol".to_string())
+                Err(PlanError::Unsupported {
+                    op: "call".into(),
+                    reason: "must start with symbol".into(),
+                })
             }
         }
 
-        _ => Err(format!("Cannot plan expression: {:?}", expr)),
+        _ => Err(PlanError::Unsupported {
+            op: "expr".into(),
+            reason: format!("{:?}", expr),
+        }),
     }
 }
 
@@ -989,9 +1290,12 @@ fn plan_unary(
     plan: &mut Plan,
     ctx: &mut PlanContext,
     interner: &Interner,
-) -> Result<NodeId, String> {
+) -> Result<NodeId, PlanError> {
     if args.len() != 1 {
-        return Err(format!("Unary op expects 1 argument, got {}", args.len()));
+        return Err(PlanError::BadArgs {
+            op: "unary".into(),
+            detail: format!("expects 1 argument, got {}", args.len()),
+        });
     }
 
     let input = plan_expr(&args[0], plan, ctx, interner)?;
@@ -1018,9 +1322,12 @@ fn plan_join(
     plan: &mut Plan,
     ctx: &mut PlanContext,
     interner: &Interner,
-) -> Result<NodeId, String> {
+) -> Result<NodeId, PlanError> {
     if args.len() != 2 {
-        return Err(format!("Join op expects 2 arguments, got {}", args.len()));
+        return Err(PlanError::BadArgs {
+            op: "join".into(),
+            detail: format!("expects 2 arguments, got {}", args.len()),
+        });
     }
 
     let x = plan_expr(&args[0], plan, ctx, interner)?;
@@ -1032,10 +1339,13 @@ fn plan_join(
     // Check index type compatibility (if known at plan time)
     if let (Some(x_idx), Some(y_idx)) = (&x_schema.index_type, &y_schema.index_type) {
         if x_idx != y_idx {
-            return Err(format!(
-                "Index type mismatch in join: {:?} vs {:?} (no coercion allowed per contracts.md)",
-                x_idx, y_idx
-            ));
+            return Err(PlanError::Unsupported {
+                op: "join".into(),
+                reason: format!(
+                    "index type mismatch: {:?} vs {:?} (no coercion allowed per contracts.md)",
+                    x_idx, y_idx
+                ),
+            });
         }
     }
 
@@ -1063,9 +1373,12 @@ fn plan_binary(
     plan: &mut Plan,
     ctx: &mut PlanContext,
     interner: &Interner,
-) -> Result<NodeId, String> {
+) -> Result<NodeId, PlanError> {
     if args.len() != 2 {
-        return Err(format!("Binary op expects 2 arguments, got {}", args.len()));
+        return Err(PlanError::BadArgs {
+            op: "binary".into(),
+            detail: format!("expects 2 arguments, got {}", args.len()),
+        });
     }
 
     // LHS is always a frame expression
@@ -1100,7 +1413,7 @@ fn plan_binary(
 fn parse_mask_expr_from_ast(
     expr: &Expr,
     interner: &Interner,
-) -> Result<crate::mask::MaskExpr, String> {
+) -> Result<crate::mask::MaskExpr, PlanError> {
     use crate::mask::MaskExpr;
 
     match expr {
@@ -1116,7 +1429,10 @@ fn parse_mask_expr_from_ast(
                 let name = interner.resolve(s).to_string();
                 Ok(MaskExpr::Name(name))
             }
-            _ => Err("Quoted mask name must be a symbol".to_string()),
+            _ => Err(PlanError::BadArgs {
+                op: "mask".into(),
+                detail: "quoted mask name must be a symbol".into(),
+            }),
         },
 
         // List: (not expr) or (and ...) or (or ...)
@@ -1127,7 +1443,10 @@ fn parse_mask_expr_from_ast(
                 match op_name {
                     "not" => {
                         if elements.len() != 2 {
-                            return Err("mask expr 'not' expects 1 argument".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "mask".into(),
+                                detail: "'not' expects 1 argument".into(),
+                            });
                         }
                         let inner = parse_mask_expr_from_ast(&elements[1], interner)?;
                         Ok(MaskExpr::Not(Box::new(inner)))
@@ -1135,7 +1454,10 @@ fn parse_mask_expr_from_ast(
 
                     "and" => {
                         if elements.len() < 2 {
-                            return Err("mask expr 'and' expects at least 1 argument".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "mask".into(),
+                                detail: "'and' expects at least 1 argument".into(),
+                            });
                         }
                         let mut sub_exprs = Vec::new();
                         for arg in &elements[1..] {
@@ -1146,7 +1468,10 @@ fn parse_mask_expr_from_ast(
 
                     "or" => {
                         if elements.len() < 2 {
-                            return Err("mask expr 'or' expects at least 1 argument".to_string());
+                            return Err(PlanError::BadArgs {
+                                op: "mask".into(),
+                                detail: "'or' expects at least 1 argument".into(),
+                            });
                         }
                         let mut sub_exprs = Vec::new();
                         for arg in &elements[1..] {
@@ -1155,13 +1480,22 @@ fn parse_mask_expr_from_ast(
                         Ok(MaskExpr::Or(sub_exprs))
                     }
 
-                    _ => Err(format!("Unknown mask operator: {}", op_name)),
+                    _ => Err(PlanError::BadArgs {
+                        op: "mask".into(),
+                        detail: format!("unknown mask operator: {}", op_name),
+                    }),
                 }
             }
-            _ => Err("Mask expression list must start with operator symbol".to_string()),
+            _ => Err(PlanError::BadArgs {
+                op: "mask".into(),
+                detail: "expression list must start with operator symbol".into(),
+            }),
         },
 
-        _ => Err(format!("Invalid mask expression: {:?}", expr)),
+        _ => Err(PlanError::BadArgs {
+            op: "mask".into(),
+            detail: format!("invalid mask expression: {:?}", expr),
+        }),
     }
 }
 

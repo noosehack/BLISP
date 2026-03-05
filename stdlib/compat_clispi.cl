@@ -2,60 +2,63 @@
 ;; CLISPI → BLISP compatibility layer
 ;; Purpose: run CLISPI scripts on BLISP today.
 ;; Strategy:
-;;   - CLISPI surface verbs become macros that expand to BLISP builtins
-;;   - Keep semantics (colwise default) at the surface
-;;   - Temporary: x- expands to xminus until reader supports hyphen symbols
+;;   - Canonical IR names (dlog, cs1, shift, locf) that lack legacy builtins
+;;     get macros mapping to their legacy *-cols equivalents for fallback
+;;   - These macros are TRANSPARENT to IR: try_ir_eval sees raw AST,
+;;     macros only expand during legacy rt.eval() fallback
+;;   - Legacy spellings (*-cols) already exist as builtins — no macros needed
+;;   - Genuinely useful sugar (avg, x-, ecs1, ur, etc.) is kept
 ;; ---------------------------------------------
 
 ;; =============================================================================
 ;; SECTION 0: THREADING MACRO (CRITICAL!)
 ;; =============================================================================
 
-;; Threading macro is now a BUILTIN special form in BLISP (not a macro)
+;; Threading macro is a BUILTIN special form in BLISP (not a macro)
 ;; (-> x (f a) (g b)) threads x through function calls
 ;; Implemented in src/eval.rs as eval_thread()
-;; This macro definition is NOT used - kept for reference only
+
+;; =============================================================================
+;; SECTION 1: CANONICAL → LEGACY FALLBACK
+;; =============================================================================
+
+;; These canonical names exist in IR but NOT as legacy builtins.
+;; When default HYBRID mode falls back to legacy (e.g. save wraps the expr),
+;; these macros route to legacy *-cols builtins.
 ;;
-;; (defmacro -> (x &rest forms) ...)  ;; NOT USED - builtin instead
+;; IR-transparent: try_ir_eval receives raw AST, plans through IR.
+;; Only if IR planning fails does legacy run, expanding these macros.
+;;
+;; When BLISP_SEGMENT=1 (segmented hybrid), these macros are bypassed
+;; because hybrid_eval peels save and routes subtrees through IR directly.
+;; In that mode, these macros are harmless but unused.
+
+(defmacro dlog (x) `(dlog-cols ,x))
+(defmacro cs1 (x) `(cs1-cols ,x))
+(defmacro shift (x lag) `(shift-cols ,x ,lag))
+(defmacro locf (x) `(locf-cols ,x))
+
+;; > threshold: canonical (> x threshold) → legacy (>-cols x threshold)
+(defmacro > (x threshold) `(>-cols ,x ,threshold))
+
+;; ur: canonical data-first (ur x w step) → legacy prefix (ur-cols w step x)
+(defmacro ur (x w step) `(ur-cols ,w ,step ,x))
 
 ;; =============================================================================
-;; SECTION 1: OPERATIONS WITH OPTIONAL ARGUMENTS
-;; =============================================================================
-
-;; dlog, shift, diff now have optional lag arguments (default=1) at the builtin level
-;; TEMPORARY: Until builtins support optional args, use macros to provide defaults
-(defmacro dlog (x) `(dlog-cols ,x))           ; CLISPI dlog → BLISP dlog-cols
-(defmacro shift (x lag) `(shift-cols ,x ,lag))  ; CLISPI shift → BLISP shift-cols
-
-;; =============================================================================
-;; SECTION 2: NAME DIFFERENCES (need macro mapping)
+;; SECTION 2: NAME DIFFERENCES (genuinely useful sugar)
 ;; =============================================================================
 
 ;; --- Aggregates ---
 (defmacro avg (x) `(mean ,x))           ; CLISPI avg → BLISP mean
 (defmacro std_dev (x) `(std ,x))        ; CLISPI std_dev → BLISP std
 
-;; --- Cumulative operations ---
-;; cs1 - TEMPORARY: Until IR fully integrated, use cs1-cols
-(defmacro cs1 (x) `(cs1-cols ,x))             ; CLISPI cs1 → BLISP cs1-cols
-;; ecs1 - implemented as macro: exp(cs1(dlog(x))) (Phase 3)
+;; --- Pairwise ---
+;; x- → xminus also in canonicalize (src/normalize.rs), but macro kept
+;; for legacy fallback path where canonicalize doesn't run.
+(defmacro x- (x half) `(xminus ,x ,half))      ; x- → xminus
 
-;; --- Comparison operations ---
-;; TEMPORARY: Until > builtin is polymorphic, use macro to route to >-cols
-(defmacro > (x threshold) `(>-cols ,x ,threshold))  ; CLISPI > → BLISP >-cols
-
-;; --- Rolling operations ---
-;; wzs - Windowed z-score (now a builtin, not a macro)
-;; Usage: (wzs window step x)
-;; Note: wzs is registered as builtin_wzs in src/builtins.rs
-;; (defmacro wzs (w l x) `(rolling-zscore ,w ,x))  ; OLD - builtin exists now
+;; --- Rolling ---
 (defmacro wavg (x w) `(wmean-cols ,x ,w))   ; CLISPI wavg → BLISP wmean-cols
-
-;; --- Pairwise (temporary until reader supports x-) ---
-(defmacro x- (x half) `(xminus ,x ,half))      ; x- → xminus (reader limitation)
-
-;; --- Filter operations ---
-(defmacro keep (x step) `(keep-shape ,x ,step)) ; CLISPI keep → BLISP keep-shape
 
 ;; =============================================================================
 ;; SECTION 3: COMPOSITE MACROS (implement via existing primitives)
@@ -76,13 +79,6 @@
 ;; Alias for backward compat
 (defmacro ir2 (x) `(ir ,x))
 
-;; --- Unit Ratio (ur) ---
-;; Unit ratio = value / (100 * sqrt(252) * rolling_std)
-;; Used for risk-adjusted returns in GLD_NUM pipeline
-;; Threading: (-> x (ur 250 5)) expands to (ur x 250 5), so x comes first
-(defmacro ur (x w step)
-  `(ur-cols ,w ,step ,x))  ; Call builtin with correct order
-
 ;; --- Exponential Cumulative Sum (ecs1) ---
 ;; Reconstruct price index from log returns: exp(cumsum(dlog(prices)))
 ;; Inverse of dlog: if y = dlog(x), then x ≈ ecs1(y)
@@ -93,9 +89,6 @@
 ;; =============================================================================
 
 ;; CLISPI patterns like (o WENS x) and (o ':row x) now work via builtin_o
-;; The builtin was implemented in Phase B and supports:
-;;   - Axis keywords: (o ':col x), (o ':row x), (o ':reset x)
-;;   - Layout symbols: (o 'NSWE x), (o 'WENS x), (o 'H x), (o 'Z x)
 ;; No macro needed - builtin takes precedence
 
 ;; =============================================================================
@@ -124,7 +117,6 @@
 ;;   - uc (upside capture) → needs BLISP builtin
 ;;   - whr                 → needs BLISP builtin
 ;;   - wmax, wmin, wmed    → needs BLISP builtin
-;;   - ur                  → ✅ IMPLEMENTED as macro (Phase 3)
 
 ;; MISSING - Pairwise:
 ;;   - xdiv, xplus, xmult  → needs BLISP builtin
