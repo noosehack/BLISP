@@ -125,13 +125,26 @@ Notes:
 
 ## 15. Test Data Integrity
 
-- All tests and investigations must use **repository fixtures** (`tests/fixtures/*.csv`) only.
+- All tests and investigations must use **canonical data files** or **repository fixtures**.
 - No ad-hoc `printf`, `echo`, or heredoc-generated CSV for validation.
-- Fixtures must use semicolon delimiter (`;`), project-standard headers, and NA conventions.
-- Any new fixture requires an explicit commit.
-- Use `./scripts/pipe_fixture.sh <fixture> '<expr>'` to run expressions against fixtures.
+- All CSV must use semicolon delimiter (`;`), project-standard headers, and NA conventions.
+
+### Canonical Data Files (in `/home/ubuntu/`)
+
+| File | Description |
+|------|-------------|
+| `ES1I.csv` | Single-column (ES1 Index), ~9500 rows. Use for single-series tests. |
+| `At.csv` | Multi-column (~500 columns), ~5100 rows. Use for multi-asset tests. |
+| `smallAt.csv` | Small multi-column (6 columns), 9 rows. Use when you need small/fast. |
+
+Always test with these first. If none fits, use `tests/fixtures/*.csv`.
+
+### Rules
+
+- Use `./scripts/pipe_fixture.sh <fixture> '<expr>'` for reproducible validation.
 - Tripwire tests in `tests/fixture_integrity.rs` enforce format compliance in CI.
 - A claim like "op X returns all NA" is invalid without a fixture path and exact `blisp -e` command.
+- Any new fixture requires an explicit commit and review.
 
 ## 16. The Matrix Columns
 
