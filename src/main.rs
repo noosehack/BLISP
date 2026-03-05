@@ -106,8 +106,18 @@ impl PipeReport {
         if show_stages {
             eprintln!("=== PIPE ===");
             eprintln!("mode:             {}", self.mode);
-            eprintln!("segment:          {}", if self.segment { "on (BLISP_SEGMENT)" } else { "off" });
-            eprintln!("fusion_invoked:   {}", if self.fusion_invoked { "yes" } else { "no" });
+            eprintln!(
+                "segment:          {}",
+                if self.segment {
+                    "on (BLISP_SEGMENT)"
+                } else {
+                    "off"
+                }
+            );
+            eprintln!(
+                "fusion_invoked:   {}",
+                if self.fusion_invoked { "yes" } else { "no" }
+            );
             eprintln!();
 
             // [PARSE]
@@ -121,11 +131,8 @@ impl PipeReport {
             if !self.rewrites_normalize.is_empty() {
                 eprintln!("  rewrites:");
                 for rw in &self.rewrites_normalize {
-                    match rw {
-                        normalize::RewriteEvent::ThreadFirst { form_count } => {
-                            eprintln!("    -> expanded ({} forms)", form_count);
-                        }
-                        _ => {}
+                    if let normalize::RewriteEvent::ThreadFirst { form_count } = rw {
+                        eprintln!("    -> expanded ({} forms)", form_count);
                     }
                 }
             }
@@ -167,7 +174,10 @@ impl PipeReport {
 
             // [OPTIMIZE]
             eprintln!("[OPTIMIZE]");
-            eprintln!("  fusion_invoked:  {}", if self.fusion_invoked { "yes" } else { "no" });
+            eprintln!(
+                "  fusion_invoked:  {}",
+                if self.fusion_invoked { "yes" } else { "no" }
+            );
             if self.fusion_invoked {
                 eprintln!("  nodes_before:    {}", self.pre_fusion_count);
                 eprintln!("  nodes_after:     {}", self.post_fusion_count);
@@ -199,19 +209,22 @@ impl PipeReport {
         if show_table && !self.call_sites.is_empty() {
             eprintln!("[TABLE]");
             // Build table with IR correlation
-            eprintln!("  {:>3}  {:<12} {:<12} {:<30} {:<7} {}",
-                "#", "user", "canonical", "ir_variant", "fused", "ran");
+            eprintln!(
+                "  {:>3}  {:<12} {:<12} {:<30} {:<7} ran",
+                "#", "user", "canonical", "ir_variant", "fused"
+            );
             for site in &self.call_sites {
                 // Find matching IR node by canonical name
                 let (ir_variant, fused) = self.find_ir_for_call(site);
-                let ran = if self.plan_error.is_some() { "legacy" } else { &self.exec_path };
-                eprintln!("  {:>3}  {:<12} {:<12} {:<30} {:<7} {}",
-                    site.preorder_id,
-                    site.user_sym,
-                    site.canonical_sym,
-                    ir_variant,
-                    fused,
-                    ran);
+                let ran = if self.plan_error.is_some() {
+                    "legacy"
+                } else {
+                    &self.exec_path
+                };
+                eprintln!(
+                    "  {:>3}  {:<12} {:<12} {:<30} {:<7} {}",
+                    site.preorder_id, site.user_sym, site.canonical_sym, ir_variant, fused, ran
+                );
             }
             eprintln!("=== END ===");
         } else if show_stages {
@@ -294,11 +307,17 @@ fn detect_fused_ops(plan: &ir::Plan) -> Vec<String> {
             ir::Operation::Unary(u) => match u {
                 ir::UnaryOp::FusedElementwise { ops, .. } => Some(format!(
                     "FusedElementwise[{}]",
-                    ops.iter().map(|o| format!("{:?}", o)).collect::<Vec<_>>().join(", ")
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
                 ir::UnaryOp::FusedCs1Elementwise { ops, .. } => Some(format!(
                     "FusedCs1Elementwise[{}]",
-                    ops.iter().map(|o| format!("{:?}", o)).collect::<Vec<_>>().join(", ")
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
                 ir::UnaryOp::FusedCs1DlogOfs { lag, .. } => {
                     Some(format!("FusedCs1DlogOfs(lag={})", lag))
@@ -306,12 +325,18 @@ fn detect_fused_ops(plan: &ir::Plan) -> Vec<String> {
                 ir::UnaryOp::FusedCs1DlogObs { .. } => Some("FusedCs1DlogObs".to_string()),
                 ir::UnaryOp::FusedDlogObsElementwise { ops, .. } => Some(format!(
                     "FusedDlogObsElementwise[{}]",
-                    ops.iter().map(|o| format!("{:?}", o)).collect::<Vec<_>>().join(", ")
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
                 ir::UnaryOp::FusedDlogOfsElementwise { lag, ops, .. } => Some(format!(
                     "FusedDlogOfsElementwise(lag={}) [{}]",
                     lag,
-                    ops.iter().map(|o| format!("{:?}", o)).collect::<Vec<_>>().join(", ")
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
                 _ => None,
             },
@@ -755,7 +780,14 @@ fn main() {
     // Execute -e or script
     if let Some(expr) = expression {
         let code = &expr;
-        match eval_code(&mut rt, code, use_legacy, use_ir_only, trace_plan, pipe_mode) {
+        match eval_code(
+            &mut rt,
+            code,
+            use_legacy,
+            use_ir_only,
+            trace_plan,
+            pipe_mode,
+        ) {
             Ok(val) => {
                 // Stream output directly to stdout with BufWriter for efficiency
                 let stdout = std::io::stdout();
@@ -790,7 +822,14 @@ fn main() {
         // File execution
         match std::fs::read_to_string(&file) {
             Ok(code) => {
-                match eval_code(&mut rt, &code, use_legacy, use_ir_only, trace_plan, pipe_mode) {
+                match eval_code(
+                    &mut rt,
+                    &code,
+                    use_legacy,
+                    use_ir_only,
+                    trace_plan,
+                    pipe_mode,
+                ) {
                     Ok(val) => {
                         // Stream output directly to stdout with BufWriter for efficiency
                         let stdout = std::io::stdout();
@@ -1315,8 +1354,8 @@ fn eval_code(
                     }
                     result = rt.eval(&expr)?;
                 } else if use_ir_only {
-                    result = try_ir_eval(rt, expr, trace, &mut pipe)
-                        .map_err(|e| format!("{}", e))?;
+                    result =
+                        try_ir_eval(rt, expr, trace, &mut pipe).map_err(|e| format!("{}", e))?;
                 } else if is_segment {
                     result = hybrid_eval(rt, &expr, trace, &mut pipe)?;
                 } else {

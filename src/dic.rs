@@ -566,10 +566,10 @@ struct ProbeIR {
 struct MatrixRow {
     name: String,
     normalize_to: Option<String>,
-    /// TYPE: can the user type this token? (code-driven)
-    is_type: bool,
-    /// Why is this typable? (for JSON output)
-    type_reasons: Vec<String>,
+    /// ACCEPT: can the user type this token? (code-driven)
+    is_accept: bool,
+    /// Why is this accepted? {normalize|planner|builtin|glue}
+    accept_reasons: Vec<String>,
     /// PUB: is this in PUBLIC_FINANCE_OPS? (policy)
     is_pub: bool,
     /// CANON: canonical token after normalization
@@ -577,6 +577,8 @@ struct MatrixRow {
     layer: Layer,
     ir_variant: String,
     fusable: String,
+    /// USE: recommended spelling (= CANON when this is a deprecated alias, else "-")
+    use_spelling: String,
     yaml_current: String,
     yaml_planned: String,
     notes: Vec<String>,
@@ -584,9 +586,9 @@ struct MatrixRow {
 
 /// Glue forms: control/IO/logic that hybrid_eval peels or that aren't data ops
 const GLUE_FORMS: &[&str] = &[
-    "save", "print", "progn", "defmacro", "define",
-    "let", "let*",           // binding forms (control, not finance)
-    "and", "or", "not",      // boolean logic (mask sub-expressions, not standalone data ops)
+    "save", "print", "progn", "defmacro", "define", "let",
+    "let*", // binding forms (control, not finance)
+    "and", "or", "not", // boolean logic (mask sub-expressions, not standalone data ops)
 ];
 
 /// Public finance operations: the canonical user API for data/finance.
@@ -599,18 +601,40 @@ const GLUE_FORMS: &[&str] = &[
 /// `test_public_finance_ops_all_ir` enforces it against compiled code.
 pub const PUBLIC_FINANCE_OPS: &[&str] = &[
     // Sources
-    "stdin", "file", "load", "read-csv",
+    "stdin",
+    "file",
+    "load",
+    "read-csv",
     // Elementwise math (fusable)
-    "abs", "exp", "inv", "log", "sqrt",
+    "abs",
+    "exp",
+    "inv",
+    "log",
+    "sqrt",
     // Arithmetic (binary)
-    "+", "-", "*", "/",
+    "+",
+    "-",
+    "*",
+    "/",
     // Comparisons (binary)
-    ">", "<", "<=", ">=", "==", "!=",
+    ">",
+    "<",
+    "<=",
+    ">=",
+    "==",
+    "!=",
     // Shift/window ops
-    "shift", "dlog", "cs1", "locf", "xminus",
-    "rolling-mean", "rolling-std",
+    "shift",
+    "dlog",
+    "cs1",
+    "locf",
+    "xminus",
+    "rolling-mean",
+    "rolling-std",
     // Composites
-    "rolling-zscore", "ur", "wzs",
+    "rolling-zscore",
+    "ur",
+    "wzs",
     // Masks
     "wkd",
     // Alignment
@@ -634,8 +658,8 @@ fn collect_candidate_names(rt: &Runtime) -> HashSet<String> {
 
     // 3. Core symbols (sources, arithmetic, glue forms)
     for s in &[
-        "stdin", "file", "load", "read-csv", "+", "-", "*", "/", ">", "<", "<=", ">=", "==",
-        "!=", "let", "save", "print", "progn", "not", "and", "or", "defmacro",
+        "stdin", "file", "load", "read-csv", "+", "-", "*", "/", ">", "<", "<=", ">=", "==", "!=",
+        "let", "save", "print", "progn", "not", "and", "or", "defmacro",
     ] {
         names.insert(s.to_string());
     }
@@ -662,17 +686,9 @@ fn probe_planner(name: &str, interner: &mut Interner) -> Option<ProbeIR> {
         // unary: (op (stdin))
         Expr::List(vec![Expr::Sym(op_sym), stdin_call.clone()]),
         // binary with scalar: (op (stdin) 1)
-        Expr::List(vec![
-            Expr::Sym(op_sym),
-            stdin_call.clone(),
-            Expr::Int(1),
-        ]),
+        Expr::List(vec![Expr::Sym(op_sym), stdin_call.clone(), Expr::Int(1)]),
         // param unary 2-arg: (op (stdin) 2)
-        Expr::List(vec![
-            Expr::Sym(op_sym),
-            stdin_call.clone(),
-            Expr::Int(2),
-        ]),
+        Expr::List(vec![Expr::Sym(op_sym), stdin_call.clone(), Expr::Int(2)]),
         // 3-param: (op (stdin) 250 5)
         Expr::List(vec![
             Expr::Sym(op_sym),
@@ -689,10 +705,7 @@ fn probe_planner(name: &str, interner: &mut Interner) -> Option<ProbeIR> {
         // let form: (let ((x (stdin))) x)
         Expr::List(vec![
             Expr::Sym(op_sym),
-            Expr::List(vec![Expr::List(vec![
-                Expr::Sym(x_sym),
-                stdin_call.clone(),
-            ])]),
+            Expr::List(vec![Expr::List(vec![Expr::Sym(x_sym), stdin_call.clone()])]),
             Expr::Sym(x_sym),
         ]),
     ];
@@ -744,10 +757,25 @@ fn format_ir_op(op: &Operation) -> String {
         Operation::Unary(UnaryOp::MapNumeric { func, .. }) => format!("{:?}", func),
         Operation::Binary(bop) => {
             // Extract the func from the binary op debug format
-            format!("{:?}", bop).split('{').next().unwrap_or("Binary").trim().to_string()
+            format!("{:?}", bop)
+                .split('{')
+                .next()
+                .unwrap_or("Binary")
+                .trim()
+                .to_string()
         }
-        Operation::Join(jop) => format!("{:?}", jop).split('{').next().unwrap_or("Join").trim().to_string(),
-        Operation::Schema(sop) => format!("{:?}", sop).split('{').next().unwrap_or("Schema").trim().to_string(),
+        Operation::Join(jop) => format!("{:?}", jop)
+            .split('{')
+            .next()
+            .unwrap_or("Join")
+            .trim()
+            .to_string(),
+        Operation::Schema(sop) => format!("{:?}", sop)
+            .split('{')
+            .next()
+            .unwrap_or("Schema")
+            .trim()
+            .to_string(),
         _ => format!("{:?}", op).chars().take(40).collect(),
     }
 }
@@ -804,10 +832,7 @@ pub fn print_matrix(
     };
 
     // Build normalize lookup
-    let normalize_map: HashMap<&str, &str> = normalize::NORMALIZE_ALIASES
-        .iter()
-        .copied()
-        .collect();
+    let normalize_map: HashMap<&str, &str> = normalize::NORMALIZE_ALIASES.iter().copied().collect();
 
     // Probe each candidate
     let mut rows: Vec<MatrixRow> = Vec::new();
@@ -845,8 +870,10 @@ pub fn print_matrix(
             Layer::Unknown
         };
 
-        let ir_variant = probe.as_ref().map_or("-".to_string(), |p| p.ir_variant.clone());
-        let fusable = if probe.as_ref().map_or(false, |p| p.fusable) {
+        let ir_variant = probe
+            .as_ref()
+            .map_or("-".to_string(), |p| p.ir_variant.clone());
+        let fusable = if probe.as_ref().is_some_and(|p| p.fusable) {
             "elem".to_string()
         } else {
             "-".to_string()
@@ -899,24 +926,24 @@ pub fn print_matrix(
             notes.push("glue".to_string());
         }
 
-        // TYPE: can user type this token? (code-driven)
+        // ACCEPT: can user type this token? (code-driven)
         let is_in_normalize = normalize::NORMALIZE_ALIASES
             .iter()
             .any(|(from, to)| *from == name.as_str() || *to == name.as_str());
-        let is_type = is_in_normalize || is_builtin || is_glue || probe.is_some();
+        let is_accept = is_in_normalize || is_builtin || is_glue || probe.is_some();
 
-        let mut type_reasons = Vec::new();
+        let mut accept_reasons = Vec::new();
         if is_in_normalize {
-            type_reasons.push("normalize".to_string());
+            accept_reasons.push("normalize".to_string());
         }
         if probe.is_some() {
-            type_reasons.push("planner".to_string());
+            accept_reasons.push("planner".to_string());
         }
         if is_builtin {
-            type_reasons.push("builtin".to_string());
+            accept_reasons.push("builtin".to_string());
         }
         if is_glue {
-            type_reasons.push("glue".to_string());
+            accept_reasons.push("glue".to_string());
         }
 
         // PUB: is it in the stable finance API? (policy)
@@ -935,16 +962,24 @@ pub fn print_matrix(
             c.to_string()
         };
 
+        // USE: recommended spelling for deprecated aliases
+        let use_spelling = if notes.contains(&"dep".to_string()) {
+            canon.clone()
+        } else {
+            "-".to_string()
+        };
+
         rows.push(MatrixRow {
             name: name.clone(),
             normalize_to,
-            is_type,
-            type_reasons,
+            is_accept,
+            accept_reasons,
             is_pub,
             canon,
             layer,
             ir_variant,
             fusable,
+            use_spelling,
             yaml_current: yaml_cur,
             yaml_planned: yaml_plan,
             notes,
@@ -959,7 +994,7 @@ pub fn print_matrix(
     let legacy_count = rows.iter().filter(|r| r.layer == Layer::Legacy).count();
     let glue_count = rows.iter().filter(|r| r.layer == Layer::Glue).count();
     let unknown_count = rows.iter().filter(|r| r.layer == Layer::Unknown).count();
-    let type_count = rows.iter().filter(|r| r.is_type).count();
+    let accept_count = rows.iter().filter(|r| r.is_accept).count();
     let pub_count = rows.iter().filter(|r| r.is_pub).count();
     let ir_null_count = rows
         .iter()
@@ -981,21 +1016,38 @@ pub fn print_matrix(
             println!();
 
             // Header
-            let type_str = |b: bool| if b { "yes" } else { "-" };
+            let yes_dash = |b: bool| if b { "yes" } else { "-" };
 
             if no_yaml {
                 println!(
-                    "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {}",
-                    "NAME", "TYPE", "PUB", "CANON", "LAYER", "IR_VARIANT", "FUSABLE", "NOTES"
+                    "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} NOTES",
+                    "NAME",
+                    "ACCEPT",
+                    "ACCEPT_WHY",
+                    "PUB",
+                    "CANON",
+                    "USE",
+                    "LAYER",
+                    "IR_VARIANT",
+                    "FUSABLE"
                 );
-                println!("{}", "-".repeat(110));
+                println!("{}", "-".repeat(147));
             } else {
                 println!(
-                    "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
-                    "NAME", "TYPE", "PUB", "CANON", "LAYER", "IR_VARIANT", "FUSABLE",
-                    "Y_CUR", "Y_PLN", "NOTES"
+                    "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} NOTES",
+                    "NAME",
+                    "ACCEPT",
+                    "ACCEPT_WHY",
+                    "PUB",
+                    "CANON",
+                    "USE",
+                    "LAYER",
+                    "IR_VARIANT",
+                    "FUSABLE",
+                    "Y_CUR",
+                    "Y_PLN"
                 );
-                println!("{}", "-".repeat(125));
+                println!("{}", "-".repeat(162));
             }
 
             for row in &rows {
@@ -1005,13 +1057,21 @@ pub fn print_matrix(
                     row.notes.join(", ")
                 };
 
+                let accept_why = if row.accept_reasons.is_empty() {
+                    "-".to_string()
+                } else {
+                    row.accept_reasons.join("+")
+                };
+
                 if no_yaml {
                     println!(
-                        "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {}",
+                        "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {}",
                         row.name,
-                        type_str(row.is_type),
-                        type_str(row.is_pub),
+                        yes_dash(row.is_accept),
+                        accept_why,
+                        yes_dash(row.is_pub),
                         row.canon,
+                        row.use_spelling,
                         row.layer,
                         row.ir_variant,
                         row.fusable,
@@ -1019,11 +1079,13 @@ pub fn print_matrix(
                     );
                 } else {
                     println!(
-                        "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
+                        "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
                         row.name,
-                        type_str(row.is_type),
-                        type_str(row.is_pub),
+                        yes_dash(row.is_accept),
+                        accept_why,
+                        yes_dash(row.is_pub),
                         row.canon,
+                        row.use_spelling,
                         row.layer,
                         row.ir_variant,
                         row.fusable,
@@ -1037,17 +1099,14 @@ pub fn print_matrix(
             println!();
             println!("SUMMARY:");
             println!("  Total names:                    {}", rows.len());
-            println!("  TYPE (typable):                 {}", type_count);
+            println!("  ACCEPT (typable):               {}", accept_count);
             println!("  PUB (public finance API):       {}", pub_count);
             println!("  IR (planner handles):           {}", ir_count);
             println!("  LEGACY (builtin only):          {}", legacy_count);
             println!("  GLUE:                           {}", glue_count);
             println!("  UNKNOWN:                        {}", unknown_count);
             if !no_yaml {
-                println!(
-                    "  YAML says null, code says IR:   {}",
-                    ir_null_count
-                );
+                println!("  YAML says null, code says IR:   {}", ir_null_count);
             }
         }
         OutputFormat::Json => {
@@ -1056,10 +1115,11 @@ pub fn print_matrix(
                 .map(|row| {
                     let mut obj = serde_json::json!({
                         "name": row.name,
-                        "type": row.is_type,
-                        "type_reason": row.type_reasons,
+                        "accept": row.is_accept,
+                        "accept_reason": row.accept_reasons,
                         "pub": row.is_pub,
                         "canon": row.canon,
+                        "use": row.use_spelling,
                         "normalize_to": row.normalize_to,
                         "layer": format!("{}", row.layer),
                         "ir_variant": row.ir_variant,
@@ -1079,7 +1139,7 @@ pub fn print_matrix(
                 "yaml_included": !no_yaml,
                 "summary": {
                     "total": rows.len(),
-                    "type": type_count,
+                    "accept": accept_count,
                     "pub": pub_count,
                     "ir": ir_count,
                     "legacy": legacy_count,
@@ -1476,6 +1536,63 @@ mod tests {
                     ln_status, log_status
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_matrix_header_columns_stable() {
+        // Regression: matrix must succeed and key ops must be plannable as IR.
+        let result = print_matrix(true, OutputFormat::Json, None);
+        assert!(result.is_ok(), "print_matrix must succeed");
+
+        let mut interner = crate::ast::Interner::new();
+
+        for &op in &["wkd", "dlog", "cs1", "diff", "ecs1"] {
+            let probe = probe_planner(op, &mut interner);
+            assert!(probe.is_some(), "{} must be plannable", op);
+        }
+
+        // ecs1 must use SHF_PFX_LIN_SUM0 (cs0), not SHF_PFX_LIN_SUM (cs1)
+        let ecs1_ir = probe_planner("ecs1", &mut interner).unwrap().ir_variant;
+        assert!(
+            ecs1_ir.contains("SHF_PFX_LIN_SUM0") || ecs1_ir.contains("composite"),
+            "ecs1 IR must use CS0, got: {}",
+            ecs1_ir
+        );
+    }
+
+    #[test]
+    fn test_migrated_aliases_are_ir() {
+        // Tripwire: all word-form aliases must resolve to IR via normalize.
+        let mut interner = crate::ast::Interner::new();
+        let aliases: &[(&str, &str)] = &[
+            ("add", "+"),
+            ("sub", "-"),
+            ("mul", "*"),
+            ("div", "/"),
+            ("eq", "=="),
+            ("neq", "!="),
+            ("gt", ">"),
+            ("gte", ">="),
+            ("lt", "<"),
+            ("lte", "<="),
+            ("ln", "log"),
+            ("diff-cols", "diff"),
+            ("diff-col", "diff"),
+            ("ecs1-cols", "ecs1"),
+            ("ecs1-col", "ecs1"),
+        ];
+
+        for (alias, canonical) in aliases {
+            let probe_alias = probe_planner(alias, &mut interner);
+            let probe_canon = probe_planner(canonical, &mut interner);
+            assert!(
+                probe_alias.is_some(),
+                "{} must be plannable (alias for {})",
+                alias,
+                canonical
+            );
+            assert!(probe_canon.is_some(), "{} must be plannable", canonical);
         }
     }
 }
