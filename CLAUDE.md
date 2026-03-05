@@ -123,7 +123,17 @@ Notes:
 - CSV output uses `;` as separator.
 - This enables clean piping: `blisp --dic 2>/dev/null | cut -d';' -f1,5`
 
-## 15. The Matrix Columns
+## 15. Test Data Integrity
+
+- All tests and investigations must use **repository fixtures** (`tests/fixtures/*.csv`) only.
+- No ad-hoc `printf`, `echo`, or heredoc-generated CSV for validation.
+- Fixtures must use semicolon delimiter (`;`), project-standard headers, and NA conventions.
+- Any new fixture requires an explicit commit.
+- Use `./scripts/pipe_fixture.sh <fixture> '<expr>'` to run expressions against fixtures.
+- Tripwire tests in `tests/fixture_integrity.rs` enforce format compliance in CI.
+- A claim like "op X returns all NA" is invalid without a fixture path and exact `blisp -e` command.
+
+## 16. The Matrix Columns
 
 `blisp --dic` outputs these columns:
 
