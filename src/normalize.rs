@@ -251,18 +251,32 @@ fn thread_into_form(value: Expr, form: Expr, interner: &mut Interner) -> Expr {
 pub const NORMALIZE_ALIASES: &[(&str, &str)] = &[
     ("dlog-cols", "dlog"),
     ("dlog-col", "dlog"),
-    ("cs1-cols", "cs1"),
-    ("cs1-col", "cs1"),
+    // Canonical renames: old hyphenated → new underscore names
+    ("rolling-mean", "rol_avg"),
+    ("rolling-std", "rol_std"),
+    ("rolling-zscore", "rol_zsc"),
+    ("wzs", "rol_zsc"),
+    ("cs1", "run_sum"),
+    ("ur", "rsk_adj"),
+    // -cols aliases for renamed ops
+    ("cs1-cols", "run_sum"),
+    ("cs1-col", "run_sum"),
+    ("ur-cols", "rsk_adj"),
+    ("ur-col", "rsk_adj"),
+    ("rolling-mean-cols", "rol_avg"),
+    ("rolling-std-cols", "rol_std"),
+    ("rolling-zscore-cols", "rol_zsc"),
+    ("rol_avg_cols", "rol_avg"),
+    ("rol_std_cols", "rol_std"),
+    ("rol_zsc_cols", "rol_zsc"),
+    ("run_sum_cols", "run_sum"),
+    ("rsk_adj_cols", "rsk_adj"),
+    // Other aliases
     ("shift-cols", "shift"),
     ("shift-col", "shift"),
     (">-cols", ">"),
     (">-col", ">"),
-    ("ur-cols", "ur"),
-    ("ur-col", "ur"),
     ("locf-cols", "locf"),
-    ("rolling-mean-cols", "rolling-mean"),
-    ("rolling-std-cols", "rolling-std"),
-    ("rolling-zscore-cols", "rolling-zscore"),
     ("diff-cols", "diff"),
     ("diff-col", "diff"),
     ("ecs1-cols", "ecs1"),
@@ -297,11 +311,11 @@ fn canonical_name(name: &str) -> Option<&'static str> {
 /// 2-param ops that take (op param data) in prefix form.
 /// Canonical (data-first) form: (op data param)
 const PARAM_OPS_2: &[&str] = &[
-    "rolling-mean",
-    "rolling-std",
+    "rol_avg",
+    "rol_std",
     "rolling-mean-min2",
     "rolling-std-min2",
-    "rolling-zscore",
+    "rol_zsc",
     "shift",
     "diff",
     "keep",
@@ -314,7 +328,7 @@ const PARAM_OPS_2: &[&str] = &[
 
 /// 3-param ops that take (op w step data) in prefix form.
 /// Canonical (data-first) form: (op data w step)
-const PARAM_OPS_3: &[&str] = &["wzs", "ur"];
+const PARAM_OPS_3: &[&str] = &["rol_zsc", "rsk_adj"];
 
 /// Returns true if the expression is a literal integer
 fn is_int(e: &Expr) -> bool {
@@ -593,10 +607,10 @@ mod tests {
     fn test_alias_cs1() {
         let mut interner = Interner::new();
 
-        // (cs1-col x) => (cs1 x)
+        // (cs1-col x) => (run_sum x) via cs1-col → run_sum alias
         let expr = Expr::List(vec![sym(&mut interner, "cs1-col"), num(1.0)]);
         let result = normalize(expr, &mut interner);
-        let expected = Expr::List(vec![sym(&mut interner, "cs1"), num(1.0)]);
+        let expected = Expr::List(vec![sym(&mut interner, "run_sum"), num(1.0)]);
         assert_eq!(result.inner(), &expected);
     }
 
@@ -604,8 +618,7 @@ mod tests {
     fn test_arg_reorder_2param_prefix() {
         let mut interner = Interner::new();
 
-        // Prefix: (rolling-mean 250 x) → (rolling-mean x 250)
-        // where x is a symbol (non-Int)
+        // Prefix: (rolling-mean 250 x) → alias to rol_avg → reorder → (rol_avg x 250)
         let expr = Expr::List(vec![
             sym(&mut interner, "rolling-mean"),
             int(250),
@@ -613,7 +626,7 @@ mod tests {
         ]);
         let result = normalize(expr, &mut interner);
         let expected = Expr::List(vec![
-            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "rol_avg"),
             sym(&mut interner, "x"),
             int(250),
         ]);
@@ -624,7 +637,7 @@ mod tests {
     fn test_arg_reorder_2param_already_data_first() {
         let mut interner = Interner::new();
 
-        // Already data-first: (rolling-mean x 250) → no change
+        // Already data-first: (rolling-mean x 250) → alias to (rol_avg x 250)
         let expr = Expr::List(vec![
             sym(&mut interner, "rolling-mean"),
             sym(&mut interner, "x"),
@@ -632,7 +645,7 @@ mod tests {
         ]);
         let result = normalize(expr, &mut interner);
         let expected = Expr::List(vec![
-            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "rol_avg"),
             sym(&mut interner, "x"),
             int(250),
         ]);
@@ -654,7 +667,7 @@ mod tests {
     fn test_arg_reorder_3param_prefix() {
         let mut interner = Interner::new();
 
-        // Prefix: (ur 250 5 x) → (ur x 250 5)
+        // Prefix: (ur 250 5 x) → alias to rsk_adj → reorder → (rsk_adj x 250 5)
         let expr = Expr::List(vec![
             sym(&mut interner, "ur"),
             int(250),
@@ -663,7 +676,7 @@ mod tests {
         ]);
         let result = normalize(expr, &mut interner);
         let expected = Expr::List(vec![
-            sym(&mut interner, "ur"),
+            sym(&mut interner, "rsk_adj"),
             sym(&mut interner, "x"),
             int(250),
             int(5),
@@ -675,7 +688,7 @@ mod tests {
     fn test_arg_reorder_3param_already_data_first() {
         let mut interner = Interner::new();
 
-        // Already data-first: (ur x 250 5) → no change
+        // Already data-first: (ur x 250 5) → alias to (rsk_adj x 250 5)
         let expr = Expr::List(vec![
             sym(&mut interner, "ur"),
             sym(&mut interner, "x"),
@@ -684,7 +697,7 @@ mod tests {
         ]);
         let result = normalize(expr, &mut interner);
         let expected = Expr::List(vec![
-            sym(&mut interner, "ur"),
+            sym(&mut interner, "rsk_adj"),
             sym(&mut interner, "x"),
             int(250),
             int(5),
@@ -696,8 +709,7 @@ mod tests {
     fn test_thread_then_canonicalize() {
         let mut interner = Interner::new();
 
-        // Full pipeline: (-> x (rolling-mean 250)) → (rolling-mean x 250)
-        // -> threading produces (rolling-mean x 250) which is already data-first
+        // Full pipeline: (-> x (rolling-mean 250)) → alias + thread → (rol_avg x 250)
         let expr = Expr::List(vec![
             sym(&mut interner, "->"),
             sym(&mut interner, "x"),
@@ -705,7 +717,7 @@ mod tests {
         ]);
         let result = normalize(expr, &mut interner);
         let expected = Expr::List(vec![
-            sym(&mut interner, "rolling-mean"),
+            sym(&mut interner, "rol_avg"),
             sym(&mut interner, "x"),
             int(250),
         ]);
@@ -735,7 +747,7 @@ mod tests {
     fn test_canonicalize_idempotent() {
         let mut interner = Interner::new();
 
-        // Prefix: (rolling-mean 250 x) → (rolling-mean x 250)
+        // Prefix: (rolling-mean 250 x) → (rol_avg x 250)
         // Second normalize should be identity
         let expr = Expr::List(vec![
             sym(&mut interner, "rolling-mean"),

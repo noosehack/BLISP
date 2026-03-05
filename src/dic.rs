@@ -601,43 +601,14 @@ const GLUE_FORMS: &[&str] = &[
 /// `test_public_finance_ops_all_ir` enforces it against compiled code.
 pub const PUBLIC_FINANCE_OPS: &[&str] = &[
     // Sources
-    "stdin",
-    "file",
-    "load",
-    "read-csv",
-    // Elementwise math (fusable)
-    "abs",
-    "exp",
-    "inv",
-    "log",
-    "sqrt",
-    // Arithmetic (binary)
-    "+",
-    "-",
-    "*",
-    "/",
-    // Comparisons (binary)
-    ">",
-    "<",
-    "<=",
-    ">=",
-    "==",
-    "!=",
-    // Shift/window ops
-    "shift",
-    "dlog",
-    "cs1",
-    "locf",
-    "xminus",
-    "rolling-mean",
-    "rolling-std",
+    "stdin", "file", "load", "read-csv", // Elementwise math (fusable)
+    "abs", "exp", "inv", "log", "sqrt", // Arithmetic (binary)
+    "+", "-", "*", "/", // Comparisons (binary)
+    ">", "<", "<=", ">=", "==", "!=", // Shift/window ops
+    "shift", "dlog", "run_sum", "locf", "xminus", "rol_avg", "rol_std",
     // Composites
-    "rolling-zscore",
-    "ur",
-    "wzs",
-    // Masks
-    "wkd",
-    // Alignment
+    "rol_zsc", "rsk_adj", // Masks
+    "wkd", // Alignment
     "mapr",
 ];
 
@@ -1510,7 +1481,7 @@ mod tests {
 
         let mut interner = crate::ast::Interner::new();
 
-        for &op in &["wkd", "dlog", "cs1", "diff", "ecs1"] {
+        for &op in &["wkd", "dlog", "run_sum", "diff", "ecs1"] {
             let probe = probe_planner(op, &mut interner);
             assert!(probe.is_some(), "{} must be plannable", op);
         }
@@ -1544,6 +1515,13 @@ mod tests {
             ("diff-col", "diff"),
             ("ecs1-cols", "ecs1"),
             ("ecs1-col", "ecs1"),
+            // Canonical renames: old names → new canonical names
+            ("rolling-mean", "rol_avg"),
+            ("rolling-std", "rol_std"),
+            ("rolling-zscore", "rol_zsc"),
+            ("wzs", "rol_zsc"),
+            ("cs1", "run_sum"),
+            ("ur", "rsk_adj"),
         ];
 
         for (alias, canonical) in aliases {

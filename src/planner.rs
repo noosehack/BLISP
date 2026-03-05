@@ -226,7 +226,7 @@ fn plan_expr(
                         plan_unary(NumericFunc::MSK_WKE, &elements[1..], plan, ctx, interner)
                     }
 
-                    "cs1" => plan_unary(
+                    "run_sum" | "cs1" => plan_unary(
                         NumericFunc::SHF_PFX_LIN_SUM,
                         &elements[1..],
                         plan,
@@ -234,9 +234,9 @@ fn plan_expr(
                         interner,
                     ),
 
-                    // DEPRECATED: Legacy alias for cs1
+                    // DEPRECATED: Legacy alias for run_sum
                     "cs1-col" => {
-                        eprintln!("Warning: 'cs1-col' is deprecated, use 'cs1' instead");
+                        eprintln!("Warning: 'cs1-col' is deprecated, use 'run_sum' instead");
                         plan_unary(
                             NumericFunc::SHF_PFX_LIN_SUM,
                             &elements[1..],
@@ -527,12 +527,12 @@ fn plan_expr(
                         )
                     }
 
-                    // Rolling mean: data-first (rolling-mean x w)
-                    "rolling-mean" => {
+                    // Rolling mean: data-first (rol_avg x w)
+                    "rol_avg" => {
                         if elements.len() != 3 {
                             return Err(PlanError::BadArgs {
-                                op: "rolling-mean".into(),
-                                detail: "expects 2 arguments: (rolling-mean x w)".into(),
+                                op: "rol_avg".into(),
+                                detail: "expects 2 arguments: (rol_avg x w)".into(),
                             });
                         }
 
@@ -540,20 +540,20 @@ fn plan_expr(
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
                                 return Err(PlanError::BadArgs {
-                                    op: "rolling-mean".into(),
+                                    op: "rol_avg".into(),
                                     detail: format!("w must be positive, got {}", i),
                                 })
                             }
                             Expr::Float(_) => {
                                 return Err(PlanError::NonLiteral {
-                                    op: "rolling-mean".into(),
+                                    op: "rol_avg".into(),
                                     which_arg: "w".into(),
                                     expected: "integer, not float".into(),
                                 })
                             }
                             _ => {
                                 return Err(PlanError::NonLiteral {
-                                    op: "rolling-mean".into(),
+                                    op: "rol_avg".into(),
                                     which_arg: "w".into(),
                                     expected: "integer literal".into(),
                                 })
@@ -673,11 +673,11 @@ fn plan_expr(
                         Ok(plan.add_node(shift_node))
                     }
 
-                    // Rolling std: data-first (rolling-std x w)
-                    "rolling-std" => {
+                    // Rolling std: data-first (rol_std x w)
+                    "rol_std" => {
                         if elements.len() != 3 {
                             return Err(PlanError::BadArgs {
-                                op: "rolling-std".into(),
+                                op: "rol_std".into(),
                                 detail: "expects 2 arguments: (rolling-std x w)".into(),
                             });
                         }
@@ -686,20 +686,20 @@ fn plan_expr(
                             Expr::Int(i) if *i > 0 => *i as usize,
                             Expr::Int(i) => {
                                 return Err(PlanError::BadArgs {
-                                    op: "rolling-std".into(),
+                                    op: "rol_std".into(),
                                     detail: format!("w must be positive, got {}", i),
                                 })
                             }
                             Expr::Float(_) => {
                                 return Err(PlanError::NonLiteral {
-                                    op: "rolling-std".into(),
+                                    op: "rol_std".into(),
                                     which_arg: "w".into(),
                                     expected: "integer, not float".into(),
                                 })
                             }
                             _ => {
                                 return Err(PlanError::NonLiteral {
-                                    op: "rolling-std".into(),
+                                    op: "rol_std".into(),
                                     which_arg: "w".into(),
                                     expected: "integer literal".into(),
                                 })
@@ -818,23 +818,15 @@ fn plan_expr(
                         Ok(plan.add_node(shift_node))
                     }
 
-                    // Rolling zscore: (rolling-zscore w x) → (/ (- x (rolling-mean w x)) (rolling-std w x))
+                    // Rolling zscore: (rol_zsc x w) or (rol_zsc x w step)
                     // Derived form: no IR primitive, rewrite into existing ops
-                    "rolling-zscore" | "wzs" => {
-                        // Data-first:
-                        //   rolling-zscore: (rolling-zscore x w)
-                        //   wzs: (wzs x w step) — step ignored
-                        let expected_args = if func_name == "wzs" { 4 } else { 3 };
-
-                        if elements.len() != expected_args {
-                            let signature = if func_name == "wzs" {
-                                "expects 3 arguments: (wzs x w step)"
-                            } else {
-                                "expects 2 arguments: (rolling-zscore x w)"
-                            };
+                    // step param ignored when present (compatibility)
+                    "rol_zsc" => {
+                        // Data-first: (rol_zsc x w) or (rol_zsc x w step)
+                        if elements.len() != 3 && elements.len() != 4 {
                             return Err(PlanError::BadArgs {
-                                op: func_name.to_string(),
-                                detail: signature.into(),
+                                op: "rol_zsc".into(),
+                                detail: "expects 2-3 arguments: (rol_zsc x w [step])".into(),
                             });
                         }
 
@@ -933,8 +925,8 @@ fn plan_expr(
                     // Where: 1587.45... = 100 * sqrt(252) = percentage scale * annualization
                     // step param ignored (compatibility)
                     // Used for: normalizing log returns by rolling volatility
-                    // ur: data-first (ur x w step) — step ignored
-                    "ur" => {
+                    // rsk_adj: data-first (rsk_adj x w step) — step ignored
+                    "rsk_adj" | "ur" => {
                         if elements.len() != 4 {
                             return Err(PlanError::BadArgs {
                                 op: "ur".into(),
