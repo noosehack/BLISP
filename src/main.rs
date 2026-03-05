@@ -5,7 +5,7 @@
 use blisp::reader::Reader;
 use blisp::runtime::Runtime;
 use blisp::value::{self, Value};
-use blisp::{ast, eval, exec, io, normalize, planner};
+use blisp::{ast, eval, exec, io, ir, ir_fusion, normalize, planner};
 use std::env;
 use std::io::Write;
 
@@ -19,6 +19,398 @@ enum Subcommand {
     Dic,
 }
 
+// ─── Pipeline Inspector (--pipe) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PipeMode {
+    Off,
+    Full,
+    Stages,
+    Table,
+}
+
+#[derive(Debug, Clone)]
+struct CallSite {
+    preorder_id: usize,
+    user_sym: String,
+    canonical_sym: String,
+}
+
+#[derive(Debug, Clone)]
+struct PipeReport {
+    // Header
+    mode: String,
+    segment: bool,
+    fusion_invoked: bool,
+
+    // [PARSE]
+    raw_ast: String,
+
+    // [NORMALIZE]
+    post_thread: String,
+    rewrites_normalize: Vec<normalize::RewriteEvent>,
+
+    // [CANONICALIZE]
+    canonical: String,
+    rewrites_canonicalize: Vec<normalize::RewriteEvent>,
+
+    // [PLAN]
+    plan_nodes: Vec<String>,
+    plan_error: Option<String>,
+
+    // [OPTIMIZE]
+    pre_fusion_count: usize,
+    post_fusion_count: usize,
+    fused_ops: Vec<String>,
+
+    // [EXECUTE]
+    exec_path: String,
+    fallback_reason: Option<String>,
+    glue_forms: Vec<String>,
+
+    // [TABLE]
+    call_sites: Vec<CallSite>,
+}
+
+impl PipeReport {
+    fn new() -> Self {
+        PipeReport {
+            mode: String::new(),
+            segment: false,
+            fusion_invoked: false,
+            raw_ast: String::new(),
+            post_thread: String::new(),
+            rewrites_normalize: Vec::new(),
+            rewrites_canonicalize: Vec::new(),
+            canonical: String::new(),
+            plan_nodes: Vec::new(),
+            plan_error: None,
+            pre_fusion_count: 0,
+            post_fusion_count: 0,
+            fused_ops: Vec::new(),
+            exec_path: String::new(),
+            fallback_reason: None,
+            glue_forms: Vec::new(),
+            call_sites: Vec::new(),
+        }
+    }
+
+    fn emit(&self, pipe_mode: PipeMode) {
+        if pipe_mode == PipeMode::Off {
+            return;
+        }
+
+        let show_stages = pipe_mode == PipeMode::Full || pipe_mode == PipeMode::Stages;
+        let show_table = pipe_mode == PipeMode::Full || pipe_mode == PipeMode::Table;
+
+        if show_stages {
+            eprintln!("=== PIPE ===");
+            eprintln!("mode:             {}", self.mode);
+            eprintln!(
+                "segment:          {}",
+                if self.segment {
+                    "on (BLISP_SEGMENT)"
+                } else {
+                    "off"
+                }
+            );
+            eprintln!(
+                "fusion_invoked:   {}",
+                if self.fusion_invoked { "yes" } else { "no" }
+            );
+            eprintln!();
+
+            // [PARSE]
+            eprintln!("[PARSE]");
+            eprintln!("  {}", self.raw_ast);
+            eprintln!();
+
+            // [NORMALIZE]
+            eprintln!("[NORMALIZE]");
+            eprintln!("  {}", self.post_thread);
+            if !self.rewrites_normalize.is_empty() {
+                eprintln!("  rewrites:");
+                for rw in &self.rewrites_normalize {
+                    if let normalize::RewriteEvent::ThreadFirst { form_count } = rw {
+                        eprintln!("    -> expanded ({} forms)", form_count);
+                    }
+                }
+            }
+            eprintln!();
+
+            // [CANONICALIZE]
+            eprintln!("[CANONICALIZE]");
+            eprintln!("  {}", self.canonical);
+            if !self.rewrites_canonicalize.is_empty() {
+                eprintln!("  rewrites:");
+                for rw in &self.rewrites_canonicalize {
+                    match rw {
+                        normalize::RewriteEvent::Alias { from, to } => {
+                            eprintln!("    alias: {} -> {}", from, to);
+                        }
+                        normalize::RewriteEvent::ArgSwap2 { op } => {
+                            eprintln!("    arg-swap-2: {} (prefix -> data-first)", op);
+                        }
+                        normalize::RewriteEvent::ArgSwap3 { op } => {
+                            eprintln!("    arg-swap-3: {} (prefix -> data-first)", op);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            eprintln!();
+
+            // [PLAN]
+            eprintln!("[PLAN]");
+            if let Some(ref err) = self.plan_error {
+                eprintln!("  FAILED: {}", err);
+            } else {
+                eprintln!("  {} nodes", self.plan_nodes.len());
+                for (i, desc) in self.plan_nodes.iter().enumerate() {
+                    eprintln!("  #{}  {}", i, desc);
+                }
+            }
+            eprintln!();
+
+            // [OPTIMIZE]
+            eprintln!("[OPTIMIZE]");
+            eprintln!(
+                "  fusion_invoked:  {}",
+                if self.fusion_invoked { "yes" } else { "no" }
+            );
+            if self.fusion_invoked {
+                eprintln!("  nodes_before:    {}", self.pre_fusion_count);
+                eprintln!("  nodes_after:     {}", self.post_fusion_count);
+                let fused_count = self.fused_ops.len();
+                eprintln!("  fused_nodes:     {}", fused_count);
+                if fused_count > 0 {
+                    eprintln!("  fused_ops:");
+                    for f in &self.fused_ops {
+                        eprintln!("    {}", f);
+                    }
+                } else {
+                    eprintln!("  fused_ops:       (none)");
+                }
+            }
+            eprintln!();
+
+            // [EXECUTE]
+            eprintln!("[EXECUTE]");
+            eprintln!("  path: {}", self.exec_path);
+            if !self.glue_forms.is_empty() {
+                eprintln!("  glue_forms: {}", self.glue_forms.join(", "));
+            }
+            if let Some(ref reason) = self.fallback_reason {
+                eprintln!("  fallback_reason: {}", reason);
+            }
+            eprintln!();
+        }
+
+        if show_table && !self.call_sites.is_empty() {
+            eprintln!("[TABLE]");
+            // Build table with IR correlation
+            eprintln!(
+                "  {:>3}  {:<12} {:<12} {:<30} {:<7} ran",
+                "#", "user", "canonical", "ir_variant", "fused"
+            );
+            for site in &self.call_sites {
+                // Find matching IR node by canonical name
+                let (ir_variant, fused) = self.find_ir_for_call(site);
+                let ran = if self.plan_error.is_some() {
+                    "legacy"
+                } else {
+                    &self.exec_path
+                };
+                eprintln!(
+                    "  {:>3}  {:<12} {:<12} {:<30} {:<7} {}",
+                    site.preorder_id, site.user_sym, site.canonical_sym, ir_variant, fused, ran
+                );
+            }
+            eprintln!("=== END ===");
+        } else if show_stages {
+            eprintln!("=== END ===");
+        }
+    }
+
+    /// Best-effort correlation of a call site with an IR plan node
+    fn find_ir_for_call(&self, site: &CallSite) -> (String, String) {
+        // Walk plan nodes and find the one most likely matching this call site
+        // by checking if the canonical name maps to the IR node's operation
+        for desc in &self.plan_nodes {
+            let ir_name = canonical_to_ir_name(&site.canonical_sym);
+            if let Some(ref expected) = ir_name {
+                if desc.contains(expected) {
+                    let fused = if desc.contains("Fused") { "yes" } else { "-" };
+                    // Extract the short variant name
+                    return (expected.to_string(), fused.to_string());
+                }
+            }
+        }
+        // Fallback: check sources
+        match site.canonical_sym.as_str() {
+            "stdin" => ("Source::Stdin".to_string(), "-".to_string()),
+            "file" | "load" | "read-csv" => ("Source::File".to_string(), "-".to_string()),
+            "let" => ("let-binding".to_string(), "-".to_string()),
+            "mapr" => ("ALIGN".to_string(), "-".to_string()),
+            "asofr" => ("ASOF_ALIGN".to_string(), "-".to_string()),
+            "xminus" => ("SHF_PTW_LIN_SPR".to_string(), "-".to_string()),
+            _ => ("-".to_string(), "-".to_string()),
+        }
+    }
+}
+
+/// Map canonical user names to IR variant names (for table display)
+fn canonical_to_ir_name(name: &str) -> Option<&'static str> {
+    match name {
+        "dlog" => Some("SHF_PTW_OBS_NLN_DLOG"),
+        "dlog-ofs" => Some("SHF_PTW_OFS_NLN_DLOG"),
+        "ret" => Some("RET"),
+        "log" | "ln" => Some("LOG"),
+        "exp" => Some("EXP"),
+        "sqrt" => Some("SQRT"),
+        "abs" => Some("ABS"),
+        "inv" => Some("INV"),
+        "locf" => Some("SHF_REC_NLN_LOCF"),
+        "wkd" | "w5" => Some("MSK_WKE"),
+        "run_sum" | "cs1" => Some("SHF_PFX_LIN_SUM"),
+        "shift" => Some("SHF_PTW_LIN_SHF"),
+        "lag-obs" | "shift-obs" => Some("LAG_OBS"),
+        "keep" => Some("KEEP"),
+        "rol_avg" | "rolling-mean" => Some("SHF_WIN_LIN_AVG"),
+        "rol_std" | "rolling-std" => Some("SHF_WIN_NLN_SDV"),
+        "rolling-mean-min2" => Some("SHF_WIN_MIN2_LIN_AVG"),
+        "rolling-std-min2" => Some("SHF_WIN_MIN2_NLN_SDV"),
+        "ft-mean" => Some("SHF_WIN_MIN2_LIN_AVG_EXCL"),
+        "ft-std" => Some("SHF_WIN_MIN2_NLN_SDV_EXCL"),
+        "rol_zsc" | "rolling-zscore" | "wzs" => Some("composite"),
+        "ft-zscore" => Some("composite"),
+        "rsk_adj" | "ur" => Some("composite"),
+        "+" | "add" => Some("ADD"),
+        "-" | "sub" => Some("SUB"),
+        "*" | "mul" => Some("MUL"),
+        "/" | "div" => Some("DIV"),
+        ">" | "gt" => Some("GTR"),
+        "<" | "lt" => Some("LSS"),
+        ">=" | "gte" => Some("GTE"),
+        "<=" | "lte" => Some("LTE"),
+        "==" | "eq" => Some("EQL"),
+        "!=" | "neq" => Some("NEQ"),
+        _ => None,
+    }
+}
+
+/// Detect fused operation variants in a plan (matches actual enum variants)
+fn detect_fused_ops(plan: &ir::Plan) -> Vec<String> {
+    plan.nodes
+        .iter()
+        .filter_map(|n| match &n.op {
+            ir::Operation::Unary(u) => match u {
+                ir::UnaryOp::FusedElementwise { ops, .. } => Some(format!(
+                    "FusedElementwise[{}]",
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                ir::UnaryOp::FusedCs1Elementwise { ops, .. } => Some(format!(
+                    "FusedCs1Elementwise[{}]",
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                ir::UnaryOp::FusedCs1DlogOfs { lag, .. } => {
+                    Some(format!("FusedCs1DlogOfs(lag={})", lag))
+                }
+                ir::UnaryOp::FusedCs1DlogObs { .. } => Some("FusedCs1DlogObs".to_string()),
+                ir::UnaryOp::FusedDlogObsElementwise { ops, .. } => Some(format!(
+                    "FusedDlogObsElementwise[{}]",
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                ir::UnaryOp::FusedDlogOfsElementwise { lag, ops, .. } => Some(format!(
+                    "FusedDlogOfsElementwise(lag={}) [{}]",
+                    lag,
+                    ops.iter()
+                        .map(|o| format!("{:?}", o))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// Walk an AST in preorder, collecting function-position symbols
+fn walk_calls(expr: &ast::Expr, interner: &ast::Interner, out: &mut Vec<String>) {
+    if let ast::Expr::List(elements) = expr {
+        if let Some(ast::Expr::Sym(sym)) = elements.first() {
+            let name = interner.resolve(*sym);
+            if name != "->" {
+                out.push(name.to_string());
+            }
+        }
+        for e in elements {
+            walk_calls(e, interner, out);
+        }
+    }
+}
+
+/// Build call site table by walking post-thread and canonical ASTs in preorder
+fn collect_call_sites(
+    post_thread: &ast::Expr,
+    canonical: &ast::Expr,
+    interner: &ast::Interner,
+) -> Vec<CallSite> {
+    let mut thread_calls = Vec::new();
+    let mut canonical_calls = Vec::new();
+    walk_calls(post_thread, interner, &mut thread_calls);
+    walk_calls(canonical, interner, &mut canonical_calls);
+
+    if thread_calls.len() != canonical_calls.len() {
+        eprintln!(
+            "  TABLE_WARNING: call-site length mismatch (post_thread={} canonical={})",
+            thread_calls.len(),
+            canonical_calls.len()
+        );
+    }
+
+    thread_calls
+        .into_iter()
+        .zip(canonical_calls)
+        .enumerate()
+        .map(|(i, (user, canon))| CallSite {
+            preorder_id: i,
+            user_sym: user,
+            canonical_sym: canon,
+        })
+        .collect()
+}
+
+/// Pretty-print an Expr (resolved symbols instead of SymbolId)
+fn display_expr(expr: &ast::Expr, interner: &ast::Interner) -> String {
+    match expr {
+        ast::Expr::Nil => "nil".to_string(),
+        ast::Expr::Bool(b) => b.to_string(),
+        ast::Expr::Int(n) => n.to_string(),
+        ast::Expr::Float(f) => format!("{}", f),
+        ast::Expr::Str(s) => format!("\"{}\"", s),
+        ast::Expr::Sym(sym) => interner.resolve(*sym).to_string(),
+        ast::Expr::List(elements) => {
+            let inner: Vec<String> = elements.iter().map(|e| display_expr(e, interner)).collect();
+            format!("({})", inner.join(" "))
+        }
+        ast::Expr::Quote(inner) => format!("'{}", display_expr(inner, interner)),
+        ast::Expr::QuasiQuote(inner) => format!("`{}", display_expr(inner, interner)),
+        ast::Expr::Unquote(inner) => format!(",{}", display_expr(inner, interner)),
+        ast::Expr::UnquoteSplicing(inner) => format!(",@{}", display_expr(inner, interner)),
+    }
+}
+
 fn print_help() {
     eprintln!("blisp v{} (IR-optimized)", VERSION);
     eprintln!();
@@ -29,7 +421,7 @@ fn print_help() {
     eprintln!("  run <script.lisp>              Run a BLISP script (default)");
     eprintln!("  verify <actual> <expected>     Verify CSV outputs match");
     eprintln!("  selftest                       Run embedded self-tests");
-    eprintln!("  dic [OPTIONS]                  Show operation dictionary");
+    eprintln!("  dic [OPTIONS]                  Operation matrix (CSV, code-driven)");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --version                      Show version and exit");
@@ -38,18 +430,21 @@ fn print_help() {
     eprintln!("  -e '<expression>'              Evaluate expression");
     eprintln!("  --legacy                       Force legacy AST evaluator");
     eprintln!("  --ir-only                      Force IR-only mode (experimental)");
+    eprintln!("  --trace-plan                   Log IR planner decisions to stderr");
+    eprintln!("  --pipe                         Show full pipeline inspector (all stages + table)");
+    eprintln!("  --pipe=stages                  Show pipeline stages only (parse through execute)");
+    eprintln!("  --pipe=table                   Show per-op mapping table only");
     eprintln!();
     eprintln!("DIC OPTIONS:");
-    eprintln!("  --exposed                      Show exposed aliases (default, current ops only)");
-    eprintln!("  --legacy                       Show legacy tokens");
-    eprintln!("  --todo-ir                      Show IR migration queue");
-    eprintln!("  --unmapped                     Show IR ops without metadata");
-    eprintln!("  --check-resolve                Check if names resolve in runtime (reality test)");
-    eprintln!(
-        "  --planned                      Show planned operations (roadmap, may not resolve)"
-    );
+    eprintln!("  (default)                      Operation matrix as CSV (code-driven, no YAML)");
     eprintln!("  --json                         Output in JSON format");
     eprintln!("  --grep <pattern>               Filter by pattern");
+    eprintln!("  --no-yaml                      Suppress YAML columns (default when no view flag)");
+    eprintln!("  --matrix                       Explicit matrix view (same as default)");
+    eprintln!("  --exposed                      Legacy: show exposed aliases (YAML-driven)");
+    eprintln!("  --legacy                       Legacy: show legacy tokens (YAML-driven)");
+    eprintln!("  --todo-ir                      Legacy: show IR migration queue (YAML-driven)");
+    eprintln!("  --check-resolve                Legacy: check runtime resolution (YAML-driven)");
     eprintln!();
     eprintln!("VERIFY OPTIONS:");
     eprintln!(
@@ -67,6 +462,7 @@ fn print_help() {
     eprintln!("ENVIRONMENT:");
     eprintln!("  BLISP_LEGACY=1                 Force legacy evaluator");
     eprintln!("  BLISP_IR_ONLY=1                Force IR-only mode");
+    eprintln!("  BLISP_TRACE_PLAN=1             Log IR planner decisions to stderr");
 }
 
 fn parse_subcommand(args: &[String]) -> Subcommand {
@@ -96,24 +492,32 @@ fn parse_subcommand(args: &[String]) -> Subcommand {
 }
 
 fn handle_dic_subcommand(args: &[String]) {
-    // Parse dic arguments: blisp dic [--exposed|--legacy|--todo-ir] [--json] [--grep <pattern>]
+    // Parse dic arguments: blisp dic [--exposed|--legacy|--todo-ir|--matrix] [--json] [--grep <pattern>] [--no-yaml]
     use blisp::dic::{OutputFormat, View};
 
     let mut view = View::All;
     let mut format = OutputFormat::Table;
     let mut grep_pattern: Option<String> = None;
+    let mut no_yaml = false;
     let mut i = 2; // Skip "blisp" and "dic"
 
     // If no flags, default to exposed
     let has_view_flag = args.iter().skip(2).any(|arg| {
         matches!(
             arg.as_str(),
-            "--exposed" | "--legacy" | "--todo-ir" | "--unmapped" | "--check-resolve" | "--planned"
+            "--exposed"
+                | "--legacy"
+                | "--todo-ir"
+                | "--unmapped"
+                | "--check-resolve"
+                | "--planned"
+                | "--matrix"
         )
     });
 
     if !has_view_flag {
-        view = View::Exposed;
+        view = View::Matrix;
+        no_yaml = true;
     }
 
     while i < args.len() {
@@ -142,6 +546,14 @@ fn handle_dic_subcommand(args: &[String]) {
                 view = View::Planned;
                 i += 1;
             }
+            "--matrix" => {
+                view = View::Matrix;
+                i += 1;
+            }
+            "--no-yaml" => {
+                no_yaml = true;
+                i += 1;
+            }
             "--json" => {
                 format = OutputFormat::Json;
                 i += 1;
@@ -156,13 +568,13 @@ fn handle_dic_subcommand(args: &[String]) {
             }
             _ => {
                 eprintln!("Error: unknown dic option: {}", args[i]);
-                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --check-resolve, --planned, --json, --grep <pattern>");
+                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --check-resolve, --planned, --matrix, --json, --grep <pattern>, --no-yaml");
                 std::process::exit(1);
             }
         }
     }
 
-    match blisp::dic::run_dic(view, format, grep_pattern.as_deref()) {
+    match blisp::dic::run_dic(view, format, grep_pattern.as_deref(), no_yaml) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -290,6 +702,17 @@ fn main() {
     // Check for IR-only mode (experimental)
     let use_ir_only = env::var("BLISP_IR_ONLY").is_ok() || args.contains(&"--ir-only".to_string());
     let use_legacy = env::var("BLISP_LEGACY").is_ok() || args.contains(&"--legacy".to_string());
+    let trace_plan =
+        env::var("BLISP_TRACE_PLAN").is_ok() || args.contains(&"--trace-plan".to_string());
+    let pipe_mode = if args.contains(&"--pipe=stages".to_string()) {
+        PipeMode::Stages
+    } else if args.contains(&"--pipe=table".to_string()) {
+        PipeMode::Table
+    } else if args.contains(&"--pipe".to_string()) {
+        PipeMode::Full
+    } else {
+        PipeMode::Off
+    };
 
     if use_ir_only {
         eprintln!("🚧 Running in IR-ONLY mode (Frame operations only, experimental)");
@@ -314,7 +737,8 @@ fn main() {
 
     while i < args.len() {
         match args[i].as_str() {
-            "--legacy" | "--ir-only" | "--dic" | "selftest" | "--selftest" => {
+            "--legacy" | "--ir-only" | "--dic" | "--trace-plan" | "--pipe" | "--pipe=stages"
+            | "--pipe=table" | "selftest" | "--selftest" => {
                 // Already handled above, just skip
                 i += 1;
             }
@@ -354,7 +778,14 @@ fn main() {
     // Execute -e or script
     if let Some(expr) = expression {
         let code = &expr;
-        match eval_code(&mut rt, code, use_legacy, use_ir_only) {
+        match eval_code(
+            &mut rt,
+            code,
+            use_legacy,
+            use_ir_only,
+            trace_plan,
+            pipe_mode,
+        ) {
             Ok(val) => {
                 // Stream output directly to stdout with BufWriter for efficiency
                 let stdout = std::io::stdout();
@@ -362,15 +793,12 @@ fn main() {
 
                 let result = match &val {
                     value::Value::Table(table) => {
-                        // Stream table output directly (no row limit when not interactive)
                         value::write_table_to(&mut writer, table, &rt.interner, None)
                     }
                     value::Value::Frame(frame) => {
-                        // Stream frame output directly (no row limit when not interactive)
                         value::write_frame_to(&mut writer, frame, &rt.interner, None)
                     }
                     _ => {
-                        // For non-tables/frames, use display()
                         writeln!(writer, "{}", val.display(&rt.interner))
                     }
                 };
@@ -392,7 +820,14 @@ fn main() {
         // File execution
         match std::fs::read_to_string(&file) {
             Ok(code) => {
-                match eval_code(&mut rt, &code, use_legacy, use_ir_only) {
+                match eval_code(
+                    &mut rt,
+                    &code,
+                    use_legacy,
+                    use_ir_only,
+                    trace_plan,
+                    pipe_mode,
+                ) {
                     Ok(val) => {
                         // Stream output directly to stdout with BufWriter for efficiency
                         let stdout = std::io::stdout();
@@ -493,7 +928,7 @@ fn demo_column_ops() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code, false, false) {
+        match eval_code(&mut rt, code, false, false, false, PipeMode::Off) {
             Ok(val) => {
                 match &val {
                     Value::Col(c) => {
@@ -547,7 +982,7 @@ fn demo_builtins() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code, false, false) {
+        match eval_code(&mut rt, code, false, false, false, PipeMode::Off) {
             Ok(val) => println!("=> {}\n", val.display(&rt.interner)),
             Err(e) => println!("Error: {}\n", e),
         }
@@ -578,7 +1013,7 @@ fn demo_builtins() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code, false, false) {
+        match eval_code(&mut rt, code, false, false, false, PipeMode::Off) {
             Ok(val) => {
                 match &val {
                     Value::Col(c) => {
@@ -691,25 +1126,179 @@ fn demo_evaluator() {
         println!(">>> {}", description);
         println!("{}", code);
 
-        match eval_code(&mut rt, code, false, false) {
+        match eval_code(&mut rt, code, false, false, false, PipeMode::Off) {
             Ok(val) => println!("=> {:?}\n", val),
             Err(e) => println!("Error: {}\n", e),
         }
     }
 }
 
-/// Try to evaluate via IR path (normalize → plan → execute)
-fn try_ir_eval(rt: &mut Runtime, expr: ast::Expr) -> Result<value::Value, String> {
-    // Step 1: Normalize (macro expansion, desugaring)
-    let normalized = normalize::normalize(expr, &mut rt.interner);
+/// Errors from the IR evaluation pipeline, distinguishing plan-time vs exec-time.
+#[derive(Debug)]
+enum IrError {
+    /// Planner could not handle this expression (HYBRID should fallback)
+    Plan(planner::PlanError),
+    /// Execution failed (propagate as real error)
+    Exec(String),
+}
+
+impl std::fmt::Display for IrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IrError::Plan(e) => write!(f, "plan: {}", e),
+            IrError::Exec(e) => write!(f, "exec: {}", e),
+        }
+    }
+}
+
+/// Try to evaluate via IR path (normalize → plan → optimize → execute)
+/// When pipe is Some, populates the report progressively (even on PlanError).
+fn try_ir_eval(
+    rt: &mut Runtime,
+    expr: ast::Expr,
+    trace: bool,
+    pipe: &mut Option<PipeReport>,
+) -> Result<value::Value, IrError> {
+    // Step 1: Normalize
+    let (normalized, _post_thread_expr) = if pipe.is_some() {
+        let nt = normalize::normalize_traced(expr, &mut rt.interner);
+        // Split rewrites into normalize (ThreadFirst) and canonicalize (Alias, ArgSwap) events
+        let mut norm_events = Vec::new();
+        let mut canon_events = Vec::new();
+        for rw in nt.rewrites {
+            match &rw {
+                normalize::RewriteEvent::ThreadFirst { .. } => norm_events.push(rw),
+                _ => canon_events.push(rw),
+            }
+        }
+        if let Some(ref mut rpt) = pipe {
+            rpt.post_thread = display_expr(&nt.post_thread, &rt.interner);
+            rpt.rewrites_normalize = norm_events;
+            rpt.canonical = display_expr(nt.expr.inner(), &rt.interner);
+            rpt.rewrites_canonicalize = canon_events;
+            rpt.call_sites = collect_call_sites(&nt.post_thread, nt.expr.inner(), &rt.interner);
+        }
+        let pt = nt.post_thread;
+        (nt.expr, Some(pt))
+    } else {
+        (normalize::normalize(expr, &mut rt.interner), None)
+    };
+
+    if trace {
+        eprintln!("[TRACE] canonical= {:?}", normalized.inner());
+    }
 
     // Step 2: Plan (AST → IR with schema validation)
-    let plan = planner::plan(&normalized, &rt.interner)?;
+    let plan = match planner::plan(&normalized, &rt.interner) {
+        Ok(p) => p,
+        Err(plan_err) => {
+            if let Some(ref mut rpt) = pipe {
+                rpt.plan_error = Some(format!("{}", plan_err));
+                rpt.fusion_invoked = false;
+                rpt.exec_path = "legacy-fallback".to_string();
+                rpt.fallback_reason = Some(format!("{}", plan_err));
+            }
+            return Err(IrError::Plan(plan_err));
+        }
+    };
+
+    if trace {
+        let ops: Vec<String> = plan.nodes.iter().map(|n| format!("{:?}", n.op)).collect();
+        eprintln!("[TRACE] planned ops= {:?}", ops);
+    }
+
+    let pre_fusion_count = plan.nodes.len();
+
+    // Capture pre-fusion plan nodes for pipe
+    if let Some(ref mut rpt) = pipe {
+        rpt.plan_nodes = plan.nodes.iter().map(|n| format!("{:?}", n.op)).collect();
+    }
+
+    // Step 2.5: Optimize (fusion) — always runs on IR path
+    let plan = ir_fusion::optimize(&plan);
+
+    // Capture post-fusion state for pipe
+    if let Some(ref mut rpt) = pipe {
+        rpt.fusion_invoked = true;
+        rpt.pre_fusion_count = pre_fusion_count;
+        rpt.post_fusion_count = plan.nodes.len();
+        rpt.fused_ops = detect_fused_ops(&plan);
+        // Update plan_nodes to show post-fusion state
+        rpt.plan_nodes = plan.nodes.iter().map(|n| format!("{:?}", n.op)).collect();
+        rpt.exec_path = "IR".to_string();
+    }
 
     // Step 3: Execute (run optimized IR executor)
-    let result = exec::execute(&plan, rt)?;
+    let result = exec::execute(&plan, rt).map_err(IrError::Exec)?;
 
     Ok(result)
+}
+
+/// Hybrid evaluator: peels glue forms (save, progn, print), tries IR for everything else.
+/// Finance pipelines go through IR; glue forms use minimal custom logic.
+fn hybrid_eval(
+    rt: &mut Runtime,
+    expr: &ast::Expr,
+    trace: bool,
+    pipe: &mut Option<PipeReport>,
+) -> Result<value::Value, String> {
+    if let ast::Expr::List(elements) = expr {
+        if let Some(ast::Expr::Sym(sym)) = elements.first() {
+            let name = rt.interner.resolve(*sym).to_string();
+            match name.as_str() {
+                "save" if elements.len() == 3 => {
+                    if let Some(ref mut rpt) = pipe {
+                        rpt.glue_forms.push("save".to_string());
+                    }
+                    let body_val = hybrid_eval(rt, &elements[2], trace, pipe)?;
+                    let filename = rt.eval(&elements[1])?;
+                    let save_sym = rt.interner.intern("save");
+                    rt.call_builtin(save_sym, &[filename, body_val.clone()])?;
+                    return Ok(body_val);
+                }
+                "progn" => {
+                    if let Some(ref mut rpt) = pipe {
+                        rpt.glue_forms.push("progn".to_string());
+                    }
+                    let mut last = value::Value::Nil;
+                    for form in &elements[1..] {
+                        last = hybrid_eval(rt, form, trace, pipe)?;
+                    }
+                    return Ok(last);
+                }
+                "print" if elements.len() == 2 => {
+                    if let Some(ref mut rpt) = pipe {
+                        rpt.glue_forms.push("print".to_string());
+                    }
+                    let val = hybrid_eval(rt, &elements[1], trace, pipe)?;
+                    println!("{}", val.display(&rt.interner));
+                    return Ok(val);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Default: try IR first, legacy fallback on PlanError
+    match try_ir_eval(rt, expr.clone(), trace, pipe) {
+        Ok(val) => {
+            if trace {
+                eprintln!("[TRACE] result= IR");
+            }
+            Ok(val)
+        }
+        Err(IrError::Plan(plan_err)) => {
+            if trace {
+                eprintln!("[TRACE] fallback reason= {}", plan_err);
+            }
+            if let Some(ref mut rpt) = pipe {
+                rpt.exec_path = "legacy-fallback".to_string();
+                rpt.fallback_reason = Some(format!("{}", plan_err));
+            }
+            rt.eval(expr).map_err(|e| e.to_string())
+        }
+        Err(IrError::Exec(exec_err)) => Err(exec_err),
+    }
 }
 
 fn eval_code(
@@ -717,8 +1306,21 @@ fn eval_code(
     code: &str,
     use_legacy: bool,
     use_ir_only: bool,
+    trace: bool,
+    pipe_mode: PipeMode,
 ) -> Result<value::Value, String> {
     let mut reader = Reader::new(code).map_err(|e| format!("Parse error: {}", e))?;
+
+    let is_segment = std::env::var("BLISP_SEGMENT").is_ok();
+    let mode_str = if use_legacy {
+        "LEGACY"
+    } else if use_ir_only {
+        "IR-ONLY"
+    } else if is_segment {
+        "SEGMENTED-HYBRID"
+    } else {
+        "HYBRID"
+    };
 
     // Read and evaluate ALL expressions (implicit progn)
     let mut result = value::Value::Nil;
@@ -726,43 +1328,80 @@ fn eval_code(
     loop {
         match reader.read(&mut rt.interner) {
             Ok(expr) => {
+                // Capture raw AST for pipe before expr is consumed
+                let raw_ast = if pipe_mode != PipeMode::Off {
+                    display_expr(&expr, &rt.interner)
+                } else {
+                    String::new()
+                };
+
+                // Build pipe report if needed
+                let mut pipe = if pipe_mode != PipeMode::Off {
+                    let mut rpt = PipeReport::new();
+                    rpt.mode = mode_str.to_string();
+                    rpt.segment = is_segment;
+                    rpt.raw_ast = raw_ast;
+                    Some(rpt)
+                } else {
+                    None
+                };
+
                 if use_legacy {
-                    // Legacy-only mode: use old AST evaluator
+                    if let Some(ref mut rpt) = pipe {
+                        rpt.exec_path = "legacy".to_string();
+                    }
                     result = rt.eval(&expr)?;
                 } else if use_ir_only {
-                    // IR-only mode: force IR path (experimental, Frame ops only)
-                    result = try_ir_eval(rt, expr)?;
+                    result =
+                        try_ir_eval(rt, expr, trace, &mut pipe).map_err(|e| format!("{}", e))?;
+                } else if is_segment {
+                    result = hybrid_eval(rt, &expr, trace, &mut pipe)?;
                 } else {
-                    // 🎯 HYBRID mode (DEFAULT):
-                    // Try IR first for Frame operations, fall back to legacy for general Lisp
-                    match try_ir_eval(rt, expr.clone()) {
+                    // HYBRID mode (DEFAULT)
+                    match try_ir_eval(rt, expr.clone(), trace, &mut pipe) {
                         Ok(val) => {
-                            // ✅ IR succeeded (Frame pipeline)
-                            // Benefits:
-                            // - O(n) rolling operations (6-102x faster)
-                            // - Fusion framework ready
-                            // - Schema validation at plan time
-                            // - All 116 IR tests enforcing correctness
+                            if trace {
+                                eprintln!("[TRACE] result= IR");
+                            }
                             result = val;
                         }
-                        Err(e)
-                            if e.contains("Cannot plan")
-                                || e.contains("not supported")
-                                || e.contains("Unknown function") =>
-                        {
-                            // IR can't handle this expression → fallback to legacy
-                            // This is NORMAL for general Lisp (defparameter, if, let*, etc.)
-                            result = rt.eval(&expr)?;
+                        Err(IrError::Plan(plan_err)) => {
+                            if trace {
+                                eprintln!("[TRACE] fallback reason= {}", plan_err);
+                            }
+                            if let Some(ref mut rpt) = pipe {
+                                rpt.exec_path = "legacy-fallback".to_string();
+                                rpt.fallback_reason = Some(format!("{}", plan_err));
+                            }
+                            match rt.eval(&expr) {
+                                Ok(val) => {
+                                    result = val;
+                                }
+                                Err(legacy_err) => {
+                                    if legacy_err.contains("Undefined variable") {
+                                        return Err(format!(
+                                            "{}\n\nHint: The pipeline could not be fully planned for IR ({}),\n\
+                                             and the legacy fallback does not know this operation.\n\
+                                             Try: --load stdlib/compat_clispi.cl  or  use the legacy spelling (e.g. locf-cols).",
+                                            legacy_err, plan_err
+                                        ));
+                                    }
+                                    return Err(legacy_err);
+                                }
+                            }
                         }
-                        Err(e) => {
-                            // IR failed with real error → propagate
-                            return Err(e);
+                        Err(IrError::Exec(exec_err)) => {
+                            return Err(exec_err);
                         }
                     }
                 }
+
+                // Emit pipe report
+                if let Some(rpt) = pipe {
+                    rpt.emit(pipe_mode);
+                }
             }
             Err(e) => {
-                // Check if we've reached end of input
                 let err_str = format!("{:?}", e);
                 if err_str.contains("Unexpected end of input") || err_str.contains("EOF") {
                     break;

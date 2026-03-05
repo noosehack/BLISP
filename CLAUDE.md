@@ -1,0 +1,277 @@
+# BLISP Book of Laws
+
+> Permanent architecture rules for the BLISP project.
+> Every contributor (human or AI) must follow these without exception.
+
+---
+
+## 1. Code Is the Source of Truth
+
+- IR enum variants (`NumericFunc`, `BinaryFunc`, etc.) are the canonical operation IDs.
+- YAML files (`OPS_CURRENT.yml`, `OPS_PLANNED.yml`) validate against enums, never the reverse.
+- If code and docs disagree, code wins. Fix the doc.
+
+## 2. Canonical Pipeline
+
+Every expression flows through exactly these stages, in order:
+
+```
+parse -> normalize -> canonicalize -> plan -> optimize -> execute
+```
+
+No stage may be skipped or reordered.
+
+## 3. Three Layers
+
+| Layer  | Meaning                                  |
+|--------|------------------------------------------|
+| IR     | Finance operations with IR plan nodes    |
+| GLUE   | Language constructs (let, if, lambda)    |
+| LEGACY | Builtins without IR support (yet)        |
+
+Every public finance op must eventually reach IR. LEGACY is a temporary state.
+
+## 4. PUBLIC_FINANCE_OPS Is the Policy Gate
+
+- Every name in `PUBLIC_FINANCE_OPS` must be plannable as IR.
+- Tripwire tests enforce this. If you add a name, you must also add its IR path.
+
+## 5. Normalize Aliases Are Free
+
+- Adding a normalize alias (e.g., `"add" -> "+"`) costs nothing at runtime.
+- Aliases live in `NORMALIZE_ALIASES` in `normalize.rs`.
+- The alias must map to a canonical name that is already plannable.
+
+## 6. Composite IR Is the Migration Tool
+
+- Operations like `diff` and `ecs1` decompose into multiple IR nodes in the planner.
+- Each node uses an existing kernel. No new kernel needed unless semantics demand it.
+- Example: `diff(x, k)` = `SUB(x, SHF_PTW_LIN_SHF{k}(x))` (3 nodes).
+
+## 7. Introspection Tools Are Live
+
+- `blisp --dic` shows the full operation matrix (CSV, semicolon-separated).
+- These tools are the ground truth. If they disagree with docs, update the docs.
+
+## 8. Pipeline Inspector
+
+The command:
+
+```
+blisp -e '(expression)' --pipe
+```
+
+shows the complete execution pipeline.
+
+Examples:
+
+```
+blisp -e '(-> (stdin) (locf) (dlog))' --pipe
+cat data.csv | blisp -e '(-> (stdin) (locf) (dlog))' --pipe
+```
+
+Stages:
+
+- PARSE
+- NORMALIZE
+- CANONICALIZE
+- PLAN
+- OPTIMIZE
+- EXECUTE (implicit runtime stage)
+
+Notes:
+
+- The `-e` flag supplies the expression.
+- `--pipe` prints the pipeline analysis for that expression.
+- The EXECUTE stage may not appear as a labeled block in output but is part of the conceptual pipeline.
+
+## 9. Fusion Rules
+
+- Only elementwise operations may be fused.
+- Shift/prefix operations (cumsum, shift, etc.) break fusion boundaries.
+- The fusion optimizer in `ir_fusion.rs` enforces this automatically.
+
+## 10. Testing Requirements
+
+- `cargo test` must pass before any commit.
+- `cargo clippy --all-targets --all-features -- -D warnings` must be clean.
+- `cargo fmt` must produce no changes.
+- Tripwire tests in `tests/orientation_tripwires.rs` guard orientation semantics.
+- The `blisp --dic` matrix is verified by regression tests in `dic.rs`.
+
+## 11. Commit Discipline
+
+- Split unrelated changes into separate commits.
+- Commit messages follow: `category: short description`
+- Categories: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`
+
+## 12. No Hacks, No Workarounds
+
+- If semantics are wrong, fix the kernel or add a new IR variant.
+- Never use multiplicative corrections (e.g., `exp(-1)`) to patch semantic mismatches.
+- Never add comment-only "fixes" for real bugs.
+
+## 13. YAML Tracks Status, Not Behavior
+
+- `OPS_CURRENT.yml`: aliases that resolve today (tripwire-enforced, 0 failures allowed).
+- `OPS_PLANNED.yml`: roadmap items (failures expected and acceptable).
+- Never put aspirational items in CURRENT.
+
+## 14. Output Conventions
+
+- Data goes to stdout, diagnostics go to stderr.
+- CSV output uses `;` as separator.
+- This enables clean piping: `blisp --dic 2>/dev/null | cut -d';' -f1,5`
+
+## 15. Test Data Integrity
+
+- All tests and investigations must use **canonical data files** or **repository fixtures**.
+- No ad-hoc `printf`, `echo`, or heredoc-generated CSV for validation.
+- All CSV must use semicolon delimiter (`;`), project-standard headers, and NA conventions.
+
+### Canonical Data Files (in `/home/ubuntu/`)
+
+| File | Description |
+|------|-------------|
+| `ES1I.csv` | Single-column (ES1 Index), ~9500 rows. Use for single-series tests. |
+| `At.csv` | Multi-column (~500 columns), ~5100 rows. Use for multi-asset tests. |
+| `smallAt.csv` | Small multi-column (6 columns), 9 rows. Use when you need small/fast. |
+
+Always test with these first. If none fits, use `tests/fixtures/*.csv`.
+
+### Rules
+
+- Use `./scripts/pipe_fixture.sh <fixture> '<expr>'` for reproducible validation.
+- Tripwire tests in `tests/fixture_integrity.rs` enforce format compliance in CI.
+- A claim like "op X returns all NA" is invalid without a fixture path and exact `blisp -e` command.
+- Any new fixture requires an explicit commit and review.
+
+## 16. GLD_NUM Golden Test
+
+The GLD_NUM test is the end-to-end numerical accuracy test. It runs an identical
+finance pipeline in both CLISPI (reference) and BLISP, then compares outputs.
+
+### How to run
+
+From `/home/ubuntu/`, with `source Adyton.sh` first:
+
+```
+bash GLD_NUM_BLISP.sh
+```
+
+The one-liner for debugging (add `--pipe` at the end to inspect):
+
+```
+cgrep RAW_FUT_PRC.csv BZ1 TP1 | ./blisp/target/release/blisp --load blisp/stdlib/compat_clispi.cl -e '(let* ((s (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2)))) (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1)))'
+```
+
+### The pipeline
+
+```
+s = (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))
+result = (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1))
+```
+
+### Critical: the GLD_NUM script uses w5, NOT wkd
+
+The GLD_NUM script uses `w5` (via `--load blisp/stdlib/compat_clispi.cl`), which
+**deletes** weekend rows — identical to CLISPI. It does NOT use `wkd` (`MSK_WKE`).
+
+This means both CLISPI and BLISP operate on the same weekday-only row set.
+The outputs should have the same row count (~6827 rows) and the same values.
+
+**Do NOT substitute `wkd` for `w5` when testing GLD_NUM.** If you use `wkd`:
+- Row counts will differ (BLISP keeps weekend rows as NA, CLISPI deletes them).
+- Cumulative operations (`cs1`) will diverge because `cs1` skips NAs but the
+  rolling lookback windows see different row positions.
+- The divergence is NOT a bug — it is a fundamental semantic difference between
+  delete-rows (`w5`) and mask-rows (`wkd`).
+
+### wkd semantics (MSK_WKE) — the mask contract (for future migration)
+
+When we eventually migrate GLD_NUM from `w5` to `wkd`, the mask contract is:
+
+- `wkd` (`MSK_WKE`) masks weekends as NA but keeps the rows.
+- **All rolling/windowed operations must skip masked rows when counting
+  observations.** `wzs 25` means 25 non-weekend values, not 25 calendar rows.
+- This is OBS (observation) semantics — the mask tells the rolling kernel
+  which rows to count.
+- If a rolling op counts calendar rows instead of observations, it will produce
+  wrong values. This is the most common source of GLD_NUM divergence.
+- Until this migration is done and validated, GLD_NUM uses `w5`.
+
+### Validation rules
+
+- **Compare by joining on TIMESTAMP**, not by row index.
+- Row count may differ by 1-2 rows at the tail (trailing data). This is NOT a
+  failure.
+- Match criterion: values on shared timestamps must agree within tolerance
+  (default 5e-07).
+- **Do NOT compare row counts as pass/fail.** The `blisp verify` tool currently
+  fails on row count mismatch — use the python join-on-timestamp method instead:
+
+```python
+# Correct GLD_NUM validation (join on timestamp, not row index)
+import csv
+clispi = {}
+with open('GLD_NUM_CLISPI.csv') as f:
+    for row in csv.reader(f, delimiter=';'):
+        if row[1] not in ('NA','','GLD_NUM'): clispi[row[0]] = float(row[1])
+mismatches = matched = 0
+with open('GLD_NUM_BLISP.csv') as f:
+    for row in csv.reader(f, delimiter=';'):
+        if row[0] in clispi and row[1] not in ('NA','','GLD_NUM'):
+            matched += 1
+            if abs(float(row[1]) - clispi[row[0]]) > 5e-7: mismatches += 1
+print(f'Matched={matched}, Mismatches={mismatches}')
+```
+
+### Known good result
+
+As of 2026-03-05 (commit `7cf6baa`): **Matched=6827, Mismatches=0**.
+
+### Data files (in `/home/ubuntu/`)
+
+| File | Role |
+|------|------|
+| `RAW_FUT_PRC.csv` | Source prices (multi-asset, `cgrep` selects BZ1 + TP1) |
+| `GC1C.csv` | Gold continuous contract (single column) |
+| `GLD_NUM_CLISPI.csv` | Reference output from CLISPI |
+| `GLD_NUM_BLISP.csv` | BLISP output (should match CLISPI on shared timestamps) |
+| `GLD_NUM_BLISP.sh` | The run script (requires `source Adyton.sh` for `cgrep`) |
+| `stdlib/compat_clispi.cl` | Compatibility layer providing `w5` and other CLISPI names |
+
+### Pitfalls to avoid
+
+1. **Never use `wkd` instead of `w5`** in the GLD_NUM pipeline. They are not interchangeable.
+2. **Never validate by row count.** Join on timestamp.
+3. **Never generate ad-hoc test CSV with printf/echo.** BLISP uses `;` delimiter.
+   Use canonical data files from `/home/ubuntu/` (see Section 15).
+4. **`cgrep` comes from `source Adyton.sh`**, not from a script in the repo.
+   Do not try to reimplement it.
+5. **A 1-2 row difference at the tail** is normal (trailing dates may differ
+   between CLISPI and BLISP data snapshots). Check values, not counts.
+
+## 17. The Matrix Columns
+
+`blisp --dic` outputs these columns:
+
+| Column     | Meaning                                      |
+|------------|----------------------------------------------|
+| NAME       | Operation name as typed by user               |
+| ACCEPT     | Whether this name is accepted (yes/-)         |
+| ACCEPT_WHY | Why it's accepted (normalize, plan, builtin)  |
+| PUB        | Whether it's in PUBLIC_FINANCE_OPS            |
+| CANON      | Canonical form after normalization            |
+| USE        | Preferred spelling (if deprecated)            |
+| LAYER      | IR / GLUE / LEGACY                           |
+| IR_VARIANT | Which IR enum variant handles it              |
+| FUSABLE    | Whether it participates in fusion             |
+| NOTES      | Additional flags (dep, composite, etc.)       |
+
+---
+
+## Final Principle
+
+When in doubt, run `blisp --pipe` and `blisp --dic`.
+The code tells you what is true. Everything else is opinion.

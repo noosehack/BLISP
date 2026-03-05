@@ -2761,8 +2761,35 @@ fn builtin_save(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
             crate::io::save_csv(filename, t, &rt.interner)?;
             Ok(Value::Nil)
         }
+        Value::Frame(f) => {
+            // Convert Frame → blisp Table via ensure_tableview for data columns,
+            // prepending index as first column (Blueprint I3: index always first)
+            let tv = ensure_tableview(&args[1], rt)?;
+            let mut table = crate::value::Table::new();
+            // Index column first
+            let index_sym = rt.interner.intern(&f.tags.index_name);
+            match &*f.tags.index {
+                crate::frame::IndexColumn::Date(dates) => {
+                    table.add_column(index_sym, blawktrust::Column::Date((**dates).clone()));
+                }
+                crate::frame::IndexColumn::Timestamp(ts) => {
+                    table.add_column(index_sym, blawktrust::Column::Timestamp((**ts).clone()));
+                }
+                crate::frame::IndexColumn::String(_) => {
+                    return Err("save: Frame with string index not yet supported".into());
+                }
+            }
+            // Data columns from ensure_tableview (same extraction path all builtins use)
+            for (i, name) in tv.table.names.iter().enumerate() {
+                let sym = rt.interner.intern(name);
+                table.add_column(sym, tv.table.columns[i].clone());
+            }
+            table.row_count = f.nrows;
+            crate::io::save_csv(filename, &table, &rt.interner)?;
+            Ok(Value::Nil)
+        }
         _ => Err(format!(
-            "save expects table or tableview, got {}",
+            "save expects table, tableview, or frame, got {}",
             args[1].type_name()
         )),
     }
