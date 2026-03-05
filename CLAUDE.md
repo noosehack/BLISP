@@ -146,7 +146,52 @@ Always test with these first. If none fits, use `tests/fixtures/*.csv`.
 - A claim like "op X returns all NA" is invalid without a fixture path and exact `blisp -e` command.
 - Any new fixture requires an explicit commit and review.
 
-## 16. The Matrix Columns
+## 16. GLD_NUM Golden Test
+
+The GLD_NUM test is the end-to-end numerical accuracy test. It runs an identical
+finance pipeline in both CLISPI (reference) and BLISP, then compares outputs.
+
+### Reference pipeline (CLISPI)
+
+The reference script is `GLD_NUM_CLISPI.sh`. It requires `source Adyton.sh` for
+shell utilities like `cgrep` (column-grep from CSV). The shell handles data
+selection (`cgrep ../RAW_FUT_PRC.csv BZ1 TP1`) and pipes into CLISPI.
+
+### BLISP replication
+
+BLISP replicates **only the inner blisp expressions**, not the shell utilities.
+The BLISP script (`GLD_NUM_BLISP.sh`) must also `source Adyton.sh` to get `cgrep`.
+BLISP does not reimplement `cgrep` — it receives the same stdin.
+
+### The pipeline
+
+```
+s = (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))
+result = (-> (file "../GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1))
+```
+
+### Validation rules
+
+- **Compare values on non-weekend dates only.** CLISPI `w5` deletes weekend rows;
+  BLISP `wkd` (canonical `MSK_WKE`) masks weekends as NA but keeps the rows.
+  The output files will have different row counts. This is expected.
+- Match criterion: values on shared weekday timestamps must agree within tolerance
+  (default 5e-07).
+- Row count mismatch alone is NOT a failure. Only value mismatch on weekday rows
+  is a failure.
+- Use `blisp verify` with `--tol` for automated comparison, filtering to weekday
+  rows only.
+
+### Data files (in `/home/ubuntu/`)
+
+| File | Role |
+|------|------|
+| `RAW_FUT_PRC.csv` | Source prices (multi-asset, `cgrep` selects BZ1 + TP1) |
+| `GC1C.csv` | Gold continuous contract (single column) |
+| `GLD_NUM_CLISPI.csv` | Reference output (weekday rows only) |
+| `GLD_NUM_BLISP.csv` | BLISP output (all rows, weekends masked as NA) |
+
+## 17. The Matrix Columns
 
 `blisp --dic` outputs these columns:
 
