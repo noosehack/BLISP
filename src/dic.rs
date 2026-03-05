@@ -574,8 +574,40 @@ struct MatrixRow {
     notes: Vec<String>,
 }
 
-/// Glue forms: control/IO that hybrid_eval peels or that aren't data ops
-const GLUE_FORMS: &[&str] = &["save", "print", "progn", "defmacro", "define"];
+/// Glue forms: control/IO/logic that hybrid_eval peels or that aren't data ops
+const GLUE_FORMS: &[&str] = &[
+    "save", "print", "progn", "defmacro", "define",
+    "let", "let*",           // binding forms (control, not finance)
+    "and", "or", "not",      // boolean logic (mask sub-expressions, not standalone data ops)
+];
+
+/// Public finance operations: the canonical user API for data/finance.
+///
+/// Policy: every name in this list MUST probe as IR via the planner.
+/// If a name here is not plannable, that is a bug — either the planner
+/// needs to support it, or the name should be removed from this list.
+///
+/// This is a DECLARED POLICY, not auto-derived. The tripwire test
+/// `test_public_finance_ops_all_ir` enforces it against compiled code.
+pub const PUBLIC_FINANCE_OPS: &[&str] = &[
+    // Sources
+    "stdin", "file", "load", "read-csv",
+    // Elementwise math (fusable)
+    "abs", "exp", "inv", "log", "sqrt",
+    // Arithmetic (binary)
+    "+", "-", "*", "/",
+    // Comparisons (binary)
+    ">", "<", "<=", ">=", "==", "!=",
+    // Shift/window ops
+    "shift", "dlog", "cs1", "locf", "xminus",
+    "rolling-mean", "rolling-std",
+    // Composites
+    "rolling-zscore", "ur", "wzs",
+    // Masks
+    "wkd",
+    // Alignment
+    "mapr",
+];
 
 /// Collect all candidate operation names from compiled code
 fn collect_candidate_names(rt: &Runtime) -> HashSet<String> {
@@ -792,11 +824,13 @@ pub fn print_matrix(
         let is_builtin = rt.is_builtin(sym);
 
         // Determine layer
+        // GLUE wins unconditionally: control/IO/logic forms are never finance IR
+        // even if the planner can technically handle them (e.g. let bindings)
         let is_glue = GLUE_FORMS.contains(&name.as_str());
-        let layer = if probe.is_some() {
-            Layer::IR
-        } else if is_glue {
+        let layer = if is_glue {
             Layer::Glue
+        } else if probe.is_some() {
+            Layer::IR
         } else if is_builtin {
             Layer::Legacy
         } else {
@@ -1315,6 +1349,42 @@ mod tests {
         let result = print_matrix(true, OutputFormat::Json, Some("w5"));
         assert!(result.is_ok());
         // w5 is on LHS of NORMALIZE_ALIASES → should be flagged dep
+    }
+
+    #[test]
+    fn test_public_finance_ops_all_ir() {
+        // TRIPWIRE: Every op in PUBLIC_FINANCE_OPS must be plannable.
+        // If this test fails, either:
+        //   1. The planner needs to support the op, or
+        //   2. The op should be removed from PUBLIC_FINANCE_OPS
+        let mut interner = crate::ast::Interner::new();
+        let mut failures = Vec::new();
+
+        for &op in PUBLIC_FINANCE_OPS {
+            if probe_planner(op, &mut interner).is_none() {
+                failures.push(op);
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "PUBLIC_FINANCE_OPS contains {} ops that are NOT plannable as IR:\n  {}\n\
+             Either add planner support or remove from PUBLIC_FINANCE_OPS.",
+            failures.len(),
+            failures.join(", ")
+        );
+    }
+
+    #[test]
+    fn test_public_finance_ops_not_glue() {
+        // Finance ops must never be classified as GLUE
+        for &op in PUBLIC_FINANCE_OPS {
+            assert!(
+                !GLUE_FORMS.contains(&op),
+                "PUBLIC_FINANCE_OPS contains '{}' which is in GLUE_FORMS — conflict",
+                op
+            );
+        }
     }
 
     #[test]
