@@ -50,17 +50,48 @@ Every public finance op must eventually reach IR. LEGACY is a temporary state.
 
 ## 7. Introspection Tools Are Live
 
-- `blisp --pipe '(expr)'` shows all pipeline stages for any expression.
 - `blisp --dic` shows the full operation matrix (CSV, semicolon-separated).
 - These tools are the ground truth. If they disagree with docs, update the docs.
 
-## 8. Fusion Rules
+## 8. Pipeline Inspector
+
+The command:
+
+```
+blisp -e '(expression)' --pipe
+```
+
+shows the complete execution pipeline.
+
+Examples:
+
+```
+blisp -e '(-> (stdin) (locf) (dlog))' --pipe
+cat data.csv | blisp -e '(-> (stdin) (locf) (dlog))' --pipe
+```
+
+Stages:
+
+- PARSE
+- NORMALIZE
+- CANONICALIZE
+- PLAN
+- OPTIMIZE
+- EXECUTE (implicit runtime stage)
+
+Notes:
+
+- The `-e` flag supplies the expression.
+- `--pipe` prints the pipeline analysis for that expression.
+- The EXECUTE stage may not appear as a labeled block in output but is part of the conceptual pipeline.
+
+## 9. Fusion Rules
 
 - Only elementwise operations may be fused.
 - Shift/prefix operations (cumsum, shift, etc.) break fusion boundaries.
 - The fusion optimizer in `ir_fusion.rs` enforces this automatically.
 
-## 9. Testing Requirements
+## 10. Testing Requirements
 
 - `cargo test` must pass before any commit.
 - `cargo clippy --all-targets --all-features -- -D warnings` must be clean.
@@ -68,31 +99,31 @@ Every public finance op must eventually reach IR. LEGACY is a temporary state.
 - Tripwire tests in `tests/orientation_tripwires.rs` guard orientation semantics.
 - The `blisp --dic` matrix is verified by regression tests in `dic.rs`.
 
-## 10. Commit Discipline
+## 11. Commit Discipline
 
 - Split unrelated changes into separate commits.
 - Commit messages follow: `category: short description`
 - Categories: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`
 
-## 11. No Hacks, No Workarounds
+## 12. No Hacks, No Workarounds
 
 - If semantics are wrong, fix the kernel or add a new IR variant.
 - Never use multiplicative corrections (e.g., `exp(-1)`) to patch semantic mismatches.
 - Never add comment-only "fixes" for real bugs.
 
-## 12. YAML Tracks Status, Not Behavior
+## 13. YAML Tracks Status, Not Behavior
 
 - `OPS_CURRENT.yml`: aliases that resolve today (tripwire-enforced, 0 failures allowed).
 - `OPS_PLANNED.yml`: roadmap items (failures expected and acceptable).
 - Never put aspirational items in CURRENT.
 
-## 13. Output Conventions
+## 14. Output Conventions
 
 - Data goes to stdout, diagnostics go to stderr.
 - CSV output uses `;` as separator.
 - This enables clean piping: `blisp --dic 2>/dev/null | cut -d';' -f1,5`
 
-## 14. The Matrix Columns
+## 15. The Matrix Columns
 
 `blisp --dic` outputs these columns:
 
