@@ -566,6 +566,14 @@ struct ProbeIR {
 struct MatrixRow {
     name: String,
     normalize_to: Option<String>,
+    /// TYPE: can the user type this token? (code-driven)
+    is_type: bool,
+    /// Why is this typable? (for JSON output)
+    type_reasons: Vec<String>,
+    /// PUB: is this in PUBLIC_FINANCE_OPS? (policy)
+    is_pub: bool,
+    /// CANON: canonical token after normalization
+    canon: String,
     layer: Layer,
     ir_variant: String,
     fusable: String,
@@ -891,9 +899,49 @@ pub fn print_matrix(
             notes.push("glue".to_string());
         }
 
+        // TYPE: can user type this token? (code-driven)
+        let is_in_normalize = normalize::NORMALIZE_ALIASES
+            .iter()
+            .any(|(from, to)| *from == name.as_str() || *to == name.as_str());
+        let is_type = is_in_normalize || is_builtin || is_glue || probe.is_some();
+
+        let mut type_reasons = Vec::new();
+        if is_in_normalize {
+            type_reasons.push("normalize".to_string());
+        }
+        if probe.is_some() {
+            type_reasons.push("planner".to_string());
+        }
+        if is_builtin {
+            type_reasons.push("builtin".to_string());
+        }
+        if is_glue {
+            type_reasons.push("glue".to_string());
+        }
+
+        // PUB: is it in the stable finance API? (policy)
+        let is_pub = PUBLIC_FINANCE_OPS.contains(&name.as_str());
+
+        // CANON: canonical token after normalization (resolve transitively)
+        let canon = {
+            let mut c = normalize_to.as_deref().unwrap_or(name.as_str());
+            // Resolve alias chains (A→B, B→C → final C)
+            loop {
+                match normalize_map.get(c) {
+                    Some(next) if *next != c => c = next,
+                    _ => break,
+                }
+            }
+            c.to_string()
+        };
+
         rows.push(MatrixRow {
             name: name.clone(),
             normalize_to,
+            is_type,
+            type_reasons,
+            is_pub,
+            canon,
             layer,
             ir_variant,
             fusable,
@@ -911,6 +959,8 @@ pub fn print_matrix(
     let legacy_count = rows.iter().filter(|r| r.layer == Layer::Legacy).count();
     let glue_count = rows.iter().filter(|r| r.layer == Layer::Glue).count();
     let unknown_count = rows.iter().filter(|r| r.layer == Layer::Unknown).count();
+    let type_count = rows.iter().filter(|r| r.is_type).count();
+    let pub_count = rows.iter().filter(|r| r.is_pub).count();
     let ir_null_count = rows
         .iter()
         .filter(|r| r.notes.iter().any(|n| n == "ir:null!"))
@@ -931,26 +981,24 @@ pub fn print_matrix(
             println!();
 
             // Header
+            let type_str = |b: bool| if b { "yes" } else { "-" };
+
             if no_yaml {
                 println!(
-                    "{:<22} {:<18} {:<8} {:<35} {:<8} {}",
-                    "NAME", "NORMALIZE->", "LAYER", "IR_VARIANT", "FUSABLE", "NOTES"
+                    "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {}",
+                    "NAME", "TYPE", "PUB", "CANON", "LAYER", "IR_VARIANT", "FUSABLE", "NOTES"
                 );
-                println!("{}", "-".repeat(100));
+                println!("{}", "-".repeat(110));
             } else {
                 println!(
-                    "{:<22} {:<18} {:<8} {:<35} {:<8} {:<6} {:<6} {}",
-                    "NAME", "NORMALIZE->", "LAYER", "IR_VARIANT", "FUSABLE", "Y_CUR", "Y_PLN",
-                    "NOTES"
+                    "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
+                    "NAME", "TYPE", "PUB", "CANON", "LAYER", "IR_VARIANT", "FUSABLE",
+                    "Y_CUR", "Y_PLN", "NOTES"
                 );
-                println!("{}", "-".repeat(115));
+                println!("{}", "-".repeat(125));
             }
 
             for row in &rows {
-                let norm = row
-                    .normalize_to
-                    .as_ref()
-                    .map_or("-".to_string(), |t| format!("-> {}", t));
                 let notes_str = if row.notes.is_empty() {
                     String::new()
                 } else {
@@ -959,14 +1007,23 @@ pub fn print_matrix(
 
                 if no_yaml {
                     println!(
-                        "{:<22} {:<18} {:<8} {:<35} {:<8} {}",
-                        row.name, norm, row.layer, row.ir_variant, row.fusable, notes_str
+                        "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {}",
+                        row.name,
+                        type_str(row.is_type),
+                        type_str(row.is_pub),
+                        row.canon,
+                        row.layer,
+                        row.ir_variant,
+                        row.fusable,
+                        notes_str
                     );
                 } else {
                     println!(
-                        "{:<22} {:<18} {:<8} {:<35} {:<8} {:<6} {:<6} {}",
+                        "{:<18} {:<5} {:<5} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
                         row.name,
-                        norm,
+                        type_str(row.is_type),
+                        type_str(row.is_pub),
+                        row.canon,
                         row.layer,
                         row.ir_variant,
                         row.fusable,
@@ -980,6 +1037,8 @@ pub fn print_matrix(
             println!();
             println!("SUMMARY:");
             println!("  Total names:                    {}", rows.len());
+            println!("  TYPE (typable):                 {}", type_count);
+            println!("  PUB (public finance API):       {}", pub_count);
             println!("  IR (planner handles):           {}", ir_count);
             println!("  LEGACY (builtin only):          {}", legacy_count);
             println!("  GLUE:                           {}", glue_count);
@@ -997,6 +1056,10 @@ pub fn print_matrix(
                 .map(|row| {
                     let mut obj = serde_json::json!({
                         "name": row.name,
+                        "type": row.is_type,
+                        "type_reason": row.type_reasons,
+                        "pub": row.is_pub,
+                        "canon": row.canon,
                         "normalize_to": row.normalize_to,
                         "layer": format!("{}", row.layer),
                         "ir_variant": row.ir_variant,
@@ -1016,6 +1079,8 @@ pub fn print_matrix(
                 "yaml_included": !no_yaml,
                 "summary": {
                     "total": rows.len(),
+                    "type": type_count,
+                    "pub": pub_count,
                     "ir": ir_count,
                     "legacy": legacy_count,
                     "glue": glue_count,
