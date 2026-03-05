@@ -168,6 +168,7 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
                         NumericFunc::INV => inv_column(col),
                         NumericFunc::SHF_REC_NLN_LOCF => locf_column(col),
                         NumericFunc::SHF_PFX_LIN_SUM => cumsum_column(col),
+                        NumericFunc::SHF_PFX_LIN_SUM0 => cumsum0_column(col),
                         NumericFunc::SHF_PTW_LIN_SHF { k } => shift_column(col, *k),
                         NumericFunc::KEEP { k } => keep_column(col, *k),
                         NumericFunc::MSK_WKE => unreachable!("Wkd handled above"),
@@ -1780,6 +1781,33 @@ pub(crate) fn cumsum_column(col: &Column) -> Column {
                     // Valid input: update cumsum and output
                     cumsum += x;
                     result.push(cumsum);
+                }
+            }
+
+            Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Cumulative sum starting at 0.0 (cs0)
+///
+/// Contract:
+/// - cs0[0] = x[0], cs0[i] = cs0[i-1] + x[i]
+/// - NA input → NA output, running sum unchanged
+/// - Shape preserved (I1-I3)
+pub(crate) fn cumsum0_column(col: &Column) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut result = Vec::with_capacity(data.len());
+            let mut acc = 0.0;
+
+            for &x in data.iter() {
+                if x.is_nan() {
+                    result.push(f64::NAN);
+                } else {
+                    acc += x;
+                    result.push(acc);
                 }
             }
 

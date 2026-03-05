@@ -266,6 +266,18 @@ pub enum NumericFunc {
     /// - Used for index reconstruction from differences
     /// - NOT idempotent (cs1(cs1(x)) != cs1(x))
     SHF_PFX_LIN_SUM,
+
+    /// Cumulative sum starting at 0.0
+    /// Canonical: SHF_PFX_LIN_SUM0 (Shift-equivariant, Prefix, Linear, Sum, zero-start)
+    ///
+    /// Contract:
+    /// - cs0[0] = x[0]
+    /// - cs0[i] = cs0[i-1] + x[i]
+    /// - NA policy: same as SHF_PFX_LIN_SUM (skip and preserve)
+    /// - Shape preserved (I1-I3)
+    /// - Used for: ecs1 = exp(cs0(x)) matching legacy semantics
+    SHF_PFX_LIN_SUM0,
+
     /// Shift (lag): shift k rows down
     /// Canonical: SHF_PTW_LIN_SHF (Shift-equivariant, Pointwise, Linear, Shift)
     ///
@@ -364,6 +376,7 @@ impl NumericFunc {
         "SHF_REC_NLN_LOCF",
         "MSK_WKE",
         "SHF_PFX_LIN_SUM",
+        "SHF_PFX_LIN_SUM0",
         "SHF_PTW_LIN_SHF",
         "LAG_OBS",
         "KEEP",

@@ -79,7 +79,11 @@ pub fn normalize_traced(expr: Expr, interner: &mut Interner) -> NormalizeTrace {
 }
 
 /// Internal recursive normalization (traced variant — emits RewriteEvent::ThreadFirst)
-fn normalize_expr_traced(expr: Expr, interner: &mut Interner, events: &mut Vec<RewriteEvent>) -> Expr {
+fn normalize_expr_traced(
+    expr: Expr,
+    interner: &mut Interner,
+    events: &mut Vec<RewriteEvent>,
+) -> Expr {
     match expr {
         Expr::List(elements) => {
             if elements.is_empty() {
@@ -89,7 +93,11 @@ fn normalize_expr_traced(expr: Expr, interner: &mut Interner, events: &mut Vec<R
                 let name = interner.resolve(*sym);
                 if name == "->" {
                     // Record the -> expansion: form_count = pipeline steps (excluding -> and initial value)
-                    let form_count = if elements.len() >= 2 { elements.len() - 2 } else { 0 };
+                    let form_count = if elements.len() >= 2 {
+                        elements.len() - 2
+                    } else {
+                        0
+                    };
                     events.push(RewriteEvent::ThreadFirst { form_count });
                     return normalize_thread_first(&elements[1..], interner);
                 }
@@ -103,9 +111,15 @@ fn normalize_expr_traced(expr: Expr, interner: &mut Interner, events: &mut Vec<R
         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Sym(_) | Expr::Nil => {
             expr
         }
-        Expr::Quote(inner) => Expr::Quote(Box::new(normalize_expr_traced(*inner, interner, events))),
-        Expr::QuasiQuote(inner) => Expr::QuasiQuote(Box::new(normalize_expr_traced(*inner, interner, events))),
-        Expr::Unquote(inner) => Expr::Unquote(Box::new(normalize_expr_traced(*inner, interner, events))),
+        Expr::Quote(inner) => {
+            Expr::Quote(Box::new(normalize_expr_traced(*inner, interner, events)))
+        }
+        Expr::QuasiQuote(inner) => {
+            Expr::QuasiQuote(Box::new(normalize_expr_traced(*inner, interner, events)))
+        }
+        Expr::Unquote(inner) => {
+            Expr::Unquote(Box::new(normalize_expr_traced(*inner, interner, events)))
+        }
         Expr::UnquoteSplicing(inner) => {
             Expr::UnquoteSplicing(Box::new(normalize_expr_traced(*inner, interner, events)))
         }
@@ -249,9 +263,27 @@ pub const NORMALIZE_ALIASES: &[(&str, &str)] = &[
     ("rolling-mean-cols", "rolling-mean"),
     ("rolling-std-cols", "rolling-std"),
     ("rolling-zscore-cols", "rolling-zscore"),
+    ("diff-cols", "diff"),
+    ("diff-col", "diff"),
+    ("ecs1-cols", "ecs1"),
+    ("ecs1-col", "ecs1"),
     ("x-", "xminus"),
     ("w5", "wkd"),
     ("let*", "let"),
+    // Word-form aliases for arithmetic operators
+    ("add", "+"),
+    ("sub", "-"),
+    ("mul", "*"),
+    ("div", "/"),
+    // Word-form aliases for comparison operators
+    ("eq", "=="),
+    ("neq", "!="),
+    ("gt", ">"),
+    ("gte", ">="),
+    ("lt", "<"),
+    ("lte", "<="),
+    // Math aliases
+    ("ln", "log"),
 ];
 
 /// Lookup legacy spelling → canonical name
@@ -271,6 +303,7 @@ const PARAM_OPS_2: &[&str] = &[
     "rolling-std-min2",
     "rolling-zscore",
     "shift",
+    "diff",
     "keep",
     "lag-obs",
     "shift-obs",

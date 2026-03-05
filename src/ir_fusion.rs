@@ -1203,6 +1203,7 @@ mod proptests {
                         NumericFunc::SQRT => exec::sqrt_column(input_col),
                         NumericFunc::INV => exec::inv_column(input_col),
                         NumericFunc::SHF_PFX_LIN_SUM => exec::cumsum_column(input_col),
+                        NumericFunc::SHF_PFX_LIN_SUM0 => exec::cumsum0_column(input_col),
                         NumericFunc::SHF_PTW_OBS_NLN_DLOG => exec::dlog_obs_column(input_col, 1),
                         _ => return Err(format!("Unsupported func: {:?}", func)),
                     }

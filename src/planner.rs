@@ -246,6 +246,115 @@ fn plan_expr(
                         )
                     }
 
+                    // diff: (diff x k) = x - shift(x, k)
+                    // Composite: SUB(x, SHF_PTW_LIN_SHF{k}(x))
+                    "diff" => {
+                        if elements.len() != 3 {
+                            return Err(PlanError::BadArgs {
+                                op: "diff".into(),
+                                detail: "expects 2 arguments: (diff x k)".into(),
+                            });
+                        }
+
+                        let k = match &elements[2] {
+                            Expr::Int(i) if *i >= 0 => *i as usize,
+                            Expr::Int(i) => {
+                                return Err(PlanError::BadArgs {
+                                    op: "diff".into(),
+                                    detail: format!("k must be non-negative, got {}", i),
+                                })
+                            }
+                            _ => {
+                                return Err(PlanError::NonLiteral {
+                                    op: "diff".into(),
+                                    which_arg: "k".into(),
+                                    expected: "integer literal".into(),
+                                })
+                            }
+                        };
+
+                        let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: "diff".into(),
+                                reason: "invalid x node".into(),
+                            })?
+                            .schema
+                            .clone();
+
+                        // shift(x, k)
+                        let shift_node_id = NodeId(plan.nodes.len());
+                        let shift_node = Node {
+                            id: shift_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::SHF_PTW_LIN_SHF { k },
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let shift_node_id = plan.add_node(shift_node);
+
+                        // x - shift(x, k)
+                        let sub_node_id = NodeId(plan.nodes.len());
+                        let sub_node = Node {
+                            id: sub_node_id,
+                            op: Operation::Binary(BinaryOp::MapNumeric2 {
+                                lhs: x_node,
+                                rhs: ValueRef::Frame(shift_node_id),
+                                func: BinaryFunc::SUB,
+                            }),
+                            schema: x_schema,
+                        };
+                        Ok(plan.add_node(sub_node))
+                    }
+
+                    // ecs1: (ecs1 x) = exp(cs0(x))
+                    // Composite: EXP(SHF_PFX_LIN_SUM0(x))
+                    // Uses cs0 (cumsum starting at 0) to match legacy semantics
+                    "ecs1" => {
+                        if elements.len() != 2 {
+                            return Err(PlanError::BadArgs {
+                                op: "ecs1".into(),
+                                detail: "expects 1 argument: (ecs1 x)".into(),
+                            });
+                        }
+
+                        let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
+                        let x_schema = plan
+                            .get_node(x_node)
+                            .ok_or_else(|| PlanError::Unsupported {
+                                op: "ecs1".into(),
+                                reason: "invalid x node".into(),
+                            })?
+                            .schema
+                            .clone();
+
+                        // cs0(x) — cumsum starting at 0
+                        let cs0_node_id = NodeId(plan.nodes.len());
+                        let cs0_node = Node {
+                            id: cs0_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: x_node,
+                                func: NumericFunc::SHF_PFX_LIN_SUM0,
+                            }),
+                            schema: x_schema.clone(),
+                        };
+                        let cs0_node_id = plan.add_node(cs0_node);
+
+                        // exp(cs0(x))
+                        let exp_node_id = NodeId(plan.nodes.len());
+                        let exp_node = Node {
+                            id: exp_node_id,
+                            op: Operation::Unary(UnaryOp::MapNumeric {
+                                input: cs0_node_id,
+                                func: NumericFunc::EXP,
+                            }),
+                            schema: x_schema,
+                        };
+                        Ok(plan.add_node(exp_node))
+                    }
+
                     // Shift operation: (shift k x) where k is non-negative integer
                     // (shift x k) — data-first: elements[1]=data, elements[2]=k
                     "shift" => {
