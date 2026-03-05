@@ -151,52 +151,84 @@ Always test with these first. If none fits, use `tests/fixtures/*.csv`.
 The GLD_NUM test is the end-to-end numerical accuracy test. It runs an identical
 finance pipeline in both CLISPI (reference) and BLISP, then compares outputs.
 
-### Reference pipeline (CLISPI)
+### How to run
 
-The reference script is `GLD_NUM_CLISPI.sh`. It requires `source Adyton.sh` for
-shell utilities like `cgrep` (column-grep from CSV). The shell handles data
-selection (`cgrep ../RAW_FUT_PRC.csv BZ1 TP1`) and pipes into CLISPI.
+From `/home/ubuntu/`, with `source Adyton.sh` first:
 
-### BLISP replication
+```
+bash GLD_NUM_BLISP.sh
+```
 
-BLISP replicates **only the inner blisp expressions**, not the shell utilities.
-The BLISP script (`GLD_NUM_BLISP.sh`) must also `source Adyton.sh` to get `cgrep`.
-BLISP does not reimplement `cgrep` — it receives the same stdin.
+The one-liner for debugging (add `--pipe` at the end to inspect):
+
+```
+cgrep RAW_FUT_PRC.csv BZ1 TP1 | ./blisp/target/release/blisp --load blisp/stdlib/compat_clispi.cl -e '(let* ((s (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2)))) (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1)))'
+```
 
 ### The pipeline
 
 ```
 s = (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))
-result = (-> (file "../GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1))
+result = (-> (file "GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1))
 ```
 
-### wkd semantics (MSK_WKE) — the mask contract
+### Critical: the GLD_NUM script uses w5, NOT wkd
 
-CLISPI `w5` **deletes** weekend rows. BLISP `wkd` (`MSK_WKE`) **masks** weekends
-as NA but keeps the rows. This means:
+The GLD_NUM script uses `w5` (via `--load blisp/stdlib/compat_clispi.cl`), which
+**deletes** weekend rows — identical to CLISPI. It does NOT use `wkd` (`MSK_WKE`).
 
-- Output files will have different row counts. This is expected.
-- **All rolling/windowed operations (wzs, rolling-std, rolling-mean, etc.) must
-  skip masked (NA/weekend) rows when counting observations.** When `wzs 25` is
-  called, it must look back to find 25 non-weekend values, not 25 calendar rows.
-  This is the OBS (observation) semantics — the mask tells the rolling kernel
+This means both CLISPI and BLISP operate on the same weekday-only row set.
+The outputs should have the same row count (~6827 rows) and the same values.
+
+**Do NOT substitute `wkd` for `w5` when testing GLD_NUM.** If you use `wkd`:
+- Row counts will differ (BLISP keeps weekend rows as NA, CLISPI deletes them).
+- Cumulative operations (`cs1`) will diverge because `cs1` skips NAs but the
+  rolling lookback windows see different row positions.
+- The divergence is NOT a bug — it is a fundamental semantic difference between
+  delete-rows (`w5`) and mask-rows (`wkd`).
+
+### wkd semantics (MSK_WKE) — the mask contract (for future migration)
+
+When we eventually migrate GLD_NUM from `w5` to `wkd`, the mask contract is:
+
+- `wkd` (`MSK_WKE`) masks weekends as NA but keeps the rows.
+- **All rolling/windowed operations must skip masked rows when counting
+  observations.** `wzs 25` means 25 non-weekend values, not 25 calendar rows.
+- This is OBS (observation) semantics — the mask tells the rolling kernel
   which rows to count.
-- This is the whole point of `MSK_WKE`: the mask propagates through the pipeline
-  so that windowed ops produce identical results to CLISPI's delete-then-window
-  approach, without actually deleting rows.
-- If a rolling op counts calendar rows instead of observations, it will use a
-  wider lookback window (including weekends) and produce wrong values. This is
-  the most common source of GLD_NUM divergence.
+- If a rolling op counts calendar rows instead of observations, it will produce
+  wrong values. This is the most common source of GLD_NUM divergence.
+- Until this migration is done and validated, GLD_NUM uses `w5`.
 
 ### Validation rules
 
-- **Compare values on non-weekend dates only.**
-- Match criterion: values on shared weekday timestamps must agree within tolerance
+- **Compare by joining on TIMESTAMP**, not by row index.
+- Row count may differ by 1-2 rows at the tail (trailing data). This is NOT a
+  failure.
+- Match criterion: values on shared timestamps must agree within tolerance
   (default 5e-07).
-- Row count mismatch alone is NOT a failure. Only value mismatch on weekday rows
-  is a failure.
-- Use `blisp verify` with `--tol` for automated comparison, filtering to weekday
-  rows only.
+- **Do NOT compare row counts as pass/fail.** The `blisp verify` tool currently
+  fails on row count mismatch — use the python join-on-timestamp method instead:
+
+```python
+# Correct GLD_NUM validation (join on timestamp, not row index)
+import csv
+clispi = {}
+with open('GLD_NUM_CLISPI.csv') as f:
+    for row in csv.reader(f, delimiter=';'):
+        if row[1] not in ('NA','','GLD_NUM'): clispi[row[0]] = float(row[1])
+mismatches = matched = 0
+with open('GLD_NUM_BLISP.csv') as f:
+    for row in csv.reader(f, delimiter=';'):
+        if row[0] in clispi and row[1] not in ('NA','','GLD_NUM'):
+            matched += 1
+            if abs(float(row[1]) - clispi[row[0]]) > 5e-7: mismatches += 1
+print(f'Matched={matched}, Mismatches={mismatches}')
+```
+
+### Known good result
+
+As of 2026-03-05 (commit `7cf6baa`): **Matched=6827, Mismatches=0**.
 
 ### Data files (in `/home/ubuntu/`)
 
@@ -204,8 +236,21 @@ as NA but keeps the rows. This means:
 |------|------|
 | `RAW_FUT_PRC.csv` | Source prices (multi-asset, `cgrep` selects BZ1 + TP1) |
 | `GC1C.csv` | Gold continuous contract (single column) |
-| `GLD_NUM_CLISPI.csv` | Reference output (weekday rows only) |
-| `GLD_NUM_BLISP.csv` | BLISP output (all rows, weekends masked as NA) |
+| `GLD_NUM_CLISPI.csv` | Reference output from CLISPI |
+| `GLD_NUM_BLISP.csv` | BLISP output (should match CLISPI on shared timestamps) |
+| `GLD_NUM_BLISP.sh` | The run script (requires `source Adyton.sh` for `cgrep`) |
+| `stdlib/compat_clispi.cl` | Compatibility layer providing `w5` and other CLISPI names |
+
+### Pitfalls to avoid
+
+1. **Never use `wkd` instead of `w5`** in the GLD_NUM pipeline. They are not interchangeable.
+2. **Never validate by row count.** Join on timestamp.
+3. **Never generate ad-hoc test CSV with printf/echo.** BLISP uses `;` delimiter.
+   Use canonical data files from `/home/ubuntu/` (see Section 15).
+4. **`cgrep` comes from `source Adyton.sh`**, not from a script in the repo.
+   Do not try to reimplement it.
+5. **A 1-2 row difference at the tail** is normal (trailing dates may differ
+   between CLISPI and BLISP data snapshots). Check values, not counts.
 
 ## 17. The Matrix Columns
 
