@@ -421,7 +421,7 @@ fn print_help() {
     eprintln!("  run <script.lisp>              Run a BLISP script (default)");
     eprintln!("  verify <actual> <expected>     Verify CSV outputs match");
     eprintln!("  selftest                       Run embedded self-tests");
-    eprintln!("  dic [OPTIONS]                  Show operation dictionary");
+    eprintln!("  dic [OPTIONS]                  Operation matrix (CSV, code-driven)");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --version                      Show version and exit");
@@ -436,18 +436,15 @@ fn print_help() {
     eprintln!("  --pipe=table                   Show per-op mapping table only");
     eprintln!();
     eprintln!("DIC OPTIONS:");
-    eprintln!("  --exposed                      Show exposed aliases (default, current ops only)");
-    eprintln!("  --legacy                       Show legacy tokens");
-    eprintln!("  --todo-ir                      Show IR migration queue");
-    eprintln!("  --unmapped                     Show IR ops without metadata");
-    eprintln!("  --check-resolve                Check if names resolve in runtime (reality test)");
-    eprintln!(
-        "  --planned                      Show planned operations (roadmap, may not resolve)"
-    );
-    eprintln!("  --matrix                       Cross-layer operation matrix (code-driven)");
-    eprintln!("  --no-yaml                      Matrix without YAML columns (code-only)");
+    eprintln!("  (default)                      Operation matrix as CSV (code-driven, no YAML)");
     eprintln!("  --json                         Output in JSON format");
     eprintln!("  --grep <pattern>               Filter by pattern");
+    eprintln!("  --no-yaml                      Suppress YAML columns (default when no view flag)");
+    eprintln!("  --matrix                       Explicit matrix view (same as default)");
+    eprintln!("  --exposed                      Legacy: show exposed aliases (YAML-driven)");
+    eprintln!("  --legacy                       Legacy: show legacy tokens (YAML-driven)");
+    eprintln!("  --todo-ir                      Legacy: show IR migration queue (YAML-driven)");
+    eprintln!("  --check-resolve                Legacy: check runtime resolution (YAML-driven)");
     eprintln!();
     eprintln!("VERIFY OPTIONS:");
     eprintln!(
@@ -519,7 +516,8 @@ fn handle_dic_subcommand(args: &[String]) {
     });
 
     if !has_view_flag {
-        view = View::Exposed;
+        view = View::Matrix;
+        no_yaml = true;
     }
 
     while i < args.len() {

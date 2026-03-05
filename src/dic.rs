@@ -1003,58 +1003,20 @@ pub fn print_matrix(
 
     match format {
         OutputFormat::Table => {
-            println!("# Operation Matrix");
-            println!("# version:  {}", env!("CARGO_PKG_VERSION"));
-            println!(
-                "# source:   compiled code (planner probes, normalize table, builtins registry)"
-            );
-            if no_yaml {
-                println!("# yaml:     disabled (--no-yaml)");
-            } else {
-                println!("# yaml:     included (OPS_CURRENT + OPS_PLANNED)");
-            }
-            println!();
-
-            // Header
             let yes_dash = |b: bool| if b { "yes" } else { "-" };
 
+            // CSV header
             if no_yaml {
-                println!(
-                    "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} NOTES",
-                    "NAME",
-                    "ACCEPT",
-                    "ACCEPT_WHY",
-                    "PUB",
-                    "CANON",
-                    "USE",
-                    "LAYER",
-                    "IR_VARIANT",
-                    "FUSABLE"
-                );
-                println!("{}", "-".repeat(147));
+                println!("NAME;ACCEPT;ACCEPT_WHY;PUB;CANON;USE;LAYER;IR_VARIANT;FUSABLE;NOTES");
             } else {
-                println!(
-                    "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} NOTES",
-                    "NAME",
-                    "ACCEPT",
-                    "ACCEPT_WHY",
-                    "PUB",
-                    "CANON",
-                    "USE",
-                    "LAYER",
-                    "IR_VARIANT",
-                    "FUSABLE",
-                    "Y_CUR",
-                    "Y_PLN"
-                );
-                println!("{}", "-".repeat(162));
+                println!("NAME;ACCEPT;ACCEPT_WHY;PUB;CANON;USE;LAYER;IR_VARIANT;FUSABLE;Y_CUR;Y_PLN;NOTES");
             }
 
             for row in &rows {
                 let notes_str = if row.notes.is_empty() {
                     String::new()
                 } else {
-                    row.notes.join(", ")
+                    row.notes.join(",")
                 };
 
                 let accept_why = if row.accept_reasons.is_empty() {
@@ -1065,7 +1027,7 @@ pub fn print_matrix(
 
                 if no_yaml {
                     println!(
-                        "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {}",
+                        "{};{};{};{};{};{};{};{};{};{}",
                         row.name,
                         yes_dash(row.is_accept),
                         accept_why,
@@ -1079,7 +1041,7 @@ pub fn print_matrix(
                     );
                 } else {
                     println!(
-                        "{:<18} {:<8} {:<18} {:<5} {:<16} {:<16} {:<8} {:<30} {:<8} {:<6} {:<6} {}",
+                        "{};{};{};{};{};{};{};{};{};{};{};{}",
                         row.name,
                         yes_dash(row.is_accept),
                         accept_why,
@@ -1096,17 +1058,18 @@ pub fn print_matrix(
                 }
             }
 
-            println!();
-            println!("SUMMARY:");
-            println!("  Total names:                    {}", rows.len());
-            println!("  ACCEPT (typable):               {}", accept_count);
-            println!("  PUB (public finance API):       {}", pub_count);
-            println!("  IR (planner handles):           {}", ir_count);
-            println!("  LEGACY (builtin only):          {}", legacy_count);
-            println!("  GLUE:                           {}", glue_count);
-            println!("  UNKNOWN:                        {}", unknown_count);
+            eprintln!();
+            eprintln!(
+                "# SUMMARY: {} total, {} IR, {} LEGACY, {} GLUE, {} UNKNOWN",
+                rows.len(),
+                ir_count,
+                legacy_count,
+                glue_count,
+                unknown_count
+            );
+            eprintln!("# ACCEPT: {}, PUB: {}", accept_count, pub_count);
             if !no_yaml {
-                println!("  YAML says null, code says IR:   {}", ir_null_count);
+                eprintln!("# YAML null but IR: {}", ir_null_count);
             }
         }
         OutputFormat::Json => {
