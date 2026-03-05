@@ -230,22 +230,36 @@ fn thread_into_form(value: Expr, form: Expr, interner: &mut Interner) -> Expr {
 //    e.g. (rolling-mean 250 x) → (rolling-mean x 250)
 //    Only rewrites when roles are unambiguous (exactly one Int vs non-Int).
 
-/// Alias table: legacy spelling → canonical name
+/// Alias table: legacy spelling → canonical name (single source of truth)
+///
+/// `canonical_name()` is a lookup into this table.
+/// `dic --matrix` reads this table directly for the NORMALIZE→ column.
+pub const NORMALIZE_ALIASES: &[(&str, &str)] = &[
+    ("dlog-cols", "dlog"),
+    ("dlog-col", "dlog"),
+    ("cs1-cols", "cs1"),
+    ("cs1-col", "cs1"),
+    ("shift-cols", "shift"),
+    ("shift-col", "shift"),
+    (">-cols", ">"),
+    (">-col", ">"),
+    ("ur-cols", "ur"),
+    ("ur-col", "ur"),
+    ("locf-cols", "locf"),
+    ("rolling-mean-cols", "rolling-mean"),
+    ("rolling-std-cols", "rolling-std"),
+    ("rolling-zscore-cols", "rolling-zscore"),
+    ("x-", "xminus"),
+    ("w5", "wkd"),
+    ("let*", "let"),
+];
+
+/// Lookup legacy spelling → canonical name
 fn canonical_name(name: &str) -> Option<&'static str> {
-    match name {
-        "dlog-cols" | "dlog-col" => Some("dlog"),
-        "cs1-cols" | "cs1-col" => Some("cs1"),
-        "shift-cols" | "shift-col" => Some("shift"),
-        ">-cols" | ">-col" => Some(">"),
-        "ur-cols" | "ur-col" => Some("ur"),
-        "locf-cols" => Some("locf"),
-        "rolling-mean-cols" => Some("rolling-mean"),
-        "rolling-std-cols" => Some("rolling-std"),
-        "rolling-zscore-cols" => Some("rolling-zscore"),
-        "x-" => Some("xminus"),
-        "let*" => Some("let"),
-        _ => None,
-    }
+    NORMALIZE_ALIASES
+        .iter()
+        .find(|(from, _)| *from == name)
+        .map(|(_, to)| *to)
 }
 
 /// 2-param ops that take (op param data) in prefix form.

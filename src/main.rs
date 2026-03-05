@@ -419,6 +419,8 @@ fn print_help() {
     eprintln!(
         "  --planned                      Show planned operations (roadmap, may not resolve)"
     );
+    eprintln!("  --matrix                       Cross-layer operation matrix (code-driven)");
+    eprintln!("  --no-yaml                      Matrix without YAML columns (code-only)");
     eprintln!("  --json                         Output in JSON format");
     eprintln!("  --grep <pattern>               Filter by pattern");
     eprintln!();
@@ -468,19 +470,26 @@ fn parse_subcommand(args: &[String]) -> Subcommand {
 }
 
 fn handle_dic_subcommand(args: &[String]) {
-    // Parse dic arguments: blisp dic [--exposed|--legacy|--todo-ir] [--json] [--grep <pattern>]
+    // Parse dic arguments: blisp dic [--exposed|--legacy|--todo-ir|--matrix] [--json] [--grep <pattern>] [--no-yaml]
     use blisp::dic::{OutputFormat, View};
 
     let mut view = View::All;
     let mut format = OutputFormat::Table;
     let mut grep_pattern: Option<String> = None;
+    let mut no_yaml = false;
     let mut i = 2; // Skip "blisp" and "dic"
 
     // If no flags, default to exposed
     let has_view_flag = args.iter().skip(2).any(|arg| {
         matches!(
             arg.as_str(),
-            "--exposed" | "--legacy" | "--todo-ir" | "--unmapped" | "--check-resolve" | "--planned"
+            "--exposed"
+                | "--legacy"
+                | "--todo-ir"
+                | "--unmapped"
+                | "--check-resolve"
+                | "--planned"
+                | "--matrix"
         )
     });
 
@@ -514,6 +523,14 @@ fn handle_dic_subcommand(args: &[String]) {
                 view = View::Planned;
                 i += 1;
             }
+            "--matrix" => {
+                view = View::Matrix;
+                i += 1;
+            }
+            "--no-yaml" => {
+                no_yaml = true;
+                i += 1;
+            }
             "--json" => {
                 format = OutputFormat::Json;
                 i += 1;
@@ -528,13 +545,13 @@ fn handle_dic_subcommand(args: &[String]) {
             }
             _ => {
                 eprintln!("Error: unknown dic option: {}", args[i]);
-                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --check-resolve, --planned, --json, --grep <pattern>");
+                eprintln!("Valid options: --exposed, --legacy, --todo-ir, --unmapped, --check-resolve, --planned, --matrix, --json, --grep <pattern>, --no-yaml");
                 std::process::exit(1);
             }
         }
     }
 
-    match blisp::dic::run_dic(view, format, grep_pattern.as_deref()) {
+    match blisp::dic::run_dic(view, format, grep_pattern.as_deref(), no_yaml) {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("Error: {}", e);

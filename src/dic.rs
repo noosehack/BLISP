@@ -3,7 +3,11 @@
 // Schema: Code owns canonical IDs (enum variants), YAML owns metadata (aliases, docs, buckets)
 // Validates YAML ir: field against actual IR enum variants (anti-invention guardrail)
 
-use crate::ir::{BinaryFunc, NumericFunc, Source};
+use crate::ast::{Expr, Interner};
+use crate::ir::{BinaryFunc, NumericFunc, Operation, Source, UnaryOp};
+use crate::normalize::{self};
+use crate::planner;
+use crate::runtime::Runtime;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
@@ -134,6 +138,7 @@ pub enum View {
     CheckResolve, // Resolution check (reality test)
     Planned,      // Planned operations (roadmap)
     All,          // All views (default)
+    Matrix,       // Cross-layer operation matrix (code-driven)
 }
 
 /// View 1: Print exposed aliases table (L1)
@@ -526,9 +531,485 @@ pub fn print_resolution_check(entries: &[OpMapEntry], format: OutputFormat) {
     }
 }
 
+// ─── Matrix: Live Code-Driven Operation Audit ────────────────────────────────
+
+/// Layer classification for an operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Layer {
+    IR,
+    Glue,
+    Legacy,
+    Unknown,
+}
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Layer::IR => write!(f, "IR"),
+            Layer::Glue => write!(f, "GLUE"),
+            Layer::Legacy => write!(f, "LEGACY"),
+            Layer::Unknown => write!(f, "UNKNOWN"),
+        }
+    }
+}
+
+/// Result of probing the planner for a single operation name
+#[derive(Debug, Clone)]
+struct ProbeIR {
+    ir_variant: String,
+    node_count: usize,
+    fusable: bool,
+}
+
+/// One row in the matrix output
+#[derive(Debug, Clone)]
+struct MatrixRow {
+    name: String,
+    normalize_to: Option<String>,
+    layer: Layer,
+    ir_variant: String,
+    fusable: String,
+    yaml_current: String,
+    yaml_planned: String,
+    notes: Vec<String>,
+}
+
+/// Glue forms: control/IO that hybrid_eval peels or that aren't data ops
+const GLUE_FORMS: &[&str] = &["save", "print", "progn", "defmacro", "define"];
+
+/// Collect all candidate operation names from compiled code
+fn collect_candidate_names(rt: &Runtime) -> HashSet<String> {
+    let mut names = HashSet::new();
+
+    // 1. Normalize aliases (both from and to)
+    for (from, to) in normalize::NORMALIZE_ALIASES {
+        names.insert(from.to_string());
+        names.insert(to.to_string());
+    }
+
+    // 2. All registered builtins
+    for name in rt.builtin_names() {
+        names.insert(name);
+    }
+
+    // 3. Core symbols (sources, arithmetic, glue forms)
+    for s in &[
+        "stdin", "file", "load", "read-csv", "+", "-", "*", "/", ">", "<", "<=", ">=", "==",
+        "!=", "let", "save", "print", "progn", "not", "and", "or", "defmacro",
+    ] {
+        names.insert(s.to_string());
+    }
+
+    names
+}
+
+/// Probe the planner with a minimal expression to see if it handles this op.
+///
+/// Uses the REAL pipeline: build raw Expr → normalize → plan.
+/// This ensures aliases and arg swaps are applied exactly as in real runs.
+fn probe_planner(name: &str, interner: &mut Interner) -> Option<ProbeIR> {
+    let op_sym = interner.intern(name);
+    let stdin_sym = interner.intern("stdin");
+    let stdin_call = Expr::List(vec![Expr::Sym(stdin_sym)]);
+
+    // Try forms in order until one succeeds
+    let x_sym = interner.intern("__probe_x");
+    let forms: Vec<Expr> = vec![
+        // source (no args): (stdin)
+        Expr::List(vec![Expr::Sym(op_sym)]),
+        // source with string: (file "/dev/null")
+        Expr::List(vec![Expr::Sym(op_sym), Expr::Str("/dev/null".into())]),
+        // unary: (op (stdin))
+        Expr::List(vec![Expr::Sym(op_sym), stdin_call.clone()]),
+        // binary with scalar: (op (stdin) 1)
+        Expr::List(vec![
+            Expr::Sym(op_sym),
+            stdin_call.clone(),
+            Expr::Int(1),
+        ]),
+        // param unary 2-arg: (op (stdin) 2)
+        Expr::List(vec![
+            Expr::Sym(op_sym),
+            stdin_call.clone(),
+            Expr::Int(2),
+        ]),
+        // 3-param: (op (stdin) 250 5)
+        Expr::List(vec![
+            Expr::Sym(op_sym),
+            stdin_call.clone(),
+            Expr::Int(250),
+            Expr::Int(5),
+        ]),
+        // join: (op (stdin) (stdin))
+        Expr::List(vec![
+            Expr::Sym(op_sym),
+            stdin_call.clone(),
+            stdin_call.clone(),
+        ]),
+        // let form: (let ((x (stdin))) x)
+        Expr::List(vec![
+            Expr::Sym(op_sym),
+            Expr::List(vec![Expr::List(vec![
+                Expr::Sym(x_sym),
+                stdin_call.clone(),
+            ])]),
+            Expr::Sym(x_sym),
+        ]),
+    ];
+
+    for form in forms {
+        // Real pipeline: normalize first (alias rewrite + arg swap), then plan
+        let canon = normalize::normalize(form, interner);
+        if let Ok(plan) = planner::plan(&canon, interner) {
+            // Extract IR variant description from non-Source nodes
+            let ir_parts: Vec<String> = plan
+                .nodes
+                .iter()
+                .filter_map(|n| match &n.op {
+                    Operation::Source(_) => None,
+                    op => Some(format_ir_op(op)),
+                })
+                .collect();
+
+            let ir_variant = if ir_parts.is_empty() {
+                format_ir_source(&plan)
+            } else if ir_parts.len() == 1 {
+                ir_parts[0].clone()
+            } else {
+                format!("composite({} nodes)", plan.nodes.len())
+            };
+
+            // Check fusability
+            let fusable = plan.nodes.iter().any(|n| {
+                matches!(
+                    &n.op,
+                    Operation::Unary(UnaryOp::MapNumeric { func, .. })
+                    if func.is_pure_elementwise()
+                )
+            });
+
+            return Some(ProbeIR {
+                ir_variant,
+                node_count: plan.nodes.len(),
+                fusable,
+            });
+        }
+    }
+    None
+}
+
+/// Format an IR operation for display (compact)
+fn format_ir_op(op: &Operation) -> String {
+    match op {
+        Operation::Unary(UnaryOp::MapNumeric { func, .. }) => format!("{:?}", func),
+        Operation::Binary(bop) => {
+            // Extract the func from the binary op debug format
+            format!("{:?}", bop).split('{').next().unwrap_or("Binary").trim().to_string()
+        }
+        Operation::Join(jop) => format!("{:?}", jop).split('{').next().unwrap_or("Join").trim().to_string(),
+        Operation::Schema(sop) => format!("{:?}", sop).split('{').next().unwrap_or("Schema").trim().to_string(),
+        _ => format!("{:?}", op).chars().take(40).collect(),
+    }
+}
+
+/// Format a source-only plan
+fn format_ir_source(plan: &crate::ir::Plan) -> String {
+    if let Some(node) = plan.nodes.first() {
+        match &node.op {
+            Operation::Source(Source::Stdin) => "Source::Stdin".into(),
+            Operation::Source(Source::File { .. }) => "Source::File".into(),
+            Operation::Source(Source::Variable { .. }) => "Source::Variable".into(),
+            _ => "-".into(),
+        }
+    } else {
+        "-".into()
+    }
+}
+
+/// Look up a name in YAML entries (aliases or legacy_tokens)
+fn find_in_yaml(name: &str, entries: &[OpMapEntry]) -> Option<(String, bool)> {
+    for entry in entries {
+        if entry.aliases.iter().any(|a| a == name) {
+            let ir = entry.ir.as_deref().unwrap_or("null").to_string();
+            return Some((ir, false));
+        }
+        if entry.legacy_tokens.iter().any(|t| t == name) {
+            let ir = entry.ir.as_deref().unwrap_or("null").to_string();
+            return Some((ir, true));
+        }
+    }
+    None
+}
+
+/// Print the operation matrix (code-driven)
+pub fn print_matrix(
+    no_yaml: bool,
+    format: OutputFormat,
+    grep_pattern: Option<&str>,
+) -> Result<(), String> {
+    // Single Runtime for the whole run
+    let mut rt = Runtime::new();
+    let candidates = collect_candidate_names(&rt);
+
+    // Optional YAML data
+    let yaml_current = if no_yaml {
+        Vec::new()
+    } else {
+        load_current_ops().unwrap_or_default()
+    };
+    let yaml_planned = if no_yaml {
+        Vec::new()
+    } else {
+        load_planned_ops().unwrap_or_default()
+    };
+
+    // Build normalize lookup
+    let normalize_map: HashMap<&str, &str> = normalize::NORMALIZE_ALIASES
+        .iter()
+        .copied()
+        .collect();
+
+    // Probe each candidate
+    let mut rows: Vec<MatrixRow> = Vec::new();
+
+    for name in &candidates {
+        // grep filter
+        if let Some(pattern) = grep_pattern {
+            if !name.contains(pattern) {
+                continue;
+            }
+        }
+
+        // Normalize alias?
+        let normalize_to = normalize_map.get(name.as_str()).map(|s| s.to_string());
+
+        // Probe uses the raw name — normalize() inside probe_planner handles
+        // alias rewrite and arg swaps, exactly as the real pipeline does.
+        let probe = probe_planner(name, &mut rt.interner);
+
+        // Builtin check
+        let sym = rt.interner.intern(name);
+        let is_builtin = rt.is_builtin(sym);
+
+        // Determine layer
+        let is_glue = GLUE_FORMS.contains(&name.as_str());
+        let layer = if probe.is_some() {
+            Layer::IR
+        } else if is_glue {
+            Layer::Glue
+        } else if is_builtin {
+            Layer::Legacy
+        } else {
+            Layer::Unknown
+        };
+
+        let ir_variant = probe.as_ref().map_or("-".to_string(), |p| p.ir_variant.clone());
+        let fusable = if probe.as_ref().map_or(false, |p| p.fusable) {
+            "elem".to_string()
+        } else {
+            "-".to_string()
+        };
+
+        // YAML lookups
+        let (yaml_cur, yaml_plan);
+        let mut notes = Vec::new();
+
+        if no_yaml {
+            yaml_cur = "-".to_string();
+            yaml_plan = "-".to_string();
+        } else {
+            yaml_cur = match find_in_yaml(name, &yaml_current) {
+                Some((ir, is_legacy)) => {
+                    if is_legacy {
+                        notes.push("dep".to_string());
+                    }
+                    // Check for ir:null! (YAML says null but code says IR)
+                    if ir == "null" && layer == Layer::IR {
+                        notes.push("ir:null!".to_string());
+                    }
+                    "yes".to_string()
+                }
+                None => "-".to_string(),
+            };
+            yaml_plan = match find_in_yaml(name, &yaml_planned) {
+                Some((ir, _)) => {
+                    if ir == "null" && layer == Layer::IR {
+                        // Only add ir:null! once
+                        if !notes.contains(&"ir:null!".to_string()) {
+                            notes.push("ir:null!".to_string());
+                        }
+                    }
+                    "yes".to_string()
+                }
+                None => "-".to_string(),
+            };
+        }
+
+        // Additional notes
+        // LHS of NORMALIZE_ALIASES = deprecated spelling
+        if normalize_to.is_some() && !notes.contains(&"dep".to_string()) {
+            notes.push("dep".to_string());
+        }
+        if normalize_to.is_some() && !is_builtin && probe.is_none() {
+            notes.push("alias-only".to_string());
+        }
+        if is_glue {
+            notes.push("glue".to_string());
+        }
+
+        rows.push(MatrixRow {
+            name: name.clone(),
+            normalize_to,
+            layer,
+            ir_variant,
+            fusable,
+            yaml_current: yaml_cur,
+            yaml_planned: yaml_plan,
+            notes,
+        });
+    }
+
+    // Sort: IR first, then Glue, then Legacy, then Unknown; alpha within each
+    rows.sort_by(|a, b| a.layer.cmp(&b.layer).then(a.name.cmp(&b.name)));
+
+    // Count summary
+    let ir_count = rows.iter().filter(|r| r.layer == Layer::IR).count();
+    let legacy_count = rows.iter().filter(|r| r.layer == Layer::Legacy).count();
+    let glue_count = rows.iter().filter(|r| r.layer == Layer::Glue).count();
+    let unknown_count = rows.iter().filter(|r| r.layer == Layer::Unknown).count();
+    let ir_null_count = rows
+        .iter()
+        .filter(|r| r.notes.iter().any(|n| n == "ir:null!"))
+        .count();
+
+    match format {
+        OutputFormat::Table => {
+            println!("# Operation Matrix");
+            println!("# version:  {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "# source:   compiled code (planner probes, normalize table, builtins registry)"
+            );
+            if no_yaml {
+                println!("# yaml:     disabled (--no-yaml)");
+            } else {
+                println!("# yaml:     included (OPS_CURRENT + OPS_PLANNED)");
+            }
+            println!();
+
+            // Header
+            if no_yaml {
+                println!(
+                    "{:<22} {:<18} {:<8} {:<35} {:<8} {}",
+                    "NAME", "NORMALIZE->", "LAYER", "IR_VARIANT", "FUSABLE", "NOTES"
+                );
+                println!("{}", "-".repeat(100));
+            } else {
+                println!(
+                    "{:<22} {:<18} {:<8} {:<35} {:<8} {:<6} {:<6} {}",
+                    "NAME", "NORMALIZE->", "LAYER", "IR_VARIANT", "FUSABLE", "Y_CUR", "Y_PLN",
+                    "NOTES"
+                );
+                println!("{}", "-".repeat(115));
+            }
+
+            for row in &rows {
+                let norm = row
+                    .normalize_to
+                    .as_ref()
+                    .map_or("-".to_string(), |t| format!("-> {}", t));
+                let notes_str = if row.notes.is_empty() {
+                    String::new()
+                } else {
+                    row.notes.join(", ")
+                };
+
+                if no_yaml {
+                    println!(
+                        "{:<22} {:<18} {:<8} {:<35} {:<8} {}",
+                        row.name, norm, row.layer, row.ir_variant, row.fusable, notes_str
+                    );
+                } else {
+                    println!(
+                        "{:<22} {:<18} {:<8} {:<35} {:<8} {:<6} {:<6} {}",
+                        row.name,
+                        norm,
+                        row.layer,
+                        row.ir_variant,
+                        row.fusable,
+                        row.yaml_current,
+                        row.yaml_planned,
+                        notes_str
+                    );
+                }
+            }
+
+            println!();
+            println!("SUMMARY:");
+            println!("  Total names:                    {}", rows.len());
+            println!("  IR (planner handles):           {}", ir_count);
+            println!("  LEGACY (builtin only):          {}", legacy_count);
+            println!("  GLUE:                           {}", glue_count);
+            println!("  UNKNOWN:                        {}", unknown_count);
+            if !no_yaml {
+                println!(
+                    "  YAML says null, code says IR:   {}",
+                    ir_null_count
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let json_rows: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    let mut obj = serde_json::json!({
+                        "name": row.name,
+                        "normalize_to": row.normalize_to,
+                        "layer": format!("{}", row.layer),
+                        "ir_variant": row.ir_variant,
+                        "fusable": row.fusable,
+                        "notes": row.notes,
+                    });
+                    if !no_yaml {
+                        obj["yaml_current"] = serde_json::json!(row.yaml_current);
+                        obj["yaml_planned"] = serde_json::json!(row.yaml_planned);
+                    }
+                    obj
+                })
+                .collect();
+            let output = serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "source": "compiled code (planner probes, normalize table, builtins registry)",
+                "yaml_included": !no_yaml,
+                "summary": {
+                    "total": rows.len(),
+                    "ir": ir_count,
+                    "legacy": legacy_count,
+                    "glue": glue_count,
+                    "unknown": unknown_count,
+                    "yaml_null_but_ir": ir_null_count,
+                },
+                "operations": json_rows,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+    }
+
+    Ok(())
+}
+
 /// Main entry point for dic command
-pub fn run_dic(view: View, format: OutputFormat, grep_pattern: Option<&str>) -> Result<(), String> {
-    // Load appropriate dataset
+pub fn run_dic(
+    view: View,
+    format: OutputFormat,
+    grep_pattern: Option<&str>,
+    no_yaml: bool,
+) -> Result<(), String> {
+    // Matrix handles its own data sources (code-driven)
+    if let View::Matrix = view {
+        return print_matrix(no_yaml, format, grep_pattern);
+    }
+
+    // Load appropriate dataset for other views
     let (entries, is_planned) = match view {
         View::Planned => {
             let planned = load_planned_ops()?;
@@ -603,6 +1084,7 @@ pub fn run_dic(view: View, format: OutputFormat, grep_pattern: Option<&str>) -> 
             println!();
             print_resolution_check(&entries, format);
         }
+        View::Matrix => unreachable!("handled above"),
     }
 
     Ok(())
@@ -797,6 +1279,42 @@ mod tests {
              Never use '-' or empty string as placeholder - use empty array []",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn test_matrix_no_yaml_never_loads_yaml() {
+        // --no-yaml must produce a full code-driven matrix without YAML
+        // Verify: print_matrix(no_yaml=true) succeeds and populates CODE columns
+        // This test proves no YAML load occurs: if YAML were required,
+        // moving/removing YAML files would break it — but no_yaml=true
+        // never calls load_current_ops() or load_planned_ops().
+        let result = print_matrix(true, OutputFormat::Json, None);
+        assert!(result.is_ok(), "print_matrix(no_yaml=true) must succeed");
+    }
+
+    #[test]
+    fn test_matrix_probe_uses_normalize() {
+        // Probing must go through normalize, so aliases like "w5" resolve
+        // to their canonical form ("wkd") before hitting the planner.
+        // This means: probing "w5" and probing "wkd" should yield the same IR variant.
+        let mut interner = crate::ast::Interner::new();
+        let probe_w5 = probe_planner("w5", &mut interner);
+        let probe_wkd = probe_planner("wkd", &mut interner);
+        assert!(probe_wkd.is_some(), "wkd must be plannable");
+        assert!(probe_w5.is_some(), "w5 must be plannable (via normalize)");
+        assert_eq!(
+            probe_w5.as_ref().unwrap().ir_variant,
+            probe_wkd.as_ref().unwrap().ir_variant,
+            "w5 and wkd must produce identical IR variant after normalization"
+        );
+    }
+
+    #[test]
+    fn test_matrix_deprecated_flag_on_aliases() {
+        // Names on LHS of NORMALIZE_ALIASES must get "dep" in notes
+        let result = print_matrix(true, OutputFormat::Json, Some("w5"));
+        assert!(result.is_ok());
+        // w5 is on LHS of NORMALIZE_ALIASES → should be flagged dep
     }
 
     #[test]

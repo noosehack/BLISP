@@ -44,6 +44,14 @@ impl Runtime {
         self.builtins.contains_key(&sym)
     }
 
+    /// Return all registered builtin names (resolved from interner)
+    pub fn builtin_names(&self) -> Vec<String> {
+        self.builtins
+            .keys()
+            .map(|sym| self.interner.resolve(*sym).to_string())
+            .collect()
+    }
+
     /// Call a builtin function
     pub fn call_builtin(&mut self, sym: SymbolId, args: &[Value]) -> Result<Value, String> {
         if let Some(func) = self.builtins.get(&sym) {
