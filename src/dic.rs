@@ -608,7 +608,7 @@ pub const PUBLIC_FINANCE_OPS: &[&str] = &[
     "shift", "dlog", "run_sum", "locf", "xminus", "rol_avg", "rol_std",
     // Composites
     "rol_zsc", "rsk_adj", // Masks
-    "wkd", // Alignment
+    "wkd",     // Alignment
     "mapr",
 ];
 

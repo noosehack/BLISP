@@ -4,3 +4,19 @@
 *.pr1_backup
 *.backup
 *_backup
+
+# Debug logs / traces
+*.log
+trace_output.txt
+
+# Generated outputs
+out_*.csv
+
+# GLD_NUM debug/baseline artifacts (generated)
+GLD_NUM_*_baseline*.csv
+GLD_NUM_BLISP_trace.csv
+GLD_NUM_nocompat.csv
+GLD_NUM_segment.csv
+
+# Branch-specific docs
+SEMANTICS_GAP_REPORT.md
