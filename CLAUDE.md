@@ -170,11 +170,27 @@ s = (-> (stdin) (w5) (dlog) (x- 1) (cs1) (wzs 25 1) (> -1) (shift 2))
 result = (-> (file "../GC1C.csv") (mapr s) (dlog) (ur 250 5) (* s) (cs1))
 ```
 
+### wkd semantics (MSK_WKE) — the mask contract
+
+CLISPI `w5` **deletes** weekend rows. BLISP `wkd` (`MSK_WKE`) **masks** weekends
+as NA but keeps the rows. This means:
+
+- Output files will have different row counts. This is expected.
+- **All rolling/windowed operations (wzs, rolling-std, rolling-mean, etc.) must
+  skip masked (NA/weekend) rows when counting observations.** When `wzs 25` is
+  called, it must look back to find 25 non-weekend values, not 25 calendar rows.
+  This is the OBS (observation) semantics — the mask tells the rolling kernel
+  which rows to count.
+- This is the whole point of `MSK_WKE`: the mask propagates through the pipeline
+  so that windowed ops produce identical results to CLISPI's delete-then-window
+  approach, without actually deleting rows.
+- If a rolling op counts calendar rows instead of observations, it will use a
+  wider lookback window (including weekends) and produce wrong values. This is
+  the most common source of GLD_NUM divergence.
+
 ### Validation rules
 
-- **Compare values on non-weekend dates only.** CLISPI `w5` deletes weekend rows;
-  BLISP `wkd` (canonical `MSK_WKE`) masks weekends as NA but keeps the rows.
-  The output files will have different row counts. This is expected.
+- **Compare values on non-weekend dates only.**
 - Match criterion: values on shared weekday timestamps must agree within tolerance
   (default 5e-07).
 - Row count mismatch alone is NOT a failure. Only value mismatch on weekday rows
