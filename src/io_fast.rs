@@ -48,9 +48,12 @@ pub fn load_csv_fast(filename: &str, interner: &mut Interner) -> Result<Value, S
 /// This is the core fast parser. It operates directly on the byte slice
 /// without any intermediate string allocation for numeric fields.
 pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<Value, String> {
+    let profile = std::env::var("BLISP_PROFILE_IO").is_ok();
+    let t_total = std::time::Instant::now();
     let len = data.len();
 
     // --- Pass 1: scan structure (column count, row count, line offsets) ---
+    let t0 = std::time::Instant::now();
 
     // Find end of header line
     let mut pos = 0;
@@ -99,6 +102,8 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
         pos += 1;
     }
 
+    let dur_structural = t0.elapsed();
+
     let num_rows = line_offsets.len();
     if num_rows == 0 {
         let index = IndexColumn::Date(Arc::new(vec![]));
@@ -126,6 +131,8 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
     let num_numeric_cols = num_cols - numeric_start;
 
     // --- Pass 2: parse values ---
+    let t1 = std::time::Instant::now();
+
     // Pre-allocate exact-size column vectors
     let mut index_dates: Vec<i32> = if first_col_is_date {
         Vec::with_capacity(num_rows)
@@ -140,6 +147,11 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
     let mut columns: Vec<Vec<f64>> = (0..num_numeric_cols)
         .map(|_| Vec::with_capacity(num_rows))
         .collect();
+
+    let mut dur_date_parse = std::time::Duration::ZERO;
+    let mut dur_float_parse = std::time::Duration::ZERO;
+    let mut num_float_cells: u64 = 0;
+    let mut num_date_cells: u64 = 0;
 
     for row_idx in 0..num_rows {
         let row_start = line_offsets[row_idx];
@@ -173,7 +185,14 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
 
             if col_idx == 0 && first_col_is_date {
                 // Parse date index
-                index_dates.push(parse_date_bytes(field));
+                if profile {
+                    let td = std::time::Instant::now();
+                    index_dates.push(parse_date_bytes(field));
+                    dur_date_parse += td.elapsed();
+                    num_date_cells += 1;
+                } else {
+                    index_dates.push(parse_date_bytes(field));
+                }
             } else if col_idx == 0 && !first_col_is_date {
                 // String index
                 index_strings.push(std::str::from_utf8(field).unwrap_or("").trim().to_string());
@@ -182,7 +201,14 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
             if col_idx >= numeric_start {
                 let numeric_idx = col_idx - numeric_start;
                 if numeric_idx < num_numeric_cols {
-                    columns[numeric_idx].push(parse_f64_fast(field));
+                    if profile {
+                        let tf = std::time::Instant::now();
+                        columns[numeric_idx].push(parse_f64_fast(field));
+                        dur_float_parse += tf.elapsed();
+                        num_float_cells += 1;
+                    } else {
+                        columns[numeric_idx].push(parse_f64_fast(field));
+                    }
                 }
             }
 
@@ -208,7 +234,11 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
         }
     }
 
+    let dur_parse = t1.elapsed();
+
     // --- Build Frame ---
+    let t2 = std::time::Instant::now();
+
     let index_col = if first_col_is_date {
         IndexColumn::Date(Arc::new(index_dates))
     } else {
@@ -223,6 +253,58 @@ pub fn parse_csv_to_frame_fast(data: &[u8], _interner: &mut Interner) -> Result<
 
     let tags = Tags::new(index_name, index_col, numeric_colnames);
     let frame = Frame::new(tags, numeric_cols);
+
+    let dur_assembly = t2.elapsed();
+    let dur_total = t_total.elapsed();
+
+    if profile {
+        let dur_field_scan = dur_parse - dur_float_parse - dur_date_parse;
+        eprintln!(
+            "file-fast profile: {}x{} ({} bytes)",
+            num_rows, num_cols, len
+        );
+        eprintln!(
+            "  structural scan : {:>8.3} ms  ({:.1}%)",
+            dur_structural.as_secs_f64() * 1000.0,
+            dur_structural.as_secs_f64() / dur_total.as_secs_f64() * 100.0
+        );
+        eprintln!(
+            "  field scan      : {:>8.3} ms  ({:.1}%)",
+            dur_field_scan.as_secs_f64() * 1000.0,
+            dur_field_scan.as_secs_f64() / dur_total.as_secs_f64() * 100.0
+        );
+        eprintln!(
+            "  float parse     : {:>8.3} ms  ({:.1}%)  [{} cells, {:.0} ns/cell]",
+            dur_float_parse.as_secs_f64() * 1000.0,
+            dur_float_parse.as_secs_f64() / dur_total.as_secs_f64() * 100.0,
+            num_float_cells,
+            if num_float_cells > 0 {
+                dur_float_parse.as_nanos() as f64 / num_float_cells as f64
+            } else {
+                0.0
+            }
+        );
+        eprintln!(
+            "  date parse      : {:>8.3} ms  ({:.1}%)  [{} cells, {:.0} ns/cell]",
+            dur_date_parse.as_secs_f64() * 1000.0,
+            dur_date_parse.as_secs_f64() / dur_total.as_secs_f64() * 100.0,
+            num_date_cells,
+            if num_date_cells > 0 {
+                dur_date_parse.as_nanos() as f64 / num_date_cells as f64
+            } else {
+                0.0
+            }
+        );
+        eprintln!(
+            "  frame assembly  : {:>8.3} ms  ({:.1}%)",
+            dur_assembly.as_secs_f64() * 1000.0,
+            dur_assembly.as_secs_f64() / dur_total.as_secs_f64() * 100.0
+        );
+        eprintln!(
+            "  TOTAL           : {:>8.3} ms",
+            dur_total.as_secs_f64() * 1000.0
+        );
+    }
 
     Ok(Value::Frame(Arc::new(frame)))
 }
