@@ -181,7 +181,10 @@ fn plan_expr(
                         let node_id = NodeId(plan.nodes.len());
                         let node = Node {
                             id: node_id,
-                            op: Operation::Source(Source::FileFast { path }),
+                            op: Operation::Source(Source::FileFast {
+                                path,
+                                projection: None,
+                            }),
                             schema: SchemaInfo::unknown(),
                         };
                         Ok(plan.add_node(node))
@@ -203,6 +206,66 @@ fn plan_expr(
                             schema: SchemaInfo::unknown(),
                         };
                         Ok(plan.add_node(node))
+                    }
+
+                    // Column selection with projection pushdown
+                    // (select (file-fast "path") "col1" "col2" ...)
+                    // Fuses into FileFast with projection when source is file-fast
+                    "select" => {
+                        if elements.len() < 3 {
+                            return Err(PlanError::BadArgs {
+                                op: "select".into(),
+                                detail:
+                                    "expects at least 2 arguments: (select source col1 col2 ...)"
+                                        .into(),
+                            });
+                        }
+
+                        // Collect column names (must all be string literals)
+                        let mut col_names = Vec::new();
+                        for arg in &elements[2..] {
+                            match arg {
+                                Expr::Str(s) => col_names.push(s.clone()),
+                                _ => {
+                                    return Err(PlanError::NonLiteral {
+                                        op: "select".into(),
+                                        which_arg: "column name".into(),
+                                        expected: "a string literal".into(),
+                                    })
+                                }
+                            }
+                        }
+
+                        // Check if source is file-fast — if so, fuse projection
+                        if let Expr::List(ref inner) = elements[1] {
+                            if inner.len() == 2 {
+                                if let Expr::Sym(sym) = &inner[0] {
+                                    let name = interner.resolve(*sym);
+                                    if name == "file-fast" {
+                                        if let Expr::Str(path) = &inner[1] {
+                                            // Fuse: emit FileFast with projection
+                                            let node_id = NodeId(plan.nodes.len());
+                                            let node = Node {
+                                                id: node_id,
+                                                op: Operation::Source(Source::FileFast {
+                                                    path: path.clone(),
+                                                    projection: Some(col_names),
+                                                }),
+                                                schema: SchemaInfo::unknown(),
+                                            };
+                                            return Ok(plan.add_node(node));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Non-file-fast source: fall back to legacy evaluator
+                        Err(PlanError::Unsupported {
+                            op: "select".into(),
+                            reason: "projection pushdown only supported with file-fast source"
+                                .into(),
+                        })
                     }
 
                     // Unary numeric operations
@@ -1792,5 +1855,67 @@ mod tests {
         assert!(plan_result.is_ok());
         let plan_obj = plan_result.unwrap();
         assert_eq!(plan_obj.nodes.len(), 2); // file + dlog
+    }
+
+    #[test]
+    fn test_select_file_fast_projection_pushdown() {
+        let mut interner = Interner::new();
+
+        // (-> (file-fast "At.csv") (select "ES1 Index" "SPY US Equity"))
+        // normalizes to: (select (file-fast "At.csv") "ES1 Index" "SPY US Equity")
+        let expr = Expr::List(vec![
+            Expr::Sym(interner.intern("->")),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("file-fast")),
+                Expr::Str("At.csv".to_string()),
+            ]),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("select")),
+                Expr::Str("ES1 Index".to_string()),
+                Expr::Str("SPY US Equity".to_string()),
+            ]),
+        ]);
+
+        let normalized = normalize(expr, &mut interner);
+        let plan_result = plan(&normalized, &interner);
+
+        assert!(plan_result.is_ok());
+        let plan = plan_result.unwrap();
+        // Should fuse into a single FileFast node with projection
+        assert_eq!(plan.nodes.len(), 1);
+
+        match &plan.nodes[0].op {
+            Operation::Source(Source::FileFast { path, projection }) => {
+                assert_eq!(path, "At.csv");
+                let proj = projection.as_ref().expect("projection should be Some");
+                assert_eq!(proj, &["ES1 Index", "SPY US Equity"]);
+            }
+            _ => panic!("Expected FileFast source with projection"),
+        }
+    }
+
+    #[test]
+    fn test_select_non_file_fast_falls_back() {
+        let mut interner = Interner::new();
+
+        // (select (read-csv "data.csv") "col1") — should NOT fuse, should fall back
+        let expr = Expr::List(vec![
+            Expr::Sym(interner.intern("select")),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("read-csv")),
+                Expr::Str("data.csv".to_string()),
+            ]),
+            Expr::Str("col1".to_string()),
+        ]);
+
+        let normalized = normalize(expr, &mut interner);
+        let plan_result = plan(&normalized, &interner);
+
+        // Should fail with Unsupported (falls back to legacy)
+        assert!(plan_result.is_err());
+        match plan_result.unwrap_err() {
+            PlanError::Unsupported { op, .. } => assert_eq!(op, "select"),
+            other => panic!("Expected Unsupported, got: {:?}", other),
+        }
     }
 }

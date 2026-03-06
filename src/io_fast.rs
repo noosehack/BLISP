@@ -192,12 +192,17 @@ fn parse_csv_to_frame_fast_projected(
             let mut action = vec![None; num_cols];
             let mut out_names = Vec::with_capacity(selected.len());
             let mut out_idx = 0;
+            let mut matched: Vec<bool> = vec![false; selected.len()];
 
             for (csv_idx, col_name) in column_names.iter().enumerate().skip(numeric_start) {
-                if selected.iter().any(|s| s == col_name) {
-                    action[csv_idx] = Some(out_idx);
-                    out_names.push(col_name.clone());
-                    out_idx += 1;
+                // Match first unmatched occurrence of each requested name
+                if let Some(sel_pos) = selected.iter().position(|s| s == col_name) {
+                    if !matched[sel_pos] {
+                        matched[sel_pos] = true;
+                        action[csv_idx] = Some(out_idx);
+                        out_names.push(col_name.clone());
+                        out_idx += 1;
+                    }
                 }
             }
             (action, out_names)
@@ -778,6 +783,36 @@ mod tests {
                         }
                     }
                 }
+            }
+            _ => panic!("Expected Frame"),
+        }
+    }
+
+    #[test]
+    fn test_projection_at_csv_single_col() {
+        // Real file test: verify projected Frame has correct dimensions
+        let path = "/home/ubuntu/At.csv";
+        if !std::path::Path::new(path).exists() {
+            return; // Skip if At.csv not available
+        }
+        let mut interner = crate::ast::Interner::new();
+        let cols = vec!["ES1 Index".to_string()];
+        let result = load_csv_fast_cols(path, &cols, &mut interner).unwrap();
+        match result {
+            Value::Frame(f) => {
+                assert_eq!(
+                    f.tags.colnames.len(),
+                    1,
+                    "colnames should have 1 entry, got: {:?}",
+                    f.tags.colnames
+                );
+                assert_eq!(
+                    f.cols.len(),
+                    1,
+                    "cols should have 1 entry, got {}",
+                    f.cols.len()
+                );
+                assert_eq!(f.tags.colnames[0], "ES1 Index");
             }
             _ => panic!("Expected Frame"),
         }

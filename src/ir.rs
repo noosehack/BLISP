@@ -131,7 +131,11 @@ pub enum Source {
     /// Load from CSV file
     File { path: String },
     /// Load from CSV file using fast mmap-based parser
-    FileFast { path: String },
+    /// Optional projection: only parse selected columns (pushdown from select)
+    FileFast {
+        path: String,
+        projection: Option<Vec<String>>,
+    },
     /// Read from stdin
     Stdin,
     /// Reference a variable in the environment

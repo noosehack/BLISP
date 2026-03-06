@@ -49,6 +49,17 @@ pub fn load_csv_fast(filename: &str, interner: &mut Interner) -> Result<Value, S
     crate::io_fast::load_csv_fast(filename, interner)
 }
 
+/// Load CSV file with projection pushdown (only parse selected columns).
+///
+/// Delegates to io_fast::load_csv_fast_cols which uses mmap + selective parsing.
+pub fn load_csv_fast_cols(
+    filename: &str,
+    col_names: &[String],
+    interner: &mut Interner,
+) -> Result<Value, String> {
+    crate::io_fast::load_csv_fast_cols(filename, col_names, interner)
+}
+
 /// Load CSV file with row limit (preview mode)
 ///
 /// Only parses header + first `row_limit` rows for fast display/pipelines.

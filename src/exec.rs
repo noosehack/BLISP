@@ -88,9 +88,13 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
                 )),
             }
         }
-        Source::FileFast { path } => {
-            // Use the fast mmap-based CSV loader
-            let value = io::load_csv_fast(path, &mut rt.interner)?;
+        Source::FileFast { path, projection } => {
+            // Use the fast mmap-based CSV loader, with optional projection pushdown
+            let value = if let Some(cols) = projection {
+                io::load_csv_fast_cols(path, cols, &mut rt.interner)?
+            } else {
+                io::load_csv_fast(path, &mut rt.interner)?
+            };
             match value {
                 Value::Frame(f) => Ok(f),
                 _ => Err(format!(
