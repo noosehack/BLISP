@@ -18,6 +18,7 @@ pub mod eval;
 pub mod exec;
 pub mod frame;
 pub mod io;
+pub mod io_fast;
 pub mod ir;
 pub mod ir_fusion;
 pub mod mask;
