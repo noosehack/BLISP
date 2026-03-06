@@ -250,6 +250,7 @@ impl PipeReport {
         match site.canonical_sym.as_str() {
             "stdin" => ("Source::Stdin".to_string(), "-".to_string()),
             "file" | "load" | "read-csv" => ("Source::File".to_string(), "-".to_string()),
+            "file-fast" => ("Source::FileFast".to_string(), "-".to_string()),
             "let" => ("let-binding".to_string(), "-".to_string()),
             "mapr" => ("ALIGN".to_string(), "-".to_string()),
             "asofr" => ("ASOF_ALIGN".to_string(), "-".to_string()),

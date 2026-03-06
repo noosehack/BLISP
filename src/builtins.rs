@@ -185,6 +185,7 @@ pub fn register_builtins(rt: &mut Runtime) {
 
     // I/O Operations (Step 8)
     rt.register_builtin("file", builtin_file);
+    rt.register_builtin("file-fast", builtin_file_fast);
     rt.register_builtin("file-head", builtin_file_head);
     rt.register_builtin("stdin", builtin_stdin); // Read from stdin (restored from 5d5e34d)
     rt.register_builtin("save", builtin_save);
@@ -2676,6 +2677,31 @@ fn builtin_file(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
     };
 
     crate::io::load_csv(filename, &mut rt.interner)
+}
+
+/// (file-fast "filename.csv") - Load CSV using fast mmap-based parser
+///
+/// Phase 0: delegates to existing parser. Will be replaced with zero-copy
+/// mmap parser in Phase 1.
+fn builtin_file_fast(rt: &mut Runtime, args: &[Value]) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "file-fast expects 1 argument (filename), got {}",
+            args.len()
+        ));
+    }
+
+    let filename = match &args[0] {
+        Value::Str(s) => s.as_ref(),
+        _ => {
+            return Err(format!(
+                "file-fast expects string filename, got {}",
+                args[0].type_name()
+            ))
+        }
+    };
+
+    crate::io::load_csv_fast(filename, &mut rt.interner)
 }
 
 /// (file-head "filename.csv" n) - Load first n rows from CSV (preview mode)

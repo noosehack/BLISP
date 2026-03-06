@@ -88,6 +88,17 @@ fn execute_source(source: &Source, rt: &mut Runtime) -> Result<Arc<Frame>, Strin
                 )),
             }
         }
+        Source::FileFast { path } => {
+            // Use the fast mmap-based CSV loader
+            let value = io::load_csv_fast(path, &mut rt.interner)?;
+            match value {
+                Value::Frame(f) => Ok(f),
+                _ => Err(format!(
+                    "fast CSV loader returned non-Frame: {}",
+                    value.type_name()
+                )),
+            }
+        }
         Source::Stdin => {
             // Read CSV from stdin
             // Note: load_stdin returns old Table/TableView, need to handle conversion

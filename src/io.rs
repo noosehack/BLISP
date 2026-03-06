@@ -38,6 +38,20 @@ pub fn load_csv(filename: &str, interner: &mut Interner) -> Result<Value, String
     parse_csv_to_frame(&mut csv_reader, interner, None)
 }
 
+/// Load CSV file using fast mmap-based parser (Phase 0: delegates to existing parser)
+///
+/// This is the entry point for `(file-fast "...")`. Currently delegates to the
+/// existing `load_csv` parser. The internals will be replaced with a zero-copy
+/// mmap parser in Phase 1.
+///
+/// v1 contract: semicolon-delimited, header present, rectangular rows,
+/// no quoted-field CSV complexity, explicit NA tokens only.
+pub fn load_csv_fast(filename: &str, interner: &mut Interner) -> Result<Value, String> {
+    // Phase 0: delegate to existing parser (wiring only)
+    // TODO: replace with parse_csv_to_frame_fast() in Phase 1
+    load_csv(filename, interner)
+}
+
 /// Load CSV file with row limit (preview mode)
 ///
 /// Only parses header + first `row_limit` rows for fast display/pipelines.

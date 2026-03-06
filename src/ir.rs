@@ -130,6 +130,8 @@ pub enum Operation {
 pub enum Source {
     /// Load from CSV file
     File { path: String },
+    /// Load from CSV file using fast mmap-based parser
+    FileFast { path: String },
     /// Read from stdin
     Stdin,
     /// Reference a variable in the environment
@@ -138,7 +140,7 @@ pub enum Source {
 
 impl Source {
     /// All IR operation variant names (for validation against YAML)
-    pub const ALL_NAMES: &'static [&'static str] = &["File", "Stdin", "Variable"];
+    pub const ALL_NAMES: &'static [&'static str] = &["File", "FileFast", "Stdin", "Variable"];
 }
 
 /// Unary operations (all preserve tags via map_numeric_preserve_tags)

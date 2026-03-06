@@ -757,6 +757,7 @@ fn format_ir_source(plan: &crate::ir::Plan) -> String {
         match &node.op {
             Operation::Source(Source::Stdin) => "Source::Stdin".into(),
             Operation::Source(Source::File { .. }) => "Source::File".into(),
+            Operation::Source(Source::FileFast { .. }) => "Source::FileFast".into(),
             Operation::Source(Source::Variable { .. }) => "Source::Variable".into(),
             _ => "-".into(),
         }
