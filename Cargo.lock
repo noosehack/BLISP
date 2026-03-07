@@ -81,7 +81,7 @@ source = "git+https://github.com/noosehack/blawktrust?tag=v0.1.1-orientation-sta
 
 [[package]]
 name = "blisp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitvec",
  "blawktrust",
