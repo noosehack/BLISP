@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use rayon::prelude::*;
 
 /// Index column: Date, Timestamp, or String rownames
 #[derive(Debug, Clone)]
@@ -161,15 +162,15 @@ impl Frame {
 /// - I3: output.nrows == input.nrows
 pub fn map_numeric_preserve_tags<F>(frame: &Frame, f: F) -> Frame
 where
-    F: Fn(&blawktrust::Column) -> blawktrust::Column,
+    F: Fn(&blawktrust::Column) -> blawktrust::Column + Sync,
 {
     // Arc clone tags (pointer copy only, O(1))
     let tags_out = Arc::clone(&frame.tags);
 
-    // Transform each numeric column
+    // Transform columns in parallel across CPU cores (like Adyton's mthr)
     let cols_out: Vec<ColData> = frame
         .cols
-        .iter()
+        .par_iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => ColData::Mat(Arc::new(f(col))),
         })

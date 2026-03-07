@@ -307,6 +307,122 @@ pub fn write_frame_to<W: std::io::Write>(
     Ok(())
 }
 
+/// Fast parallel CSV writer using ryu + rayon (like Adyton's mthr pattern)
+///
+/// Strategy: split rows into chunks, each thread formats its chunk into a Vec<u8>,
+/// then write all chunks sequentially. ryu for fast float→string.
+pub fn write_frame_to_fast<W: std::io::Write>(
+    writer: &mut W,
+    frame: &crate::frame::Frame,
+    _interner: &crate::ast::Interner,
+    max_rows: Option<usize>,
+) -> std::io::Result<()> {
+    use rayon::prelude::*;
+
+    let n_rows = frame.nrows();
+    let display_rows = max_rows.map(|m| n_rows.min(m)).unwrap_or(n_rows);
+
+    // Header (small, no need to parallelize)
+    let mut header = String::with_capacity(frame.tags.colnames.len() * 20);
+    header.push_str(&frame.tags.index_name);
+    for colname in frame.tags.colnames.iter() {
+        header.push(';');
+        header.push_str(colname);
+    }
+    header.push('\n');
+    writer.write_all(header.as_bytes())?;
+
+    if display_rows == 0 {
+        return Ok(());
+    }
+
+    // Pre-extract column data slices for fast access
+    let col_slices: Vec<&[f64]> = frame
+        .cols
+        .iter()
+        .map(|cd| match cd {
+            crate::frame::ColData::Mat(col) => match &**col {
+                blawktrust::Column::F64(data) => data.as_slice(),
+                _ => &[],
+            },
+        })
+        .collect();
+
+    // Pre-format index column (dates are cheap, do it once)
+    let index_strings: Vec<String> = match &*frame.tags.index {
+        crate::frame::IndexColumn::Date(dates) => {
+            (0..display_rows).map(|i| format_date(dates[i])).collect()
+        }
+        crate::frame::IndexColumn::Timestamp(timestamps) => (0..display_rows)
+            .map(|i| format_timestamp(timestamps[i]))
+            .collect(),
+        crate::frame::IndexColumn::String(strings) => {
+            (0..display_rows).map(|i| strings[i].clone()).collect()
+        }
+    };
+
+    let ncols = col_slices.len();
+    // Estimate ~20 bytes per cell (float + separator)
+    let bytes_per_row = 12 + ncols * 20;
+
+    // Split rows into chunks for parallel formatting
+    let nthreads = rayon::current_num_threads();
+    let chunk_size = (display_rows + nthreads - 1) / nthreads;
+
+    let row_ranges: Vec<(usize, usize)> = (0..nthreads)
+        .map(|t| {
+            let start = t * chunk_size;
+            let end = (start + chunk_size).min(display_rows);
+            (start, end)
+        })
+        .filter(|(s, e)| s < e)
+        .collect();
+
+    let chunks: Vec<Vec<u8>> = row_ranges
+        .par_iter()
+        .map(|&(start, end)| {
+            let mut buf = Vec::with_capacity((end - start) * bytes_per_row);
+            let mut ryu_buf = ryu::Buffer::new();
+            for row_idx in start..end {
+                // Index
+                buf.extend_from_slice(index_strings[row_idx].as_bytes());
+                // Columns
+                for col_data in &col_slices {
+                    buf.push(b';');
+                    if row_idx < col_data.len() {
+                        let v: f64 = col_data[row_idx];
+                        if v.is_nan() {
+                            buf.extend_from_slice(b"NA");
+                        } else {
+                            buf.extend_from_slice(ryu_buf.format(v).as_bytes());
+                        }
+                    } else {
+                        buf.push(b'?');
+                    }
+                }
+                buf.push(b'\n');
+            }
+            buf
+        })
+        .collect();
+
+    for chunk in &chunks {
+        writer.write_all(chunk)?;
+    }
+
+    // Show summary if truncated
+    if display_rows < n_rows {
+        writeln!(
+            writer,
+            "... ({} more rows, {} total)",
+            n_rows - display_rows,
+            n_rows
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Write table as CSV (semicolon-separated) with streaming output
 ///
 /// Writes incrementally to avoid building giant strings in memory.

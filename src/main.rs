@@ -797,7 +797,7 @@ fn main() {
                         value::write_table_to(&mut writer, table, &rt.interner, None)
                     }
                     value::Value::Frame(frame) => {
-                        value::write_frame_to(&mut writer, frame, &rt.interner, None)
+                        value::write_frame_to_fast(&mut writer, frame, &rt.interner, None)
                     }
                     _ => {
                         writeln!(writer, "{}", val.display(&rt.interner))
@@ -840,8 +840,8 @@ fn main() {
                                 value::write_table_to(&mut writer, table, &rt.interner, None)
                             }
                             value::Value::Frame(frame) => {
-                                // Stream frame output directly (no row limit when not interactive)
-                                value::write_frame_to(&mut writer, frame, &rt.interner, None)
+                                // Stream frame output directly (fast parallel writer)
+                                value::write_frame_to_fast(&mut writer, frame, &rt.interner, None)
                             }
                             _ => {
                                 // For non-tables/frames, use display()

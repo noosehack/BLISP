@@ -1,5 +1,6 @@
 use crate::frame::{asofr, map_numeric_preserve_tags, ColData, Frame, Tags};
 use crate::io;
+use rayon::prelude::*;
 /// BLADE Phase 3: IR Executor
 ///
 /// Purpose: Execute validated IR plans using ONLY frozen primitives
@@ -823,10 +824,10 @@ fn apply_rolling_mask_aware(frame: &Frame, func: NumericFunc) -> Result<Frame, S
     let active_mask = &frame.tags.active_mask;
     let nrows = frame.nrows();
 
-    // Transform each column with mask-aware rolling
+    // Transform columns in parallel across CPU cores
     let cols_out: Vec<ColData> = frame
         .cols
-        .iter()
+        .par_iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => {
                 let result_col = match &func {
@@ -874,10 +875,10 @@ fn apply_shift_obs_mask_aware(frame: &Frame, k: usize) -> Result<Frame, String> 
     let active_mask = &frame.tags.active_mask;
     let nrows = frame.nrows();
 
-    // Transform each column with mask-aware shift
+    // Transform columns in parallel across CPU cores
     let cols_out: Vec<ColData> = frame
         .cols
-        .iter()
+        .par_iter()
         .map(|col_data| match col_data {
             ColData::Mat(col) => {
                 let result_col = shift_obs_column(col, k, active_mask, nrows);
@@ -1880,10 +1881,10 @@ fn wkd_mask_weekends(frame: &Frame) -> Result<Arc<Frame>, String> {
         }
     };
 
-    // Apply weekend mask to all columns
+    // Apply weekend mask to all columns in parallel
     let masked_cols: Vec<ColData> = frame
         .cols
-        .iter()
+        .par_iter()
         .map(|col_data| {
             match col_data {
                 ColData::Mat(col_arc) => {
