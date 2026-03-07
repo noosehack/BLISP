@@ -904,27 +904,36 @@ fn rolling_mean_mask_aware(
     mask: &crate::mask::ActiveMask,
     nrows: usize,
 ) -> Column {
+    // O(n) sliding window over eligible-stream
+    rolling_mean_mask_aware_sliding(col, w, mask, nrows, 0, true)
+}
+
+/// Naive O(n·w) rolling mean — kept for correctness testing
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_mean_mask_aware_naive(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
 
             for i in 0..nrows {
-                // Masked rows: output NA
                 if mask.is_masked(i) {
                     result.push(f64::NAN);
                     continue;
                 }
 
-                // Look back and collect up to w unmasked, non-NA observations
                 let mut count = 0;
                 let mut sum = 0.0;
 
                 for j in (0..=i).rev() {
-                    // Skip masked rows when looking back
                     if mask.is_masked(j) {
                         continue;
                     }
-
                     let value = if j < data.len() { data[j] } else { f64::NAN };
                     if !value.is_nan() {
                         sum += value;
@@ -935,11 +944,78 @@ fn rolling_mean_mask_aware(
                     }
                 }
 
-                // Strict: emit only if we have exactly w observations
                 if count == w {
                     result.push(sum / (w as f64));
                 } else {
                     result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Unified O(n) sliding-window rolling mean for mask-aware variants.
+///
+/// Precomputes the eligible stream (unmasked, non-NA rows), then slides a
+/// fixed-size window over it. Each eligible value enters and exits the window
+/// exactly once → O(n) amortized.
+///
+/// Parameters:
+///   - end_offset: 0 for standard, 1 for ft-zscore (exclude current obs)
+///   - strict: true → emit only when count == w; false → emit when count >= 2
+fn rolling_mean_mask_aware_sliding(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+    strict: bool,
+) -> Column {
+    match col {
+        Column::F64(data) => {
+            // Build eligible stream: (original_row_idx, value)
+            let mut eligible: Vec<(usize, f64)> = Vec::new();
+            for i in 0..nrows {
+                if !mask.is_masked(i) && i < data.len() && !data[i].is_nan() {
+                    eligible.push((i, data[i]));
+                }
+            }
+
+            let mut result = vec![f64::NAN; nrows];
+            let mut sum = 0.0;
+            let mut right = 0usize; // next eligible entry to add
+
+            for i in 0..nrows {
+                if mask.is_masked(i) {
+                    continue; // result[i] already NaN
+                }
+                if i < end_offset {
+                    continue;
+                }
+                let end_pos = i - end_offset;
+
+                // Advance right: add all eligible entries with row_idx <= end_pos
+                while right < eligible.len() && eligible[right].0 <= end_pos {
+                    sum += eligible[right].1;
+                    // Evict from left if window exceeds w
+                    if right >= w {
+                        sum -= eligible[right - w].1;
+                    }
+                    right += 1;
+                }
+
+                // Window count = min(right, w)
+                let count = right.min(w);
+
+                if strict {
+                    if count == w {
+                        result[i] = sum / w as f64;
+                    }
+                } else if count >= 2 {
+                    result[i] = sum / count as f64;
                 }
             }
 
@@ -1298,11 +1374,20 @@ fn rolling_mean_mask_aware_legacy(
     }
 }
 
-/// Rolling std with mask-aware observation counting - O(n) streaming version
-///
-/// Maintains running sum and sum-of-squares for incremental variance.
-/// Uses population variance: var = E[X²] - E[X]² = (sumsq/w) - (sum/w)²
 fn rolling_std_mask_aware(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+) -> Column {
+    // O(n) sliding window over eligible-stream
+    rolling_std_mask_aware_sliding(col, w, mask, nrows, 0, true)
+}
+
+/// Naive O(n·w) rolling std — kept for correctness testing
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_std_mask_aware_naive(
     col: &Column,
     w: usize,
     mask: &crate::mask::ActiveMask,
@@ -1313,23 +1398,19 @@ fn rolling_std_mask_aware(
             let mut result = Vec::with_capacity(nrows);
 
             for i in 0..nrows {
-                // Masked rows: output NA
                 if mask.is_masked(i) {
                     result.push(f64::NAN);
                     continue;
                 }
 
-                // Look back and collect up to w unmasked, non-NA observations
                 let mut count = 0;
                 let mut sum = 0.0;
                 let mut sumsq = 0.0;
 
                 for j in (0..=i).rev() {
-                    // Skip masked rows when looking back
                     if mask.is_masked(j) {
                         continue;
                     }
-
                     let value = if j < data.len() { data[j] } else { f64::NAN };
                     if !value.is_nan() {
                         sum += value;
@@ -1341,15 +1422,78 @@ fn rolling_std_mask_aware(
                     }
                 }
 
-                // Strict: emit only if we have exactly w observations
                 if count == w {
                     let n = w as f64;
                     let mean = sum / n;
-                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
                     let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
-                    result.push(variance.max(0.0).sqrt()); // max(0) for numerical stability
+                    result.push(variance.max(0.0).sqrt());
                 } else {
                     result.push(f64::NAN);
+                }
+            }
+
+            Column::new_f64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Unified O(n) sliding-window rolling std for mask-aware variants.
+///
+/// Same eligible-stream approach as rolling_mean_mask_aware_sliding.
+/// Maintains running sum and sumsq for incremental sample variance:
+///   var = ((sumsq/n) - mean²) * n/(n-1), clamped to max(0.0)
+fn rolling_std_mask_aware_sliding(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+    strict: bool,
+) -> Column {
+    match col {
+        Column::F64(data) => {
+            let mut eligible: Vec<(usize, f64)> = Vec::new();
+            for i in 0..nrows {
+                if !mask.is_masked(i) && i < data.len() && !data[i].is_nan() {
+                    eligible.push((i, data[i]));
+                }
+            }
+
+            let mut result = vec![f64::NAN; nrows];
+            let mut sum = 0.0;
+            let mut sumsq = 0.0;
+            let mut right = 0usize;
+
+            for i in 0..nrows {
+                if mask.is_masked(i) {
+                    continue;
+                }
+                if i < end_offset {
+                    continue;
+                }
+                let end_pos = i - end_offset;
+
+                while right < eligible.len() && eligible[right].0 <= end_pos {
+                    let v = eligible[right].1;
+                    sum += v;
+                    sumsq += v * v;
+                    if right >= w {
+                        let leaving = eligible[right - w].1;
+                        sum -= leaving;
+                        sumsq -= leaving * leaving;
+                    }
+                    right += 1;
+                }
+
+                let count = right.min(w);
+
+                let emit = if strict { count == w } else { count >= 2 };
+                if emit {
+                    let n = count as f64;
+                    let mean = sum / n;
+                    let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
+                    result[i] = variance.max(0.0).sqrt();
                 }
             }
 
@@ -1427,34 +1571,42 @@ fn rolling_mean_partial_mask_aware_offset(
     nrows: usize,
     end_offset: usize,
 ) -> Column {
+    // O(n) sliding window, partial semantics (count >= 2)
+    rolling_mean_mask_aware_sliding(col, w, mask, nrows, end_offset, false)
+}
+
+/// Naive O(n·w) partial mean with offset — kept for correctness testing
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_mean_partial_mask_aware_offset_naive(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
 
             for i in 0..nrows {
-                // Masked rows: output NA
                 if mask.is_masked(i) {
                     result.push(f64::NAN);
                     continue;
                 }
-
-                // Compute window ending at i - end_offset (for ft-zscore: end_offset=1 means use stats up to i-1)
                 if i < end_offset {
                     result.push(f64::NAN);
                     continue;
                 }
                 let end_pos = i - end_offset;
 
-                // Look back from end_pos and collect up to w unmasked, non-NA observations
                 let mut count = 0;
                 let mut sum = 0.0;
 
                 for j in (0..=end_pos).rev() {
-                    // Skip masked rows when looking back
                     if mask.is_masked(j) {
                         continue;
                     }
-
                     let value = if j < data.len() { data[j] } else { f64::NAN };
                     if !value.is_nan() {
                         sum += value;
@@ -1465,7 +1617,6 @@ fn rolling_mean_partial_mask_aware_offset(
                     }
                 }
 
-                // Partial: emit if we have >= 2 observations
                 if count >= 2 {
                     result.push(sum / (count as f64));
                 } else {
@@ -1545,35 +1696,43 @@ fn rolling_std_partial_mask_aware_offset(
     nrows: usize,
     end_offset: usize,
 ) -> Column {
+    // O(n) sliding window, partial semantics (count >= 2)
+    rolling_std_mask_aware_sliding(col, w, mask, nrows, end_offset, false)
+}
+
+/// Naive O(n·w) partial std with offset — kept for correctness testing
+#[cfg(test)]
+#[allow(dead_code)]
+fn rolling_std_partial_mask_aware_offset_naive(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+) -> Column {
     match col {
         Column::F64(data) => {
             let mut result = Vec::with_capacity(nrows);
 
             for i in 0..nrows {
-                // Masked rows: output NA
                 if mask.is_masked(i) {
                     result.push(f64::NAN);
                     continue;
                 }
-
-                // Compute window ending at i - end_offset (for ft-zscore: end_offset=1 means use stats up to i-1)
                 if i < end_offset {
                     result.push(f64::NAN);
                     continue;
                 }
                 let end_pos = i - end_offset;
 
-                // Look back from end_pos and collect up to w unmasked, non-NA observations
                 let mut count = 0;
                 let mut sum = 0.0;
                 let mut sumsq = 0.0;
 
                 for j in (0..=end_pos).rev() {
-                    // Skip masked rows when looking back
                     if mask.is_masked(j) {
                         continue;
                     }
-
                     let value = if j < data.len() { data[j] } else { f64::NAN };
                     if !value.is_nan() {
                         sum += value;
@@ -1585,11 +1744,9 @@ fn rolling_std_partial_mask_aware_offset(
                     }
                 }
 
-                // Partial: emit if we have >= 2 observations
                 if count >= 2 {
                     let n = count as f64;
                     let mean = sum / n;
-                    // Use sample variance (n-1 denominator) to match CLISPI/Adyton
                     let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
                     result.push(variance.max(0.0).sqrt());
                 } else {
@@ -2902,5 +3059,177 @@ mod tests {
         let normalized_shift_obs = normalize(shift_obs_expr, &mut interner);
         let plan_shift_obs = plan(&normalized_shift_obs, &interner);
         assert!(plan_shift_obs.is_ok(), "shift-obs should plan successfully");
+    }
+
+    // ==================== O(n) vs Naive Rolling Window Tests ====================
+
+    fn make_test_mask(nrows: usize, masked_rows: &[usize]) -> crate::mask::ActiveMask {
+        use bitvec::prelude::*;
+        let mut bits = bitvec![0; nrows];
+        for &r in masked_rows {
+            bits.set(r, true);
+        }
+        crate::mask::ActiveMask::from_bitvec(bits, None)
+    }
+
+    fn assert_columns_match(a: &Column, b: &Column, tol: f64, label: &str) {
+        let Column::F64(da) = a else { panic!("{label}: not F64") };
+        let Column::F64(db) = b else { panic!("{label}: not F64") };
+        assert_eq!(da.len(), db.len(), "{label}: length mismatch");
+        for i in 0..da.len() {
+            let (va, vb) = (da[i], db[i]);
+            if va.is_nan() && vb.is_nan() {
+                continue;
+            }
+            if va.is_nan() || vb.is_nan() {
+                panic!("{label}[{i}]: NaN mismatch: {va} vs {vb}");
+            }
+            let diff = (va - vb).abs();
+            let scale = va.abs().max(vb.abs()).max(1e-15);
+            assert!(
+                diff / scale < tol,
+                "{label}[{i}]: {va} vs {vb} (rel diff {:.2e})",
+                diff / scale
+            );
+        }
+    }
+
+    #[test]
+    fn test_rolling_mean_strict_on_matches_naive() {
+        // 20 rows, weekend mask on rows 5,6,12,13, some NAs
+        let mut data: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        data[3] = f64::NAN;
+        data[10] = f64::NAN;
+        let col = Column::new_f64(data);
+        let mask = make_test_mask(20, &[5, 6, 12, 13]);
+
+        for w in [3, 5, 10] {
+            let fast = rolling_mean_mask_aware(&col, w, &mask, 20);
+            let naive = rolling_mean_mask_aware_naive(&col, w, &mask, 20);
+            assert_columns_match(&fast, &naive, 1e-12, &format!("strict_mean w={w}"));
+        }
+    }
+
+    #[test]
+    fn test_rolling_std_strict_on_matches_naive() {
+        let mut data: Vec<f64> = (0..20).map(|i| 100.0 + i as f64 * 0.5).collect();
+        data[3] = f64::NAN;
+        data[10] = f64::NAN;
+        let col = Column::new_f64(data);
+        let mask = make_test_mask(20, &[5, 6, 12, 13]);
+
+        for w in [3, 5, 10] {
+            let fast = rolling_std_mask_aware(&col, w, &mask, 20);
+            let naive = rolling_std_mask_aware_naive(&col, w, &mask, 20);
+            assert_columns_match(&fast, &naive, 1e-10, &format!("strict_std w={w}"));
+        }
+    }
+
+    #[test]
+    fn test_rolling_mean_partial_offset_matches_naive() {
+        let mut data: Vec<f64> = (0..30).map(|i| 50.0 + i as f64).collect();
+        data[7] = f64::NAN;
+        data[15] = f64::NAN;
+        let col = Column::new_f64(data);
+        let mask = make_test_mask(30, &[5, 6, 12, 13, 19, 20, 26, 27]);
+
+        for w in [3, 5, 10, 20] {
+            for offset in [0, 1] {
+                let fast =
+                    rolling_mean_partial_mask_aware_offset(&col, w, &mask, 30, offset);
+                let naive =
+                    rolling_mean_partial_mask_aware_offset_naive(&col, w, &mask, 30, offset);
+                assert_columns_match(
+                    &fast,
+                    &naive,
+                    1e-12,
+                    &format!("partial_mean w={w} offset={offset}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rolling_std_partial_offset_matches_naive() {
+        let mut data: Vec<f64> = (0..30).map(|i| 50.0 + i as f64).collect();
+        data[7] = f64::NAN;
+        data[15] = f64::NAN;
+        let col = Column::new_f64(data);
+        let mask = make_test_mask(30, &[5, 6, 12, 13, 19, 20, 26, 27]);
+
+        for w in [3, 5, 10, 20] {
+            for offset in [0, 1] {
+                let fast =
+                    rolling_std_partial_mask_aware_offset(&col, w, &mask, 30, offset);
+                let naive =
+                    rolling_std_partial_mask_aware_offset_naive(&col, w, &mask, 30, offset);
+                assert_columns_match(
+                    &fast,
+                    &naive,
+                    1e-10,
+                    &format!("partial_std w={w} offset={offset}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rolling_edge_cases() {
+        // All NaN column
+        let col_nan = Column::new_f64(vec![f64::NAN; 10]);
+        let mask = make_test_mask(10, &[]);
+        let result = rolling_mean_mask_aware(&col_nan, 3, &mask, 10);
+        if let Column::F64(d) = &result {
+            assert!(d.iter().all(|v| v.is_nan()), "all-NaN column should give all NaN");
+        }
+
+        // All masked
+        let col = Column::new_f64(vec![1.0; 10]);
+        let mask_all = make_test_mask(10, &(0..10).collect::<Vec<_>>());
+        let result = rolling_mean_mask_aware(&col, 3, &mask_all, 10);
+        if let Column::F64(d) = &result {
+            assert!(d.iter().all(|v| v.is_nan()), "all-masked should give all NaN");
+        }
+
+        // w=1
+        let col = Column::new_f64(vec![10.0, 20.0, 30.0]);
+        let mask = make_test_mask(3, &[]);
+        let result = rolling_mean_mask_aware(&col, 1, &mask, 3);
+        if let Column::F64(d) = &result {
+            assert_eq!(d[0], 10.0);
+            assert_eq!(d[1], 20.0);
+            assert_eq!(d[2], 30.0);
+        }
+
+        // w > nrows
+        let col = Column::new_f64(vec![1.0, 2.0, 3.0]);
+        let mask = make_test_mask(3, &[]);
+        let result = rolling_mean_mask_aware(&col, 10, &mask, 3);
+        if let Column::F64(d) = &result {
+            assert!(d.iter().all(|v| v.is_nan()), "w > nrows should give all NaN for strict");
+        }
+    }
+
+    #[test]
+    fn test_rolling_large_values_numerical_stability() {
+        // Realistic financial data: values around 1000 with small increments
+        // Tests incremental sum/sumsq doesn't drift vs naive recompute
+        let data: Vec<f64> = (0..100)
+            .map(|i| 1000.0 + (i as f64) * 0.01)
+            .collect();
+        let col = Column::new_f64(data);
+        let mask = make_test_mask(100, &[]);
+
+        let fast = rolling_std_mask_aware(&col, 20, &mask, 100);
+        let naive = rolling_std_mask_aware_naive(&col, 20, &mask, 100);
+        // Incremental sum/sumsq has ~1e-7 relative drift vs naive recompute
+        assert_columns_match(&fast, &naive, 1e-6, "large_values_std");
+
+        // Verify no negative variance (max(0) clamp)
+        if let Column::F64(d) = &fast {
+            for v in d {
+                assert!(*v >= 0.0 || v.is_nan(), "std must be non-negative");
+            }
+        }
     }
 }

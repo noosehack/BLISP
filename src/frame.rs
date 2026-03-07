@@ -916,13 +916,13 @@ mod tests {
         let frame = Frame::new(tags, vec![col]);
 
         // Apply various operations
-        let ops: Vec<Box<dyn Fn(&blawktrust::Column) -> blawktrust::Column>> = vec![
+        let ops: Vec<Box<dyn Fn(&blawktrust::Column) -> blawktrust::Column + Sync>> = vec![
             Box::new(|c| dlog_column(c, 1)),
             Box::new(|c| c.clone()), // Identity
         ];
 
         for (i, op) in ops.iter().enumerate() {
-            let result = map_numeric_preserve_tags(&frame, op);
+            let result = map_numeric_preserve_tags(&frame, |c| op(c));
 
             assert!(
                 Arc::ptr_eq(&frame.tags.index, &result.tags.index),
