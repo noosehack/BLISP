@@ -187,6 +187,15 @@ pub enum UnaryOp {
         lag: usize,
         ops: Vec<NumericFunc>,
     },
+
+    /// Fused rolling zscore: single-pass (mean, std, zscore) over eligible stream
+    /// Replaces: DIV(SUB(x, rolling_mean(x)), rolling_std(x))
+    /// end_offset=0 for rol_zsc, end_offset=1 for ft-zscore
+    FusedRollingZscore {
+        input: NodeId,
+        w: usize,
+        end_offset: usize,
+    },
 }
 
 /// Numeric functions that can be mapped over columns
@@ -613,7 +622,8 @@ impl Plan {
                 | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
                 | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
                 | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
-                | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+                | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. })
+                | Operation::Unary(UnaryOp::FusedRollingZscore { input, .. }) => {
                     let input_node = self
                         .get_node(*input)
                         .ok_or("Invalid input node reference")?;

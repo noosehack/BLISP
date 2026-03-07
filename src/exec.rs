@@ -1,6 +1,5 @@
 use crate::frame::{asofr, map_numeric_preserve_tags, ColData, Frame, Tags};
 use crate::io;
-use rayon::prelude::*;
 /// BLADE Phase 3: IR Executor
 ///
 /// Purpose: Execute validated IR plans using ONLY frozen primitives
@@ -18,6 +17,7 @@ use crate::ir::{
 };
 use crate::runtime::Runtime;
 use crate::value::Value;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 // dlog_column replaced with mask-aware version below
@@ -358,6 +358,55 @@ fn execute_unary(unary: &UnaryOp, ctx: &ExecContext) -> Result<Arc<Frame>, Strin
             debug_assert_eq!(
                 result.nrows, input_frame.nrows,
                 "FusedDlogOfsElementwise: I3 violation"
+            );
+
+            Ok(Arc::new(result))
+        }
+
+        // Fused rolling zscore: single-pass mean+std+zscore
+        UnaryOp::FusedRollingZscore {
+            input,
+            w,
+            end_offset,
+        } => {
+            let input_frame = ctx
+                .load(*input)
+                .ok_or_else(|| format!("Input node {:?} not found", input))?;
+
+            let active_mask = &input_frame.tags.active_mask;
+            let nrows = input_frame.nrows();
+            let w = *w;
+            let end_offset = *end_offset;
+
+            let cols_out: Vec<ColData> = input_frame
+                .cols
+                .par_iter()
+                .map(|col_data| match col_data {
+                    ColData::Mat(col) => {
+                        let result_col =
+                            fused_rolling_zscore_column(col, w, active_mask, nrows, end_offset);
+                        ColData::Mat(Arc::new(result_col))
+                    }
+                })
+                .collect();
+
+            let result = Frame {
+                tags: Arc::clone(&input_frame.tags),
+                cols: cols_out,
+                nrows: input_frame.nrows,
+            };
+
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.index, &input_frame.tags.index),
+                "FusedRollingZscore: I1 violation"
+            );
+            debug_assert!(
+                Arc::ptr_eq(&result.tags.colnames, &input_frame.tags.colnames),
+                "FusedRollingZscore: I2 violation"
+            );
+            debug_assert_eq!(
+                result.nrows, input_frame.nrows,
+                "FusedRollingZscore: I3 violation"
             );
 
             Ok(Arc::new(result))
@@ -1081,6 +1130,81 @@ pub fn fused_elementwise_column(col: &Column, ops: &[crate::ir::NumericFunc]) ->
                 })
                 .collect();
             Column::F64(result)
+        }
+        _ => col.clone(),
+    }
+}
+
+/// Fused rolling zscore: single-pass mean + std + zscore over eligible stream
+///
+/// Computes (x - rolling_mean(x, w)) / rolling_std(x, w) in one pass.
+/// Uses partial semantics (min_periods=2) matching SHF_WIN_MIN2_* kernels.
+/// end_offset=0 for rol_zsc, end_offset=1 for ft-zscore (excludes current obs).
+fn fused_rolling_zscore_column(
+    col: &Column,
+    w: usize,
+    mask: &crate::mask::ActiveMask,
+    nrows: usize,
+    end_offset: usize,
+) -> Column {
+    match col {
+        Column::F64(data) => {
+            // Build eligible stream: (original_row_idx, value)
+            let mut eligible: Vec<(usize, f64)> = Vec::new();
+            for i in 0..nrows {
+                if !mask.is_masked(i) && i < data.len() && !data[i].is_nan() {
+                    eligible.push((i, data[i]));
+                }
+            }
+
+            let mut result = vec![f64::NAN; nrows];
+            let mut sum = 0.0;
+            let mut sumsq = 0.0;
+            let mut right = 0usize;
+
+            for i in 0..nrows {
+                if mask.is_masked(i) {
+                    continue;
+                }
+                if i < end_offset {
+                    continue;
+                }
+                let end_pos = i - end_offset;
+
+                // Advance sliding window over eligible stream
+                while right < eligible.len() && eligible[right].0 <= end_pos {
+                    let v = eligible[right].1;
+                    sum += v;
+                    sumsq += v * v;
+                    if right >= w {
+                        let leaving = eligible[right - w].1;
+                        sum -= leaving;
+                        sumsq -= leaving * leaving;
+                    }
+                    right += 1;
+                }
+
+                let count = right.min(w);
+
+                // Partial: emit if count >= 2
+                if count >= 2 {
+                    let n = count as f64;
+                    let mean = sum / n;
+                    let variance = ((sumsq / n) - (mean * mean)) * n / (n - 1.0);
+                    let std = variance.max(0.0).sqrt();
+
+                    // Get current value for zscore
+                    if i < data.len() && !data[i].is_nan() {
+                        if std > 0.0 {
+                            result[i] = (data[i] - mean) / std;
+                        } else {
+                            result[i] = f64::NAN;
+                        }
+                    }
+                }
+            }
+
+            Column::new_f64(result)
         }
         _ => col.clone(),
     }
@@ -3073,8 +3197,12 @@ mod tests {
     }
 
     fn assert_columns_match(a: &Column, b: &Column, tol: f64, label: &str) {
-        let Column::F64(da) = a else { panic!("{label}: not F64") };
-        let Column::F64(db) = b else { panic!("{label}: not F64") };
+        let Column::F64(da) = a else {
+            panic!("{label}: not F64")
+        };
+        let Column::F64(db) = b else {
+            panic!("{label}: not F64")
+        };
         assert_eq!(da.len(), db.len(), "{label}: length mismatch");
         for i in 0..da.len() {
             let (va, vb) = (da[i], db[i]);
@@ -3135,8 +3263,7 @@ mod tests {
 
         for w in [3, 5, 10, 20] {
             for offset in [0, 1] {
-                let fast =
-                    rolling_mean_partial_mask_aware_offset(&col, w, &mask, 30, offset);
+                let fast = rolling_mean_partial_mask_aware_offset(&col, w, &mask, 30, offset);
                 let naive =
                     rolling_mean_partial_mask_aware_offset_naive(&col, w, &mask, 30, offset);
                 assert_columns_match(
@@ -3159,10 +3286,8 @@ mod tests {
 
         for w in [3, 5, 10, 20] {
             for offset in [0, 1] {
-                let fast =
-                    rolling_std_partial_mask_aware_offset(&col, w, &mask, 30, offset);
-                let naive =
-                    rolling_std_partial_mask_aware_offset_naive(&col, w, &mask, 30, offset);
+                let fast = rolling_std_partial_mask_aware_offset(&col, w, &mask, 30, offset);
+                let naive = rolling_std_partial_mask_aware_offset_naive(&col, w, &mask, 30, offset);
                 assert_columns_match(
                     &fast,
                     &naive,
@@ -3180,7 +3305,10 @@ mod tests {
         let mask = make_test_mask(10, &[]);
         let result = rolling_mean_mask_aware(&col_nan, 3, &mask, 10);
         if let Column::F64(d) = &result {
-            assert!(d.iter().all(|v| v.is_nan()), "all-NaN column should give all NaN");
+            assert!(
+                d.iter().all(|v| v.is_nan()),
+                "all-NaN column should give all NaN"
+            );
         }
 
         // All masked
@@ -3188,7 +3316,10 @@ mod tests {
         let mask_all = make_test_mask(10, &(0..10).collect::<Vec<_>>());
         let result = rolling_mean_mask_aware(&col, 3, &mask_all, 10);
         if let Column::F64(d) = &result {
-            assert!(d.iter().all(|v| v.is_nan()), "all-masked should give all NaN");
+            assert!(
+                d.iter().all(|v| v.is_nan()),
+                "all-masked should give all NaN"
+            );
         }
 
         // w=1
@@ -3206,7 +3337,10 @@ mod tests {
         let mask = make_test_mask(3, &[]);
         let result = rolling_mean_mask_aware(&col, 10, &mask, 3);
         if let Column::F64(d) = &result {
-            assert!(d.iter().all(|v| v.is_nan()), "w > nrows should give all NaN for strict");
+            assert!(
+                d.iter().all(|v| v.is_nan()),
+                "w > nrows should give all NaN for strict"
+            );
         }
     }
 
@@ -3214,9 +3348,7 @@ mod tests {
     fn test_rolling_large_values_numerical_stability() {
         // Realistic financial data: values around 1000 with small increments
         // Tests incremental sum/sumsq doesn't drift vs naive recompute
-        let data: Vec<f64> = (0..100)
-            .map(|i| 1000.0 + (i as f64) * 0.01)
-            .collect();
+        let data: Vec<f64> = (0..100).map(|i| 1000.0 + (i as f64) * 0.01).collect();
         let col = Column::new_f64(data);
         let mask = make_test_mask(100, &[]);
 
@@ -3229,6 +3361,164 @@ mod tests {
         if let Column::F64(d) = &fast {
             for v in d {
                 assert!(*v >= 0.0 || v.is_nan(), "std must be non-negative");
+            }
+        }
+    }
+
+    /// Test fused rolling zscore matches unfused (mean, std, sub, div) pipeline
+    #[test]
+    fn test_fused_zscore_matches_unfused() {
+        let data = vec![
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+            f64::NAN,
+            12.0,
+            13.0,
+            14.0,
+            15.0,
+        ];
+        let nrows = data.len();
+        let col = Column::new_f64(data.clone());
+        let mask = make_test_mask(nrows, &[]);
+        let w = 5;
+
+        // Unfused: separate mean, std, then zscore
+        let mean_col = rolling_mean_mask_aware_sliding(&col, w, &mask, nrows, 0, false);
+        let std_col = rolling_std_mask_aware_sliding(&col, w, &mask, nrows, 0, false);
+        let mut unfused = vec![f64::NAN; nrows];
+        if let (Column::F64(m), Column::F64(s)) = (&mean_col, &std_col) {
+            for i in 0..nrows {
+                if !data[i].is_nan() && !m[i].is_nan() && !s[i].is_nan() && s[i] > 0.0 {
+                    unfused[i] = (data[i] - m[i]) / s[i];
+                }
+            }
+        }
+
+        // Fused
+        let fused = fused_rolling_zscore_column(&col, w, &mask, nrows, 0);
+
+        if let Column::F64(fused_data) = &fused {
+            for i in 0..nrows {
+                let u = unfused[i];
+                let f = fused_data[i];
+                match (u.is_nan(), f.is_nan()) {
+                    (true, true) => {}
+                    (false, false) => {
+                        assert!(
+                            (u - f).abs() < 1e-12,
+                            "row {}: unfused={} fused={} diff={}",
+                            i,
+                            u,
+                            f,
+                            (u - f).abs()
+                        );
+                    }
+                    _ => panic!("row {}: NaN mismatch unfused={} fused={}", i, u, f),
+                }
+            }
+        }
+    }
+
+    /// Test fused rolling zscore with end_offset=1 (ft-zscore semantics)
+    #[test]
+    fn test_fused_zscore_excl_matches_unfused() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let nrows = data.len();
+        let col = Column::new_f64(data.clone());
+        let mask = make_test_mask(nrows, &[]);
+        let w = 5;
+        let end_offset = 1;
+
+        // Unfused: mean_excl, std_excl, then zscore
+        let mean_col = rolling_mean_mask_aware_sliding(&col, w, &mask, nrows, end_offset, false);
+        let std_col = rolling_std_mask_aware_sliding(&col, w, &mask, nrows, end_offset, false);
+        let mut unfused = vec![f64::NAN; nrows];
+        if let (Column::F64(m), Column::F64(s)) = (&mean_col, &std_col) {
+            for i in 0..nrows {
+                if !data[i].is_nan() && !m[i].is_nan() && !s[i].is_nan() && s[i] > 0.0 {
+                    unfused[i] = (data[i] - m[i]) / s[i];
+                }
+            }
+        }
+
+        // Fused with end_offset=1
+        let fused = fused_rolling_zscore_column(&col, w, &mask, nrows, end_offset);
+
+        if let Column::F64(fused_data) = &fused {
+            for i in 0..nrows {
+                let u = unfused[i];
+                let f = fused_data[i];
+                match (u.is_nan(), f.is_nan()) {
+                    (true, true) => {}
+                    (false, false) => {
+                        assert!(
+                            (u - f).abs() < 1e-12,
+                            "row {}: unfused={} fused={} diff={}",
+                            i,
+                            u,
+                            f,
+                            (u - f).abs()
+                        );
+                    }
+                    _ => panic!("row {}: NaN mismatch unfused={} fused={}", i, u, f),
+                }
+            }
+        }
+    }
+
+    /// Test fused rolling zscore with masked rows
+    #[test]
+    fn test_fused_zscore_with_mask() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let nrows = data.len();
+        let col = Column::new_f64(data.clone());
+        let mask = make_test_mask(nrows, &[2, 5]); // mask rows 2 and 5
+        let w = 3;
+
+        let mean_col = rolling_mean_mask_aware_sliding(&col, w, &mask, nrows, 0, false);
+        let std_col = rolling_std_mask_aware_sliding(&col, w, &mask, nrows, 0, false);
+        let mut unfused = vec![f64::NAN; nrows];
+        if let (Column::F64(m), Column::F64(s)) = (&mean_col, &std_col) {
+            for i in 0..nrows {
+                if !mask.is_masked(i)
+                    && !data[i].is_nan()
+                    && !m[i].is_nan()
+                    && !s[i].is_nan()
+                    && s[i] > 0.0
+                {
+                    unfused[i] = (data[i] - m[i]) / s[i];
+                }
+            }
+        }
+
+        let fused = fused_rolling_zscore_column(&col, w, &mask, nrows, 0);
+
+        if let Column::F64(fused_data) = &fused {
+            for i in 0..nrows {
+                let u = unfused[i];
+                let f = fused_data[i];
+                match (u.is_nan(), f.is_nan()) {
+                    (true, true) => {}
+                    (false, false) => {
+                        assert!(
+                            (u - f).abs() < 1e-12,
+                            "row {}: unfused={} fused={} diff={}",
+                            i,
+                            u,
+                            f,
+                            (u - f).abs()
+                        );
+                    }
+                    _ => panic!("row {}: NaN mismatch unfused={} fused={}", i, u, f),
+                }
             }
         }
     }

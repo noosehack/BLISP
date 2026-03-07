@@ -8,7 +8,9 @@
 //! - PR4.2a: cs1 ∘ elementwise ✅
 //! - PR4.2b: cs1 ∘ dlog-obs/ofs ✅
 
-use crate::ir::{BinaryOp, Node, NodeId, NumericFunc, Operation, Plan, UnaryOp, ValueRef};
+use crate::ir::{
+    BinaryFunc, BinaryOp, Node, NodeId, NumericFunc, Operation, Plan, UnaryOp, ValueRef,
+};
 use std::collections::HashMap;
 
 /// Main optimization entry point
@@ -22,6 +24,7 @@ pub fn optimize(plan: &Plan) -> Plan {
     optimized = optimize_elementwise_fusion(&optimized);
     optimized = optimize_cs1_elementwise_fusion(&optimized);
     optimized = optimize_cs1_dlog_fusion(&optimized);
+    optimized = optimize_rolling_zscore_fusion(&optimized);
 
     optimized
 }
@@ -66,7 +69,8 @@ pub fn optimize_elementwise_fusion(plan: &Plan) -> Plan {
             | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
             | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
             | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
-            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedRollingZscore { input, .. }) => {
                 *consumers.entry(*input).or_insert(0) += 1;
             }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
@@ -238,6 +242,18 @@ pub fn optimize_elementwise_fusion(plan: &Plan) -> Plan {
                         ops: ops.clone(),
                     })
                 }
+                Operation::Unary(UnaryOp::FusedRollingZscore {
+                    input,
+                    w,
+                    end_offset,
+                }) => {
+                    let remapped = node_map.get(input).copied().unwrap_or(*input);
+                    Operation::Unary(UnaryOp::FusedRollingZscore {
+                        input: remapped,
+                        w: *w,
+                        end_offset: *end_offset,
+                    })
+                }
                 Operation::Source(s) => Operation::Source(s.clone()),
                 Operation::Schema(s) => Operation::Schema(s.clone()),
             };
@@ -264,7 +280,8 @@ pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
             | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
             | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
             | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
-            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedRollingZscore { input, .. }) => {
                 *consumers.entry(*input).or_insert(0) += 1;
             }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
@@ -437,6 +454,18 @@ pub fn optimize_cs1_elementwise_fusion(plan: &Plan) -> Plan {
                     ops: ops.clone(),
                 })
             }
+            Operation::Unary(UnaryOp::FusedRollingZscore {
+                input,
+                w,
+                end_offset,
+            }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedRollingZscore {
+                    input: remapped,
+                    w: *w,
+                    end_offset: *end_offset,
+                })
+            }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
                 let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
                 let remapped_rhs = match rhs {
@@ -517,7 +546,8 @@ pub fn optimize_cs1_dlog_fusion(plan: &Plan) -> Plan {
             | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
             | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
             | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
-            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. }) => {
+            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedRollingZscore { input, .. }) => {
                 *consumers.entry(*input).or_insert(0) += 1;
             }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
@@ -709,6 +739,18 @@ pub fn optimize_cs1_dlog_fusion(plan: &Plan) -> Plan {
                     ops: ops.clone(),
                 })
             }
+            Operation::Unary(UnaryOp::FusedRollingZscore {
+                input,
+                w,
+                end_offset,
+            }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedRollingZscore {
+                    input: remapped,
+                    w: *w,
+                    end_offset: *end_offset,
+                })
+            }
             Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
                 let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
                 let remapped_rhs = match rhs {
@@ -766,6 +808,298 @@ pub fn optimize_cs1_dlog_fusion(plan: &Plan) -> Plan {
                     }
                 }
             }
+        };
+
+        new_nodes.push(Node {
+            id: new_id,
+            op: new_op,
+            schema: node.schema.clone(),
+        });
+    }
+
+    Plan { nodes: new_nodes }
+}
+
+/// Fuse rolling zscore: DIV(SUB(x, rolling_mean(x, w)), rolling_std(x, w)) → FusedRollingZscore
+///
+/// Pattern (from planner for `rol_zsc` and `ft-zscore`):
+///   node B: MapNumeric { input: A, func: SHF_WIN_MIN2_LIN_AVG { w } }       (or _EXCL)
+///   node C: MapNumeric { input: A, func: SHF_WIN_MIN2_NLN_SDV { w } }       (or _EXCL)
+///   node D: Binary::SUB { lhs: A, rhs: Frame(B) }
+///   node E: Binary::DIV { lhs: D, rhs: Frame(C) }
+///
+/// Requirements:
+///   - B and C share the same input (A) and same window size (w)
+///   - B and C are single-consumer (consumed only by D and E respectively)
+///   - D is single-consumer (consumed only by E)
+///   - Both use _EXCL or both use non-_EXCL (determines end_offset)
+pub fn optimize_rolling_zscore_fusion(plan: &Plan) -> Plan {
+    // Build consumer count map
+    let mut consumers: HashMap<NodeId, usize> = HashMap::new();
+    for node in &plan.nodes {
+        match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, .. })
+            | Operation::Unary(UnaryOp::FusedElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedCs1Elementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, .. })
+            | Operation::Unary(UnaryOp::FusedCs1DlogObs { input, .. })
+            | Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, .. })
+            | Operation::Unary(UnaryOp::FusedRollingZscore { input, .. }) => {
+                *consumers.entry(*input).or_insert(0) += 1;
+            }
+            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, .. }) => {
+                *consumers.entry(*lhs).or_insert(0) += 1;
+                if let ValueRef::Frame(rhs_id) = rhs {
+                    *consumers.entry(*rhs_id).or_insert(0) += 1;
+                }
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y })
+            | Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                *consumers.entry(*x).or_insert(0) += 1;
+                *consumers.entry(*y).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let mut new_nodes = Vec::new();
+    let mut node_map: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut fused = vec![false; plan.nodes.len()];
+
+    // Pass 1: Detect fusible zscore patterns starting from DIV nodes
+    for node in &plan.nodes {
+        // Look for DIV(SUB(x, mean), std)
+        if let Operation::Binary(BinaryOp::MapNumeric2 {
+            lhs: div_lhs,
+            rhs: ValueRef::Frame(std_node_id),
+            func: BinaryFunc::DIV,
+        }) = &node.op
+        {
+            let sub_node = &plan.nodes[div_lhs.0];
+            let std_node = &plan.nodes[std_node_id.0];
+
+            // Check SUB(x, mean)
+            if let Operation::Binary(BinaryOp::MapNumeric2 {
+                lhs: x_node_id,
+                rhs: ValueRef::Frame(mean_node_id),
+                func: BinaryFunc::SUB,
+            }) = &sub_node.op
+            {
+                let mean_node = &plan.nodes[mean_node_id.0];
+
+                // Check mean is rolling_mean_min2 and std is rolling_std_min2
+                if let (
+                    Operation::Unary(UnaryOp::MapNumeric {
+                        input: mean_input,
+                        func: mean_func,
+                    }),
+                    Operation::Unary(UnaryOp::MapNumeric {
+                        input: std_input,
+                        func: std_func,
+                    }),
+                ) = (&mean_node.op, &std_node.op)
+                {
+                    // Extract w and end_offset, verify structural match
+                    let fusion_params = match (mean_func, std_func) {
+                        (
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG { w: w_mean },
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV { w: w_std },
+                        ) if w_mean == w_std => Some((*w_mean, 0usize)),
+                        (
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w: w_mean },
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w: w_std },
+                        ) if w_mean == w_std => Some((*w_mean, 1usize)),
+                        _ => None,
+                    };
+
+                    if let Some((w, end_offset)) = fusion_params {
+                        // Verify same input (x) for mean, std, and the SUB lhs
+                        if mean_input == x_node_id
+                            && std_input == x_node_id
+                            // Single-consumer checks
+                            && consumers.get(mean_node_id).copied().unwrap_or(0) == 1
+                            && consumers.get(std_node_id).copied().unwrap_or(0) == 1
+                            && consumers.get(div_lhs).copied().unwrap_or(0) == 1
+                        {
+                            // Mark mean, std, sub as fused (they'll be replaced)
+                            fused[mean_node_id.0] = true;
+                            fused[std_node_id.0] = true;
+                            fused[div_lhs.0] = true;
+                            // div node itself will be replaced with FusedRollingZscore
+                            let _ = (w, end_offset); // used in pass 2
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 2: Build optimized plan
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if fused[i] {
+            continue;
+        }
+
+        // Check if this DIV node should become FusedRollingZscore
+        if let Operation::Binary(BinaryOp::MapNumeric2 {
+            lhs: div_lhs,
+            rhs: ValueRef::Frame(std_node_id),
+            func: BinaryFunc::DIV,
+        }) = &node.op
+        {
+            let sub_node = &plan.nodes[div_lhs.0];
+            if let Operation::Binary(BinaryOp::MapNumeric2 {
+                lhs: x_node_id,
+                rhs: ValueRef::Frame(mean_node_id),
+                func: BinaryFunc::SUB,
+            }) = &sub_node.op
+            {
+                let mean_node = &plan.nodes[mean_node_id.0];
+                let std_node = &plan.nodes[std_node_id.0];
+
+                if let (
+                    Operation::Unary(UnaryOp::MapNumeric {
+                        input: mean_input,
+                        func: mean_func,
+                    }),
+                    Operation::Unary(UnaryOp::MapNumeric {
+                        input: std_input,
+                        func: std_func,
+                    }),
+                ) = (&mean_node.op, &std_node.op)
+                {
+                    let fusion_params = match (mean_func, std_func) {
+                        (
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG { w: w_mean },
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV { w: w_std },
+                        ) if w_mean == w_std => Some((*w_mean, 0usize)),
+                        (
+                            NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w: w_mean },
+                            NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w: w_std },
+                        ) if w_mean == w_std => Some((*w_mean, 1usize)),
+                        _ => None,
+                    };
+
+                    if let Some((w, end_offset)) = fusion_params {
+                        if mean_input == x_node_id
+                            && std_input == x_node_id
+                            && fused[mean_node_id.0]
+                            && fused[std_node_id.0]
+                            && fused[div_lhs.0]
+                        {
+                            let remapped_input =
+                                node_map.get(x_node_id).copied().unwrap_or(*x_node_id);
+                            let new_id = NodeId(new_nodes.len());
+                            node_map.insert(node.id, new_id);
+
+                            new_nodes.push(Node {
+                                id: new_id,
+                                op: Operation::Unary(UnaryOp::FusedRollingZscore {
+                                    input: remapped_input,
+                                    w,
+                                    end_offset,
+                                }),
+                                schema: node.schema.clone(),
+                            });
+
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Not fusible — copy with remapped inputs
+        let new_id = NodeId(new_nodes.len());
+        node_map.insert(node.id, new_id);
+
+        let new_op = match &node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, func }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::MapNumeric {
+                    input: remapped,
+                    func: *func,
+                })
+            }
+            Operation::Unary(UnaryOp::FusedElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedElementwise {
+                    input: remapped,
+                    ops: ops.clone(),
+                })
+            }
+            Operation::Unary(UnaryOp::FusedCs1Elementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1Elementwise {
+                    input: remapped,
+                    ops: ops.clone(),
+                })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogOfs { input, lag }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogOfs {
+                    input: remapped,
+                    lag: *lag,
+                })
+            }
+            Operation::Unary(UnaryOp::FusedCs1DlogObs { input }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedCs1DlogObs { input: remapped })
+            }
+            Operation::Unary(UnaryOp::FusedDlogObsElementwise { input, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogObsElementwise {
+                    input: remapped,
+                    ops: ops.clone(),
+                })
+            }
+            Operation::Unary(UnaryOp::FusedDlogOfsElementwise { input, lag, ops }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedDlogOfsElementwise {
+                    input: remapped,
+                    lag: *lag,
+                    ops: ops.clone(),
+                })
+            }
+            Operation::Unary(UnaryOp::FusedRollingZscore {
+                input,
+                w,
+                end_offset,
+            }) => {
+                let remapped = node_map.get(input).copied().unwrap_or(*input);
+                Operation::Unary(UnaryOp::FusedRollingZscore {
+                    input: remapped,
+                    w: *w,
+                    end_offset: *end_offset,
+                })
+            }
+            Operation::Binary(BinaryOp::MapNumeric2 { lhs, rhs, func }) => {
+                let remapped_lhs = node_map.get(lhs).copied().unwrap_or(*lhs);
+                let remapped_rhs = match rhs {
+                    ValueRef::Scalar(s) => ValueRef::Scalar(*s),
+                    ValueRef::Frame(id) => {
+                        ValueRef::Frame(node_map.get(id).copied().unwrap_or(*id))
+                    }
+                };
+                Operation::Binary(BinaryOp::MapNumeric2 {
+                    lhs: remapped_lhs,
+                    rhs: remapped_rhs,
+                    func: *func,
+                })
+            }
+            Operation::Join(crate::ir::JoinOp::ALIGN { x, y }) => {
+                let rx = node_map.get(x).copied().unwrap_or(*x);
+                let ry = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ALIGN { x: rx, y: ry })
+            }
+            Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x, y }) => {
+                let rx = node_map.get(x).copied().unwrap_or(*x);
+                let ry = node_map.get(y).copied().unwrap_or(*y);
+                Operation::Join(crate::ir::JoinOp::ASOF_ALIGN { x: rx, y: ry })
+            }
+            Operation::Source(s) => Operation::Source(s.clone()),
+            Operation::Schema(s) => Operation::Schema(s.clone()),
         };
 
         new_nodes.push(Node {
@@ -1336,12 +1670,14 @@ mod proptests {
             opt1 = optimize_elementwise_fusion(&opt1);
             opt1 = optimize_cs1_elementwise_fusion(&opt1);
             opt1 = optimize_cs1_dlog_fusion(&opt1);
+            opt1 = optimize_rolling_zscore_fusion(&opt1);
 
             // Apply optimizations again
             let mut opt2 = opt1.clone();
             opt2 = optimize_elementwise_fusion(&opt2);
             opt2 = optimize_cs1_elementwise_fusion(&opt2);
             opt2 = optimize_cs1_dlog_fusion(&opt2);
+            opt2 = optimize_rolling_zscore_fusion(&opt2);
 
             // Both should have same number of nodes (idempotent)
             prop_assert_eq!(

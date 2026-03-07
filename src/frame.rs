@@ -6,9 +6,9 @@
 //! - map_numeric_preserve_tags: core primitive (Phase 1)
 //! - reindex_by: alignment primitive (Phase 2)
 
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use rayon::prelude::*;
 
 /// Index column: Date, Timestamp, or String rownames
 #[derive(Debug, Clone)]
