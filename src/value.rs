@@ -367,7 +367,7 @@ pub fn write_frame_to_fast<W: std::io::Write>(
 
     // Split rows into chunks for parallel formatting
     let nthreads = rayon::current_num_threads();
-    let chunk_size = (display_rows + nthreads - 1) / nthreads;
+    let chunk_size = display_rows.div_ceil(nthreads);
 
     let row_ranges: Vec<(usize, usize)> = (0..nthreads)
         .map(|t| {
