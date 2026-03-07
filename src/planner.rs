@@ -1927,4 +1927,99 @@ mod tests {
             other => panic!("Expected Unsupported, got: {:?}", other),
         }
     }
+
+    /// Regression test: ft-zscore planner must share input NodeId
+    /// so that IR fusion can match the rolling zscore pattern.
+    #[test]
+    fn test_ft_zscore_shares_input_node() {
+        let mut interner = Interner::new();
+
+        // (ft-zscore (file "data.csv") 5)
+        let expr = Expr::List(vec![
+            Expr::Sym(interner.intern("ft-zscore")),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("file")),
+                Expr::Str("data.csv".to_string()),
+            ]),
+            Expr::Int(5),
+        ]);
+
+        let normalized = normalize(expr, &mut interner);
+        let plan_result = plan(&normalized, &interner);
+        assert!(plan_result.is_ok());
+        let plan_obj = plan_result.unwrap();
+
+        // Before fusion: should be 5 nodes (source, mean_excl, std_excl, sub, div)
+        assert_eq!(
+            plan_obj.nodes.len(),
+            5,
+            "ft-zscore should produce exactly 5 IR nodes (1 source + 4 ops)"
+        );
+
+        // The mean and std nodes must reference the SAME input NodeId
+        let mean_node = &plan_obj.nodes[1];
+        let std_node = &plan_obj.nodes[2];
+        let mean_input = match &mean_node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, .. }) => *input,
+            other => panic!("Node 1 should be MapNumeric, got: {:?}", other),
+        };
+        let std_input = match &std_node.op {
+            Operation::Unary(UnaryOp::MapNumeric { input, .. }) => *input,
+            other => panic!("Node 2 should be MapNumeric, got: {:?}", other),
+        };
+        assert_eq!(
+            mean_input, std_input,
+            "mean and std must share the same input NodeId"
+        );
+
+        // After fusion: should collapse to 2 nodes
+        let optimized = crate::ir_fusion::optimize(&plan_obj);
+        assert_eq!(
+            optimized.nodes.len(),
+            2,
+            "ft-zscore should fuse to 2 IR nodes (source + FusedRollingZscore)"
+        );
+
+        // Verify the fused node has end_offset=1 (EXCL semantics)
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedRollingZscore { w, end_offset, .. }) => {
+                assert_eq!(*w, 5);
+                assert_eq!(*end_offset, 1, "ft-zscore must use end_offset=1 (EXCL)");
+            }
+            other => panic!("Expected FusedRollingZscore, got: {:?}", other),
+        }
+    }
+
+    /// Regression test: rol_zsc planner must also share input NodeId
+    #[test]
+    fn test_rol_zsc_shares_input_node() {
+        let mut interner = Interner::new();
+
+        // (rol_zsc (file "data.csv") 10)
+        let expr = Expr::List(vec![
+            Expr::Sym(interner.intern("rol_zsc")),
+            Expr::List(vec![
+                Expr::Sym(interner.intern("file")),
+                Expr::Str("data.csv".to_string()),
+            ]),
+            Expr::Int(10),
+        ]);
+
+        let normalized = normalize(expr, &mut interner);
+        let plan_result = plan(&normalized, &interner);
+        assert!(plan_result.is_ok());
+        let plan_obj = plan_result.unwrap();
+
+        // After fusion: should be 2 nodes
+        let optimized = crate::ir_fusion::optimize(&plan_obj);
+        assert_eq!(optimized.nodes.len(), 2);
+
+        match &optimized.nodes[1].op {
+            Operation::Unary(UnaryOp::FusedRollingZscore { w, end_offset, .. }) => {
+                assert_eq!(*w, 10);
+                assert_eq!(*end_offset, 0, "rol_zsc must use end_offset=0");
+            }
+            other => panic!("Expected FusedRollingZscore, got: {:?}", other),
+        }
+    }
 }
