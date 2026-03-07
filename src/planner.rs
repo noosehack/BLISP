@@ -1225,29 +1225,8 @@ fn plan_expr(
                             }
                         };
 
-                        // Plan input x from elements[1] (data-first)
+                        // Plan input x ONCE (shared NodeId for mean, std, and SUB lhs)
                         let x_node = plan_expr(&elements[1], plan, ctx, interner)?;
-
-                        // Plan ft-mean: rolling mean excluding current observation
-                        let ft_mean_node_id = plan_unary(
-                            NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w },
-                            &[elements[1].clone()],
-                            plan,
-                            ctx,
-                            interner,
-                        )?;
-
-                        // Plan ft-std: rolling std excluding current observation
-                        let ft_std_node_id = plan_unary(
-                            NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w },
-                            &[elements[1].clone()],
-                            plan,
-                            ctx,
-                            interner,
-                        )?;
-
-                        // Plan (- x ft-mean)
-                        let sub_node_id = NodeId(plan.nodes.len());
                         let x_schema = plan
                             .get_node(x_node)
                             .ok_or_else(|| PlanError::Unsupported {
@@ -1256,6 +1235,36 @@ fn plan_expr(
                             })?
                             .schema
                             .clone();
+
+                        // Plan ft-mean: rolling mean excluding current observation
+                        // Reuse x_node directly (not plan_unary which re-plans the input)
+                        let ft_mean_node_id = {
+                            let id = NodeId(plan.nodes.len());
+                            plan.add_node(Node {
+                                id,
+                                op: Operation::Unary(UnaryOp::MapNumeric {
+                                    input: x_node,
+                                    func: NumericFunc::SHF_WIN_MIN2_LIN_AVG_EXCL { w },
+                                }),
+                                schema: x_schema.clone(),
+                            })
+                        };
+
+                        // Plan ft-std: rolling std excluding current observation
+                        let ft_std_node_id = {
+                            let id = NodeId(plan.nodes.len());
+                            plan.add_node(Node {
+                                id,
+                                op: Operation::Unary(UnaryOp::MapNumeric {
+                                    input: x_node,
+                                    func: NumericFunc::SHF_WIN_MIN2_NLN_SDV_EXCL { w },
+                                }),
+                                schema: x_schema.clone(),
+                            })
+                        };
+
+                        // Plan (- x ft-mean)
+                        let sub_node_id = NodeId(plan.nodes.len());
                         let sub_node = Node {
                             id: sub_node_id,
                             op: Operation::Binary(BinaryOp::MapNumeric2 {
